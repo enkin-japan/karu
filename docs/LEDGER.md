@@ -75,7 +75,7 @@ ARCHITECTURE.md 预算红线；明确不引入 tree-sitter / SwiftUI / NSDocumen
 
 | ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
 |---|---|---|---|---|---|
-| T8.1 | 滑动流畅度：高亮 overscan（可视区外预染 ±1–2 屏）+ 滚动路径去掉去抖（仅编辑保留去抖）+ 小文件自适应关闭 noncontiguous layout（阈值待定，大文件保持懒布局） | Core/Highlight/HighlightEngine.swift, Editor/EditorWindowController.swift | 待讨论 | 快速滑动无高亮 pop-in；mem-benchmark 三轮仍 PASS | ⬜ |
+| T8.1 | 滑动流畅度：高亮 overscan（±1.5 屏预染）+ 已染色带内滚动零工作（paintedRange 短路）+ 小文件（<512 KiB）自适应关闭 noncontiguous layout（LayoutModeController，编辑跨阈值自动切换；大文件保持懒布局）。注：滚动路径本就无去抖，主因是惰性布局滞后 | Core/Highlight/HighlightEngine.swift, Editor/LayoutMode.swift（新）, Editor/EditorWindowController.swift | implementer | 快速滑动无 pop-in；mem-benchmark 三轮 PASS | ✅ 14 新测试，295 全绿；基准 27/46/61 MB 全 PASS；视觉冒烟 OK |
 | T8.2 | 编码手动重解释菜单（"以 XX 编码重新打开"，自动检测错误时的用户兜底） | App/DocumentController.swift, MainMenu.swift | 待讨论 | 选错编码可换编码重开且不丢文件 | ⬜ |
 | T8.3 | 换行符（LF/CRLF/CR）状态栏显示 + 一键转换 | Editor/StatusBarView.swift, App/DocumentController.swift | 待讨论 | 状态栏正确显示；转换后保存符合预期 | ⬜ |
 | T8.4 | 大纲/符号导航：复用补全的符号扫描索引，弹窗跳转函数/类定义 | Core/Completion/WordIndex.swift, Editor/ | 待讨论 | 符号列表可跳转；内存增量 ≈ 0（复用现有索引） | ⬜ |

@@ -73,6 +73,14 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// Whether the `highlight` module is currently on.
     private var moduleEnabled: Bool
 
+    /// The character range actually painted by the last `highlightVisibleRange`
+    /// pass (the overscanned, whole-line span — not just the viewport). A pure
+    /// scroll whose new viewport still falls inside this band does zero work.
+    /// Set back to `nil` whenever the painted colours may be stale: on edit, on
+    /// language change, on a module toggle, and when all colour is cleared.
+    /// Internal (not private) so unit tests can assert the invalidation.
+    var paintedRange: NSRange?
+
     /// Pending debounced highlight pass, if any.
     private var pendingHighlight: DispatchWorkItem?
 
@@ -185,6 +193,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// compiled definition, but only while the module is enabled. Clears the
     /// definition otherwise.
     private func rebuildLanguage() {
+        // Language change (either `setLanguage` entry, and module re-enable which
+        // also routes through here) invalidates the painted band.
+        paintedRange = nil
         guard moduleEnabled else {
             language = nil
             symbolTable = nil
@@ -251,6 +262,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
                                              changeInLength delta: Int,
                                              textStorage: NSTextStorage) {
         guard editedMask.contains(.editedCharacters) else { return }
+        // Editing may have changed content anywhere in (or shifted) the painted
+        // band, so it can no longer be trusted to short-circuit a scroll.
+        paintedRange = nil
         scheduleHighlight(debounced: true)
     }
 
@@ -280,14 +294,51 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// Only the highlighter writes foreground temporary attributes, so this is
     /// safe and leaves the find bar's background highlights untouched.
     private func removeAllForegroundColour() {
+        paintedRange = nil
         guard let layoutManager = textView?.layoutManager,
               let length = (textView?.string as NSString?)?.length else { return }
         layoutManager.removeTemporaryAttribute(.foregroundColor,
                                                forCharacterRange: NSRange(location: 0, length: length))
     }
 
-    /// Tokenizes and colours the currently visible lines. Clears the previous
-    /// foreground colour in the visible span first, then repaints.
+    /// Snaps `raw` (a character range derived from a glyph query) outward to
+    /// whole lines and clamps it into `[0, ns.length]`. Pure — it depends only
+    /// on the string — so the document-boundary clamping (first / last line) is
+    /// unit-testable without a live layout manager. Returns a zero-length range
+    /// when the document is empty or the span collapses.
+    nonisolated static func wholeLineRange(clamping raw: NSRange, in ns: NSString) -> NSRange {
+        guard ns.length > 0 else { return NSRange(location: 0, length: 0) }
+        let clampedStart = min(max(raw.location, 0), ns.length - 1)
+        let start = ns.lineRange(for: NSRange(location: clampedStart, length: 0)).location
+        let rawEnd = min(max(raw.location + raw.length, 0), ns.length)
+        let endLineRange = ns.lineRange(for: NSRange(location: min(rawEnd, ns.length - 1), length: 0))
+        let end = endLineRange.location + endLineRange.length
+        guard end > start else { return NSRange(location: start, length: 0) }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// `true` when `inner` is fully contained in `outer` — the skip predicate
+    /// for the painted band. Pure, so the boundary cases are unit-testable.
+    nonisolated static func range(_ outer: NSRange, contains inner: NSRange) -> Bool {
+        outer.location <= inner.location &&
+            (outer.location + outer.length) >= (inner.location + inner.length)
+    }
+
+    /// Maps `rect` to a whole-line, document-clamped character range via the
+    /// layout manager's glyph geometry.
+    private func lineClampedCharRange(for rect: NSRect,
+                                      ns: NSString,
+                                      layoutManager: NSLayoutManager,
+                                      container: NSTextContainer) -> NSRange {
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        return Self.wholeLineRange(clamping: charRange, in: ns)
+    }
+
+    /// Tokenizes and colours the visible lines *plus an overscan margin*. Skips
+    /// entirely when the viewport still sits inside the already-painted band
+    /// (a pure scroll tick then does zero work). Clears the previous foreground
+    /// colour in the painted span first, then repaints.
     private func highlightVisibleRange() {
         guard moduleEnabled,
               let language,
@@ -299,20 +350,31 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         let ns = textView.string as NSString
         guard ns.length > 0 else { return }
 
-        // Visible character range, expanded to whole lines.
         let visibleRect = scrollView.contentView.bounds
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: container)
-        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
 
-        let clampedStart = min(charRange.location, ns.length - 1)
-        let start = ns.lineRange(for: NSRange(location: clampedStart, length: 0)).location
-        let rawEnd = min(charRange.location + charRange.length, ns.length)
-        let endLineRange = ns.lineRange(for: NSRange(location: min(rawEnd, ns.length - 1), length: 0))
-        let end = endLineRange.location + endLineRange.length
-        guard end > start else { return }
+        // The bare viewport (whole lines, no overscan): used only to decide
+        // whether the painted band already covers what's on screen.
+        let viewportChars = lineClampedCharRange(for: visibleRect, ns: ns,
+                                                 layoutManager: layoutManager, container: container)
+        guard viewportChars.length > 0 else { return }
 
-        let visibleChars = NSRange(location: start, length: end - start)
-        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: visibleChars)
+        // Zero-work fast path: the viewport is still inside the pre-painted band.
+        if let painted = paintedRange, Self.range(painted, contains: viewportChars) {
+            return
+        }
+
+        // Overscan: expand the paint rect ~1.5 screens above and below so a
+        // region scrolling into view is already coloured. Document-boundary
+        // clamping happens in `wholeLineRange`, so this only ever paints a few
+        // screens — never the whole document (ARCHITECTURE.md §3.1).
+        let overscanRect = visibleRect.insetBy(dx: 0, dy: -1.5 * visibleRect.height)
+        let paintChars = lineClampedCharRange(for: overscanRect, ns: ns,
+                                              layoutManager: layoutManager, container: container)
+        guard paintChars.length > 0 else { return }
+
+        let start = paintChars.location
+        let end = paintChars.location + paintChars.length
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: paintChars)
 
         var loc = start
         while loc < end {
@@ -341,6 +403,10 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
             if next <= loc { break }
             loc = next
         }
+
+        // Record the band we actually painted so subsequent scroll ticks that
+        // stay within it can short-circuit.
+        paintedRange = paintChars
     }
 
     /// Colours the declared-symbol identifiers on one line, but only in the

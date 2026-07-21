@@ -23,6 +23,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     private let observerHub = TextStorageObserverHub()
     private var highlightEngine: HighlightEngine!
 
+    /// Adapts `allowsNonContiguousLayout` to the document size (eager layout for
+    /// small files → smooth scrolling; noncontiguous for large files → memory
+    /// budget). Registered on the observer hub so edits that cross the threshold
+    /// flip the flag.
+    private var layoutModeController: LayoutModeController!
+
     /// Prefix-completion driver: indexes the document (debounced), scans symbols
     /// and drives the suggestion popup. Module-gated on `module.completion`.
     private var completionController: CompletionController!
@@ -75,6 +81,17 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let engine = HighlightEngine(textView: textView, scrollView: scrollView)
         observerHub.add(engine)
         self.highlightEngine = engine
+
+        // Adaptive layout mode: a fresh window is an empty (small) document, so
+        // it starts with eager/contiguous layout. `load(url:)` re-pins it before
+        // inserting text; edits that cross the threshold flip it via the hub.
+        if let layoutManager = textView.layoutManager {
+            let modeController = LayoutModeController(
+                layoutManager: layoutManager,
+                initialLength: (textView.string as NSString).length)
+            observerHub.add(modeController)
+            self.layoutModeController = modeController
+        }
 
         // Prefix completion: shares the observer hub for edit notifications and
         // routes keys through the text view's completion hook. Module-gated.
@@ -163,11 +180,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         scrollView.autohidesScrollers = true
 
         let textView = EditorTextView()
-        // Noncontiguous layout keeps TextKit from generating glyphs/line
-        // fragments for the whole document on open — without it, opening a
-        // 10 MB file laid out everything eagerly and blew the memory budget
-        // (97 MB measured vs the 50 MB ceiling; see mem-benchmark).
-        textView.layoutManager?.allowsNonContiguousLayout = true
+        // `allowsNonContiguousLayout` is now set adaptively by `LayoutModeController`
+        // from the document length (see LayoutMode.swift): eager layout for small
+        // files so fast scrolling never lags, noncontiguous for large files to
+        // hold the memory budget. Left at the manager's default here; the
+        // controller pins it once the window's length is known.
         textView.isRichText = false
         textView.allowsUndo = true
         textView.font = .monospacedSystemFont(ofSize: EditorFontSettings().fontSize, weight: .regular)
@@ -211,6 +228,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     public func load(url: URL) {
         do {
             let text = try documentController.load(from: url)
+            // Pin the layout mode from the document size *before* inserting the
+            // text, so a large file is never laid out eagerly even momentarily.
+            layoutModeController?.setLength((text as NSString).length)
             textView.string = text
 
             // Loading a file resets any prior manual override / detection.
