@@ -11,6 +11,11 @@ public enum TokenKind: Equatable {
     case type
     case property
     case punctuation
+    /// An in-document function/method name (declared with `def`, `function`,
+    /// an arrow binding, or matching the brace-language call heuristic).
+    case symbolFunction
+    /// An in-document variable / binding name.
+    case symbolVariable
     case plain
 }
 

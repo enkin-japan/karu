@@ -12,10 +12,14 @@ public struct HighlightTheme {
         case .string:      return .systemRed
         case .number:      return .systemBlue
         case .comment:     return .systemGreen
-        case .type:        return .systemOrange
-        case .property:    return .systemTeal
-        case .punctuation: return .secondaryLabelColor
-        case .plain:       return nil
+        case .type:           return .systemOrange
+        case .property:       return .systemTeal
+        case .punctuation:    return .secondaryLabelColor
+        // In-document semantic symbols: indigo/brown chosen for good separation
+        // from the five syntax colours above (purple/red/blue/green/orange).
+        case .symbolFunction: return .systemIndigo
+        case .symbolVariable: return .systemBrown
+        case .plain:          return nil
         }
     }
 }
@@ -55,6 +59,17 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// the module is disabled or no language applies to the current file.
     private var language: LanguageDefinition?
 
+    /// Releasable runtime state: in-document declared symbols (functions /
+    /// types / variables), coloured in the gaps the language rules leave
+    /// uncoloured. Rebuilt on the edit-debounce tick and on language change;
+    /// dropped together with `language` when the module is switched off, so it
+    /// is part of the `isRuntimeStateReleased` guarantee.
+    private var symbolTable: WordIndex.SymbolTable?
+
+    /// A single compiled identifier matcher, reused across every symbol pass.
+    // swiftlint:disable:next force_try
+    private static let identifierRegex = try! NSRegularExpression(pattern: #"[A-Za-z_]\w*"#)
+
     /// Whether the `highlight` module is currently on.
     private var moduleEnabled: Bool
 
@@ -66,10 +81,10 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
 
     // MARK: - Queryable state (for tests / diagnostics)
 
-    /// True when no runtime highlight state is held — either the module is off
-    /// or no language is active. When the module is disabled this is guaranteed
-    /// true (the acceptance-criteria "released" state).
-    public var isRuntimeStateReleased: Bool { language == nil }
+    /// True when no runtime highlight state is held — neither a compiled
+    /// language nor a scanned symbol table. When the module is disabled this is
+    /// guaranteed true (the acceptance-criteria "released" state).
+    public var isRuntimeStateReleased: Bool { language == nil && symbolTable == nil }
 
     /// Whether the `highlight` module is enabled.
     public var isModuleEnabled: Bool { moduleEnabled }
@@ -172,6 +187,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     private func rebuildLanguage() {
         guard moduleEnabled else {
             language = nil
+            symbolTable = nil
             return
         }
         if let id = pinnedIdentifier {
@@ -181,6 +197,23 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         } else {
             language = nil
         }
+        rebuildSymbolTable()
+    }
+
+    /// Rescans the whole document for declared symbols for the active language.
+    ///
+    /// This is a single regex pass over `textView.string`; even for a 10 MB
+    /// document that is the same order of work the completion module already
+    /// performs on every edit (a debounced full scan), so it is acceptable
+    /// here. It runs only on the 0.07 s edit-debounce tick and on language
+    /// change — never per scroll frame — so viewport panning stays cheap.
+    private func rebuildSymbolTable() {
+        guard moduleEnabled, let language, let textView else {
+            symbolTable = nil
+            return
+        }
+        symbolTable = WordIndex.symbolTable(text: textView.string,
+                                            languageIdentifier: language.identifier)
     }
 
     // MARK: - Notifications
@@ -207,6 +240,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         pendingHighlight?.cancel()
         pendingHighlight = nil
         language = nil
+        symbolTable = nil
         removeAllForegroundColour()
     }
 
@@ -230,7 +264,12 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
             highlightVisibleRange()
             return
         }
-        let item = DispatchWorkItem { [weak self] in self?.highlightVisibleRange() }
+        // The debounced tick is an edit; refresh the symbol table (once per
+        // debounce, not per scroll) before repainting the viewport.
+        let item = DispatchWorkItem { [weak self] in
+            self?.rebuildSymbolTable()
+            self?.highlightVisibleRange()
+        }
         pendingHighlight = item
         DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: item)
     }
@@ -279,7 +318,8 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         while loc < end {
             let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
             let lineString = ns.substring(with: lineRange)
-            for token in language.tokenize(line: lineString) {
+            let tokens = language.tokenize(line: lineString)
+            for token in tokens {
                 guard let color = theme.color(for: token.kind) else { continue }
                 let absolute = NSRange(location: lineRange.location + token.range.location,
                                        length: token.range.length)
@@ -287,9 +327,71 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
                                                     value: color,
                                                     forCharacterRange: absolute)
             }
+            // In-document symbol colouring runs *after* the language rules and
+            // only in the spans they left uncovered, so string / comment /
+            // keyword colours always win over symbol colours.
+            if let symbolTable, !symbolTable.isEmpty {
+                colourSymbols(inLine: lineString,
+                              lineLocation: lineRange.location,
+                              ruleTokens: tokens,
+                              table: symbolTable,
+                              layoutManager: layoutManager)
+            }
             let next = lineRange.location + lineRange.length
             if next <= loc { break }
             loc = next
+        }
+    }
+
+    /// Colours the declared-symbol identifiers on one line, but only in the
+    /// character gaps left uncovered by the language's own rule tokens — so a
+    /// name inside a string / comment / keyword keeps that colour. Each gap is
+    /// scanned for `[A-Za-z_]\w*` identifiers, coloured by their category:
+    /// functions → `.symbolFunction`, types → `.type` (reused), variables →
+    /// `.symbolVariable`.
+    private func colourSymbols(inLine line: String,
+                               lineLocation: Int,
+                               ruleTokens: [(range: NSRange, kind: TokenKind)],
+                               table: WordIndex.SymbolTable,
+                               layoutManager: NSLayoutManager) {
+        let ns = line as NSString
+        let length = ns.length
+        guard length > 0 else { return }
+
+        // Rule tokens are non-overlapping and produced in ascending order by
+        // `tokenize(line:)`; scan the complement (the gaps between them).
+        var pos = 0
+        func scanGap(_ gap: NSRange) {
+            guard gap.length > 0 else { return }
+            Self.identifierRegex.enumerateMatches(in: line, range: gap) { match, _, _ in
+                guard let r = match?.range else { return }
+                let word = ns.substring(with: r)
+                let color: NSColor?
+                if table.functions.contains(word) {
+                    color = theme.color(for: .symbolFunction)
+                } else if table.types.contains(word) {
+                    color = theme.color(for: .type)
+                } else if table.variables.contains(word) {
+                    color = theme.color(for: .symbolVariable)
+                } else {
+                    color = nil
+                }
+                guard let color else { return }
+                layoutManager.addTemporaryAttribute(
+                    .foregroundColor, value: color,
+                    forCharacterRange: NSRange(location: lineLocation + r.location,
+                                               length: r.length))
+            }
+        }
+
+        for token in ruleTokens {
+            if token.range.location > pos {
+                scanGap(NSRange(location: pos, length: token.range.location - pos))
+            }
+            pos = max(pos, token.range.location + token.range.length)
+        }
+        if pos < length {
+            scanGap(NSRange(location: pos, length: length - pos))
         }
     }
 }

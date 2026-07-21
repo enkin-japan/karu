@@ -48,6 +48,36 @@ public struct WordIndex {
 
     // MARK: - Lightweight symbol scan
 
+    /// A document's declared names, split into the three categories the
+    /// highlighter colours (and whose union the completion module ranks). This
+    /// is the classified result of a rough, single-pass regex scan — not a
+    /// parser — so a name may occasionally land in the wrong bucket; the scan
+    /// errs toward *not* colouring rather than mis-colouring where cheap.
+    public struct SymbolTable: Equatable {
+        public let functions: Set<String>
+        public let types: Set<String>
+        public let variables: Set<String>
+
+        public init(functions: Set<String> = [],
+                    types: Set<String> = [],
+                    variables: Set<String> = []) {
+            self.functions = functions
+            self.types = types
+            self.variables = variables
+        }
+
+        /// The empty table (unsupported languages, or a released module).
+        public static let empty = SymbolTable()
+
+        /// Flat union of all three categories — the shape the completion
+        /// module's ranking still consumes via `symbols(text:…)`.
+        public var all: Set<String> { functions.union(types).union(variables) }
+
+        public var isEmpty: Bool {
+            functions.isEmpty && types.isEmpty && variables.isEmpty
+        }
+    }
+
     /// Control-flow words that look like a call (`if (…)`, `while (…)`) in the
     /// brace languages' `name(` heuristic but are not user-declared symbols.
     private static let cLikeNonSymbols: Set<String> = [
@@ -55,30 +85,50 @@ public struct WordIndex {
         "else", "do", "new", "delete",
     ]
 
-    /// Extracts declared names (functions, classes, variables) from `text` for
-    /// the given language, in one pass. This is a deliberately rough regex scan,
-    /// not a parser: it is merged with the word index to give declaration names
-    /// a rank boost. Unsupported languages return an empty set.
-    public static func symbols(text: String, languageIdentifier: String) -> Set<String> {
+    /// Extracts and **classifies** declared names (functions, types, variables)
+    /// from `text` for the given language, in one pass per pattern. This is a
+    /// deliberately rough regex scan, not a parser: it feeds both the highlight
+    /// engine's in-document symbol colouring and (via `symbols(text:…)`) the
+    /// completion ranking. Unsupported languages return `.empty`.
+    public static func symbolTable(text: String, languageIdentifier: String) -> SymbolTable {
         switch languageIdentifier {
         case "python":
-            return Set(captures(#"\bdef\s+(\w+)"#, in: text)
-                     + captures(#"\bclass\s+(\w+)"#, in: text))
+            let functions = Set(captures(#"\bdef\s+(\w+)"#, in: text))
+            let types = Set(captures(#"\bclass\s+(\w+)"#, in: text))
+            // Module-level / plain assignments `name = …`, excluding the `==`
+            // comparison. `(?m)` anchors `^` to each line, not just the string.
+            var variables = Set(captures(#"(?m)^\s*(\w+)\s*=(?!=)"#, in: text))
+            variables.subtract(functions)
+            variables.subtract(types)
+            return SymbolTable(functions: functions, types: types, variables: variables)
 
         case "javascript", "typescript":
-            return Set(captures(#"\bfunction\s+(\w+)"#, in: text)
-                     + captures(#"\bclass\s+(\w+)"#, in: text)
-                     + captures(#"\b(?:const|let|var)\s+(\w+)"#, in: text))
+            var functions = Set(captures(#"\bfunction\s+(\w+)"#, in: text))
+            let types = Set(captures(#"\bclass\s+(\w+)"#, in: text))
+            var variables = Set(captures(#"\b(?:const|let|var)\s+(\w+)"#, in: text))
+            // Arrow-function bindings (`const f = (…) => …`, `g = async (…) =>`)
+            // read as functions, not plain variables.
+            let arrows = Set(captures(#"\b(\w+)\s*=\s*(?:async\s*)?\("#, in: text))
+            functions.formUnion(arrows)
+            variables.subtract(arrows)
+            return SymbolTable(functions: functions, types: types, variables: variables)
 
         case "c", "cpp", "java", "csharp":
-            let funcs = captures(#"(\w+)\s*\("#, in: text)
-                .filter { !cLikeNonSymbols.contains($0) }
-            let types = captures(#"\b(?:class|struct)\s+(\w+)"#, in: text)
-            return Set(funcs + types)
+            let functions = Set(captures(#"(\w+)\s*\("#, in: text)
+                .filter { !cLikeNonSymbols.contains($0) })
+            let types = Set(captures(#"\b(?:class|struct)\s+(\w+)"#, in: text))
+            return SymbolTable(functions: functions, types: types)
 
         default:
-            return []
+            return .empty
         }
+    }
+
+    /// Flat set of every declared name, for the completion module's ranking.
+    /// Kept as the union of `symbolTable(text:…)` so `CompletionController`
+    /// stays unchanged while the highlighter gets the classified view.
+    public static func symbols(text: String, languageIdentifier: String) -> Set<String> {
+        symbolTable(text: text, languageIdentifier: languageIdentifier).all
     }
 
     /// Collects capture group 1 of every match of `pattern` in `text`.
