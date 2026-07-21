@@ -93,6 +93,16 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T9.2 | 修复 T8.3 引入的大文件内存回归：LineEnding.detect 的 `Array(text.unicodeScalars)` 物化整文档（10 MB 文件 +40 MB 常驻，基准 99 MB 爆表）→ 改流式单遍扫描 O(1) 内存 | Core/TextModel/LineEnding.swift | main | 基准 large.py 回到 ≤65 | ✅ 99→59 MB；worktree 二分定位 |
 | T9.3 | 视觉冒烟深色模式误报：夜间系统自动深色使"亮色纸面>50%"阈值失效 → 快照钩子强制 aqua 外观，像素判定确定化 | App/AppDelegate.swift | main | 深色系统下 VISUAL OK | ✅ |
 
+## M10 开源前 bug 修复（2026-07-21 用户反馈第六轮）
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T10.1 | 标题栏透明致标题与文本重叠（macOS 26 Liquid Glass）：内容 stack 锚定 contentLayoutGuide + 显式不透明标题栏；快照钩子增强（整窗捕捉/外观/滚动参数）但未能静态复现，待用户实测确认 | Editor/EditorWindowController.swift, App/AppDelegate.swift | main | 用户复测不再重叠 | ✅ 防护已上，待用户确认 |
+| T10.2 | 内置函数（print/open 等 builtins）高亮 + 变量声明模式补漏 + VS Code Dark/Light Modern 风格配色（动态外观） | Highlight/, Completion/WordIndex.swift | implementer | builtin 染色测试；深浅色快照 | 🔄 |
+| T10.3 | Format Document 快捷键 ⌃⇧F → ⌥⇧F（VS Code 同款） | App/MainMenu.swift | main | 菜单显示 ⌥⇧F | ✅ |
+| T10.4 | iCloud 未下载文件：双击触发下载但不打开、再次双击开双窗 → 下载中窗口 + 轮询完成自动载入 + 同 URL 去重 | App/AppDelegate.swift, Editor/ | implementer | 去重/占位名换算单测；双击两次 windows=1 | 🔄 |
+| T10.5 | 开源准备：MIT LICENSE、git remote（github.com/enkin-japan/karu）、README、首个 Release | LICENSE, README.md | main | push 成功、Release 挂 DMG | 🔄 LICENSE 就绪 |
+
 ## 依赖关系
 
 T1.1 → T2.1 → T2.2/T2.3/T2.4（可并行）→ T3.1 → T3.2/T3.3（可并行）→ T3.4/T3.5
