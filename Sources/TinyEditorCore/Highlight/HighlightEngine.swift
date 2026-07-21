@@ -117,10 +117,29 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// Points the engine at the language owning `ext` (the file's extension).
     /// Passing `nil` or an unknown extension leaves the engine idle. Remembers
     /// the extension so the language can be rebuilt after a module toggle.
-    public func setLanguage(fileExtension ext: String?) {
+    ///
+    /// Returns the resolved language identifier (e.g. `"python"`) so the caller
+    /// can drive indent width from it without building the definition a second
+    /// time — or `nil` if the extension maps to no registered language.
+    @discardableResult
+    public func setLanguage(fileExtension ext: String?) -> String? {
         languageExtension = ext?.isEmpty == true ? nil : ext
         rebuildLanguage()
         scheduleHighlight(debounced: false)
+        return currentLanguageIdentifier
+    }
+
+    /// The identifier of the language resolved for the current file (e.g.
+    /// `"markdown"`), independent of module state — used to drive indent width.
+    ///
+    /// When the module is enabled the identifier is read from the already-built
+    /// definition (no extra work). When the module is disabled the definition is
+    /// not retained, so this resolves it once on demand to read the identifier;
+    /// that stays lazy (nothing is built until a file actually asks for it).
+    public var currentLanguageIdentifier: String? {
+        if let language { return language.identifier }
+        guard let ext = languageExtension else { return nil }
+        return LanguageRegistry.definition(forExtension: ext)?.identifier
     }
 
     /// Resolves `languageExtension` into a compiled definition, but only while

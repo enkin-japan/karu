@@ -112,12 +112,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             let text = try documentController.load(from: url)
             textView.string = text
 
-            // Detect the language by file extension: drive both the indent
-            // width (via languageIdentifier) and the highlight engine.
+            // Detect the language by file extension: point the highlight engine
+            // at it and reuse the identifier it resolves to drive indent width.
+            // Falls back to the lowercased extension when the language is
+            // unregistered. `setLanguage` builds the definition at most once.
             let ext = url.pathExtension
-            let identifier = LanguageRegistry.definition(forExtension: ext)?.identifier
+            let identifier = highlightEngine.setLanguage(fileExtension: ext)
             (textView as? EditorTextView)?.languageIdentifier = identifier ?? ext.lowercased()
-            highlightEngine.setLanguage(fileExtension: ext)
 
             // Loading fresh content should not go through the undo stack, and
             // the didChange notification only fires for user edits, so we

@@ -102,13 +102,26 @@ public struct LanguageDefinition {
 /// becomes the sole owner, so when the `highlight` module is switched off and
 /// the engine drops its reference, the definition and its compiled regexes are
 /// fully released — satisfying the "disabled ⇒ ≈ 0 resident" rule (§2.5). A
-/// rebuild costs only a handful of tiny `NSRegularExpression`s. Only JSON is
-/// registered for T3.1.
+/// rebuild costs only a handful of tiny `NSRegularExpression`s. Batch 1
+/// (T3.2) registers Markdown, JSON(L), Python, JS/Node, TypeScript, HTML, CSS.
 public enum LanguageRegistry {
     /// Extension (lowercased) → factory closure. Referencing this map does not
     /// build any definition; only calling a closure does.
     private static let factories: [String: () -> LanguageDefinition] = [
         "json": JSONLanguage.make,
+        "jsonl": JSONLLanguage.make,
+        "ndjson": JSONLLanguage.make,
+        "md": MarkdownLanguage.make,
+        "markdown": MarkdownLanguage.make,
+        "py": PythonLanguage.make,
+        "pyw": PythonLanguage.make,
+        "js": JavaScriptLanguage.make,
+        "mjs": JavaScriptLanguage.make,
+        "cjs": JavaScriptLanguage.make,
+        "ts": TypeScriptLanguage.make,
+        "html": HTMLLanguage.make,
+        "htm": HTMLLanguage.make,
+        "css": CSSLanguage.make,
     ]
 
     /// Extensions that have a registered definition, without building any of
