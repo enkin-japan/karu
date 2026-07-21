@@ -77,6 +77,44 @@ enum MainMenu {
                                            keyEquivalent: "f")
         formatDoc.keyEquivalentModifierMask = [.control, .shift]
 
+        // Language menu: Auto (content/extension detection) plus a manual
+        // override for each supported language. Targets the first responder
+        // (EditorWindowController); check state is driven by validateMenuItem.
+        let languageMenuItem = NSMenuItem()
+        mainMenu.addItem(languageMenuItem)
+        let languageMenu = NSMenu(title: "Language")
+        languageMenuItem.submenu = languageMenu
+        let autoItem = languageMenu.addItem(withTitle: "Auto",
+                                            action: #selector(EditorWindowController.selectAutoLanguage(_:)),
+                                            keyEquivalent: "")
+        autoItem.state = .on
+        languageMenu.addItem(.separator())
+        // (title, identifier). The empty identifier is Plain Text (no highlight).
+        let languages: [(String, String)] = [
+            ("Plain Text", ""),
+            ("JSON", "json"),
+            ("JSONL", "jsonl"),
+            ("Markdown", "markdown"),
+            ("Python", "python"),
+            ("JavaScript", "javascript"),
+            ("TypeScript", "typescript"),
+            ("HTML", "html"),
+            ("CSS", "css"),
+            ("C", "c"),
+            ("C++", "cpp"),
+            ("C#", "csharp"),
+            ("Java", "java"),
+            ("Bash", "bash"),
+            ("SQL", "sql"),
+            ("XML", "xml"),
+        ]
+        for (title, identifier) in languages {
+            let item = languageMenu.addItem(withTitle: title,
+                                            action: #selector(EditorWindowController.selectLanguage(_:)),
+                                            keyEquivalent: "")
+            item.representedObject = identifier
+        }
+
         return mainMenu
     }
 }

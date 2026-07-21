@@ -166,4 +166,35 @@ public enum LanguageRegistry {
         guard let factory = factories[ext.lowercased()] else { return nil }
         return factory()
     }
+
+    /// Identifier (e.g. `"python"`) → factory. Keyed by the stable language id
+    /// each definition declares, so a language chosen from the Language menu or
+    /// inferred by the content sniffer resolves without building the wrong
+    /// definitions. One representative factory per identifier keeps this lazy:
+    /// only the requested language is ever built.
+    private static let identifierFactories: [String: () -> LanguageDefinition] = [
+        "json": JSONLanguage.make,
+        "jsonl": JSONLLanguage.make,
+        "markdown": MarkdownLanguage.make,
+        "python": PythonLanguage.make,
+        "javascript": JavaScriptLanguage.make,
+        "typescript": TypeScriptLanguage.make,
+        "html": HTMLLanguage.make,
+        "css": CSSLanguage.make,
+        "c": CLanguage.make,
+        "cpp": CppLanguage.make,
+        "csharp": CSharpLanguage.make,
+        "java": JavaLanguage.make,
+        "bash": BashLanguage.make,
+        "sql": SQLLanguage.make,
+        "xml": XMLPlistLanguage.make,
+    ]
+
+    /// Returns a freshly built definition whose `identifier` matches `id`
+    /// (case-insensitive), or `nil` for an unknown identifier — building only
+    /// the matched language.
+    public static func definition(forIdentifier id: String) -> LanguageDefinition? {
+        guard let factory = identifierFactories[id.lowercased()] else { return nil }
+        return factory()
+    }
 }

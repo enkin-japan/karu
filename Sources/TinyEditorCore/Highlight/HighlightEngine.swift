@@ -46,6 +46,11 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// a language. Survives module toggles so the language can be rebuilt.
     private var languageExtension: String?
 
+    /// Lightweight, always-retained config: a language identifier pinned
+    /// explicitly (from the Language menu or the content sniffer). Takes
+    /// precedence over `languageExtension`; survives module toggles.
+    private var pinnedIdentifier: String?
+
     /// Releasable runtime state: the compiled language definition. `nil` when
     /// the module is disabled or no language applies to the current file.
     private var language: LanguageDefinition?
@@ -124,6 +129,24 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     @discardableResult
     public func setLanguage(fileExtension ext: String?) -> String? {
         languageExtension = ext?.isEmpty == true ? nil : ext
+        pinnedIdentifier = nil
+        rebuildLanguage()
+        scheduleHighlight(debounced: false)
+        return currentLanguageIdentifier
+    }
+
+    /// Points the engine at the language whose `identifier` is `id` (e.g. from
+    /// the Language menu or the content sniffer). Passing `nil` or an empty /
+    /// unknown identifier leaves the engine idle (plain text). Takes precedence
+    /// over any previously set file extension and is remembered so the language
+    /// survives a module toggle.
+    ///
+    /// Returns the resolved identifier, or `nil` if it maps to no registered
+    /// language.
+    @discardableResult
+    public func setLanguage(identifier id: String?) -> String? {
+        pinnedIdentifier = (id?.isEmpty == true) ? nil : id
+        languageExtension = nil
         rebuildLanguage()
         scheduleHighlight(debounced: false)
         return currentLanguageIdentifier
@@ -138,18 +161,26 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// that stays lazy (nothing is built until a file actually asks for it).
     public var currentLanguageIdentifier: String? {
         if let language { return language.identifier }
+        if let id = pinnedIdentifier { return LanguageRegistry.definition(forIdentifier: id)?.identifier }
         guard let ext = languageExtension else { return nil }
         return LanguageRegistry.definition(forExtension: ext)?.identifier
     }
 
-    /// Resolves `languageExtension` into a compiled definition, but only while
-    /// the module is enabled. Clears the definition otherwise.
+    /// Resolves the pinned identifier (preferred) or the file extension into a
+    /// compiled definition, but only while the module is enabled. Clears the
+    /// definition otherwise.
     private func rebuildLanguage() {
-        guard moduleEnabled, let ext = languageExtension else {
+        guard moduleEnabled else {
             language = nil
             return
         }
-        language = LanguageRegistry.definition(forExtension: ext)
+        if let id = pinnedIdentifier {
+            language = LanguageRegistry.definition(forIdentifier: id)
+        } else if let ext = languageExtension {
+            language = LanguageRegistry.definition(forExtension: ext)
+        } else {
+            language = nil
+        }
     }
 
     // MARK: - Notifications

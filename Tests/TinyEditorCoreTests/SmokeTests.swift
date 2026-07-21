@@ -3,6 +3,6 @@ import Testing
 
 @MainActor
 @Test func coreModuleLinks() {
-    // App, File, Edit, Format.
-    #expect(MainMenu.build().items.count == 4)
+    // App, File, Edit, Format, Language.
+    #expect(MainMenu.build().items.count == 5)
 }

@@ -28,6 +28,15 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// `LineIndex` — and thus line numbers / highlighting — stay correct.
     private var foldingController: FoldingController!
 
+    /// True once the user has manually picked a language from the Language menu.
+    /// Suppresses all automatic detection until they choose Auto again.
+    private var userOverrodeLanguage = false
+
+    /// True once automatic content sniffing has landed on a language (or a file
+    /// extension resolved one). Prevents re-sniffing an untitled buffer on every
+    /// keystroke after it has already been classified.
+    private var didAutoDetectLanguage = false
+
     public convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -143,12 +152,21 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             let text = try documentController.load(from: url)
             textView.string = text
 
+            // Loading a file resets any prior manual override / detection.
+            userOverrodeLanguage = false
+            didAutoDetectLanguage = false
+
             // Detect the language by file extension: point the highlight engine
             // at it and reuse the identifier it resolves to drive indent width.
-            // Falls back to the lowercased extension when the language is
-            // unregistered. `setLanguage` builds the definition at most once.
+            // If the extension resolves nothing (unknown / no extension), fall
+            // back to sniffing the file's content. `setLanguage` builds the
+            // definition at most once.
             let ext = url.pathExtension
-            let identifier = highlightEngine.setLanguage(fileExtension: ext)
+            var identifier = highlightEngine.setLanguage(fileExtension: ext)
+            if identifier == nil, let sniffed = LanguageSniffer.sniff(text) {
+                identifier = highlightEngine.setLanguage(identifier: sniffed)
+                didAutoDetectLanguage = true
+            }
             (textView as? EditorTextView)?.languageIdentifier = identifier ?? ext.lowercased()
 
             // Point completion at the same language (for its keywords / symbol
@@ -173,6 +191,28 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         if !wasDirty {
             window?.isDocumentEdited = true
         }
+        maybeAutoDetectLanguage()
+    }
+
+    /// Sniffs the buffer for a language once it has accumulated enough content,
+    /// so an untitled / pasted document highlights itself without the user
+    /// picking a language. Runs only while no language is set and the user has
+    /// not chosen one manually; stops after a successful classification.
+    private func maybeAutoDetectLanguage() {
+        guard !userOverrodeLanguage, !didAutoDetectLanguage,
+              let editorView = textView as? EditorTextView,
+              editorView.languageIdentifier.isEmpty else { return }
+
+        let text = textView.string
+        let charCount = (text as NSString).length
+        let newlineCount = text.reduce(0) { $1 == "\n" ? $0 + 1 : $0 }
+        // Wait for ≥120 characters or ≥3 lines before guessing.
+        guard charCount >= 120 || newlineCount >= 2 else { return }
+
+        guard let identifier = LanguageSniffer.sniff(text) else { return }
+        highlightEngine.setLanguage(identifier: identifier)
+        editorView.languageIdentifier = identifier
+        didAutoDetectLanguage = true
     }
 
     private func updateWindowState() {
@@ -254,6 +294,42 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
     }
 
+    // MARK: - Language selection (first-responder targets)
+
+    /// Manual language override from the Language menu. The item's
+    /// `representedObject` is the language identifier (empty ⇒ Plain Text).
+    @objc public func selectLanguage(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let identifier = item.representedObject as? String else { return }
+        userOverrodeLanguage = true
+        didAutoDetectLanguage = true
+        highlightEngine.setLanguage(identifier: identifier)
+        (textView as? EditorTextView)?.languageIdentifier = identifier
+    }
+
+    /// Clears any manual override and re-runs automatic detection immediately:
+    /// by file extension when the document has a URL, otherwise by content.
+    @objc public func selectAutoLanguage(_ sender: Any?) {
+        userOverrodeLanguage = false
+        didAutoDetectLanguage = false
+
+        if let url = documentController.fileURL {
+            let ext = url.pathExtension
+            var identifier = highlightEngine.setLanguage(fileExtension: ext)
+            if identifier == nil, let sniffed = LanguageSniffer.sniff(textView.string) {
+                identifier = highlightEngine.setLanguage(identifier: sniffed)
+                didAutoDetectLanguage = true
+            }
+            (textView as? EditorTextView)?.languageIdentifier = identifier ?? ext.lowercased()
+        } else {
+            // Untitled: reset to plain, then let the sniffer re-classify if the
+            // buffer already holds enough content.
+            highlightEngine.setLanguage(identifier: nil)
+            (textView as? EditorTextView)?.languageIdentifier = ""
+            maybeAutoDetectLanguage()
+        }
+    }
+
     // MARK: - Menu validation
 
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -261,6 +337,16 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             guard ModuleSettings().isEnabled(.format) else { return false }
             let language = (textView as? EditorTextView)?.languageIdentifier ?? ""
             return FormatDispatch.supports(languageIdentifier: language)
+        }
+        if menuItem.action == #selector(selectAutoLanguage(_:)) {
+            menuItem.state = userOverrodeLanguage ? .off : .on
+            return true
+        }
+        if menuItem.action == #selector(selectLanguage(_:)) {
+            let identifier = (menuItem.representedObject as? String) ?? ""
+            let current = (textView as? EditorTextView)?.languageIdentifier ?? ""
+            menuItem.state = (userOverrodeLanguage && identifier == current) ? .on : .off
+            return true
         }
         return true
     }
