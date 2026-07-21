@@ -90,6 +90,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         textView.layoutManager?.delegate = folding
         observerHub.add(folding)
         gutter.foldProvider = folding
+        // The editor paints the collapsed-block background; give it the same
+        // fold provider and shared LineIndex (for header-line geometry).
+        (textView as? EditorTextView)?.foldProvider = folding
+        (textView as? EditorTextView)?.lineIndex = lineIndex
         self.foldingController = folding
 
         // Find bar shares the window's LineIndex; it sits above the editor in a

@@ -25,8 +25,9 @@ public final class GutterView: NSRulerView, TextStorageObserving {
     /// Horizontal padding inside the ruler.
     private let horizontalPadding: CGFloat = 6
 
-    /// Width reserved on the left for fold arrows.
-    private let arrowColumnWidth: CGFloat = 12
+    /// Width reserved on the left for fold arrows. Widened (12 → 16) so the
+    /// solid-triangle controls read clearly at a glance.
+    private let arrowColumnWidth: CGFloat = 16
 
     /// Folding layer queried for arrow state and hidden lines. Weak: owned by
     /// the window controller. When `nil` the gutter behaves exactly as before
@@ -153,12 +154,14 @@ public final class GutterView: NSRulerView, TextStorageObserving {
             // Hidden (folded-away) lines produce zero-height fragments; don't
             // draw their numbers.
             if foldProvider?.isLineHidden(lineNumber) == true { return }
+            let state = foldProvider?.foldState(atLine: lineNumber) ?? .none
             drawNumber(lineNumber,
                        atY: rect.minY,
                        height: rect.height,
-                       isCurrent: lineNumber == currentLine)
-            if let provider = foldProvider {
-                drawArrow(provider.foldState(atLine: lineNumber), atY: rect.minY, height: rect.height)
+                       isCurrent: lineNumber == currentLine,
+                       isFoldedHeader: state == .folded)
+            if foldProvider != nil {
+                drawArrow(state, atY: rect.minY, height: rect.height)
             }
         }
     }
@@ -197,25 +200,46 @@ public final class GutterView: NSRulerView, TextStorageObserving {
         }
     }
 
-    /// Draws the fold control (▾ expanded / ▸ folded) in the left arrow column.
+    /// Draws the fold control as a solid ~8 pt triangle in the left arrow
+    /// column: a down-pointing ▼ for an expanded header (muted), a right-pointing
+    /// ▶ for a folded header (accent-coloured so the collapsed state stands out).
+    ///
+    /// Trade-off: the control is always shown for foldable lines rather than only
+    /// on hover. Hover-reveal would need a tracking area and per-line hit state;
+    /// the always-on control is simpler and, at this size, unobtrusive.
     private func drawArrow(_ state: FoldArrow, atY y: CGFloat, height: CGFloat) {
-        let glyph: String
+        let color: NSColor
         switch state {
         case .none:     return
-        case .foldable: glyph = "\u{25BE}" // ▾
-        case .folded:   glyph = "\u{25B8}" // ▸
+        case .foldable: color = .secondaryLabelColor
+        case .folded:   color = .controlAccentColor
         }
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 9),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        let text = glyph as NSString
-        let size = text.size(withAttributes: attrs)
-        let drawRect = NSRect(x: (arrowColumnWidth - size.width) / 2,
-                              y: y + (height - size.height) / 2,
-                              width: size.width,
-                              height: size.height)
-        text.draw(in: drawRect, withAttributes: attrs)
+
+        let cx = arrowColumnWidth / 2
+        let cy = y + height / 2
+        // In a flipped ruler +y is downward; keep the visual orientation correct
+        // regardless of the view's flip state.
+        let down: CGFloat = isFlipped ? 1 : -1
+        let path = NSBezierPath()
+        switch state {
+        case .none:
+            return
+        case .foldable:
+            // ▼ apex pointing down, base on top.
+            let w: CGFloat = 8, h: CGFloat = 5
+            path.move(to: NSPoint(x: cx - w / 2, y: cy - h / 2 * down))
+            path.line(to: NSPoint(x: cx + w / 2, y: cy - h / 2 * down))
+            path.line(to: NSPoint(x: cx, y: cy + h / 2 * down))
+        case .folded:
+            // ▶ apex pointing right, base on the left.
+            let w: CGFloat = 5, h: CGFloat = 8
+            path.move(to: NSPoint(x: cx - w / 2, y: cy - h / 2))
+            path.line(to: NSPoint(x: cx - w / 2, y: cy + h / 2))
+            path.line(to: NSPoint(x: cx + w / 2, y: cy))
+        }
+        path.close()
+        color.setFill()
+        path.fill()
     }
 
     // MARK: - Click handling
@@ -255,8 +279,15 @@ public final class GutterView: NSRulerView, TextStorageObserving {
         }
     }
 
-    private func drawNumber(_ number: Int, atY y: CGFloat, height: CGFloat, isCurrent: Bool) {
-        let color: NSColor = isCurrent ? .labelColor : .secondaryLabelColor
+    private func drawNumber(_ number: Int, atY y: CGFloat, height: CGFloat, isCurrent: Bool, isFoldedHeader: Bool = false) {
+        // A folded header's number is accent-coloured so the collapsed block is
+        // easy to spot; otherwise the current line is emphasised over the rest.
+        let color: NSColor
+        if isFoldedHeader {
+            color = .controlAccentColor
+        } else {
+            color = isCurrent ? .labelColor : .secondaryLabelColor
+        }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: numberFont,
             .foregroundColor: color,

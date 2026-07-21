@@ -213,6 +213,18 @@ public final class EditorTextView: NSTextView {
     /// cost beyond a nil / bool check.
     public weak var completionKeyHandler: CompletionKeyHandler?
 
+    /// Folding layer queried while drawing the collapsed-block background
+    /// highlight. Weak: owned by the window controller. When `nil` the editor
+    /// draws no fold decorations. Nothing is stored per line — the folded header
+    /// set is re-queried each draw (it is tiny), keeping to the "painted, not
+    /// resident" rule.
+    public weak var foldProvider: FoldStatusProviding?
+
+    /// Shared newline index, used only to map a folded header's 1-based line
+    /// number to its character offset so the background bar can be placed.
+    /// Weak: owned by the window controller / gutter.
+    public weak var lineIndex: LineIndex?
+
     /// Whether indent-rainbow blocks are drawn. Defaults from UserDefaults key
     /// `editor.indentRainbow` (on when unset). Toggling triggers a redraw.
     public var indentRainbowEnabled: Bool = IndentRainbow.defaultEnabled {
@@ -229,6 +241,8 @@ public final class EditorTextView: NSTextView {
     /// stored per line).
     public override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        // Fold highlights draw independently of the indent rainbow toggle.
+        drawFoldedHeaders(in: rect)
         guard indentRainbowEnabled,
               let layoutManager,
               let container = textContainer else { return }
@@ -276,6 +290,60 @@ public final class EditorTextView: NSTextView {
             let next = lineRange.location + lineRange.length
             if next <= loc { break } // guard against zero-length final line
             loc = next
+        }
+    }
+
+    /// Paints a faint accent-coloured bar across every currently-folded header
+    /// line intersecting `rect`, with a trailing "⋯ N" indicator (N = hidden
+    /// line count) just past the end of the header text. Viewport-only and
+    /// storage-free: the (tiny) folded-header set is re-queried each draw and
+    /// each bar is positioned from the shared `LineIndex` + layout manager;
+    /// nothing is retained. Same safe path as the indent rainbow — this is the
+    /// text view's own `drawBackground`, never a sibling view's `draw` override.
+    private func drawFoldedHeaders(in rect: NSRect) {
+        guard let provider = foldProvider,
+              let lineIndex,
+              let layoutManager,
+              textContainer != nil else { return }
+        let headers = provider.foldedHeaderLines()
+        guard !headers.isEmpty else { return }
+
+        let ns = string as NSString
+        guard ns.length > 0 else { return }
+        let origin = textContainerOrigin
+        let barColor = NSColor.controlAccentColor.withAlphaComponent(0.08)
+        let hintAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+
+        for header in headers where header >= 1 && header <= lineIndex.lineCount {
+            let lineStart = lineIndex.offsetRange(ofLine: header).lowerBound
+            // A folded header always has hidden lines below it, so it is never
+            // the final empty line; still guard defensively.
+            guard lineStart < ns.length else { continue }
+
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: lineStart)
+            let fragRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            var barRect = fragRect
+            barRect.origin.x = origin.x
+            barRect.origin.y += origin.y
+            guard barRect.intersects(rect) else { continue }
+
+            // Full-width bar.
+            barRect.origin.x = bounds.minX
+            barRect.size.width = bounds.width
+            barColor.setFill()
+            barRect.fill()
+
+            // "⋯ N" hint just past the header text.
+            let hidden = provider.hiddenLineCount(forHeader: header)
+            let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            let hint = "\u{22EF} \(hidden)" as NSString  // ⋯
+            let hintSize = hint.size(withAttributes: hintAttrs)
+            let hintX = usedRect.maxX + origin.x + 12
+            let hintY = fragRect.midY + origin.y - hintSize.height / 2
+            hint.draw(at: NSPoint(x: hintX, y: hintY), withAttributes: hintAttrs)
         }
     }
 

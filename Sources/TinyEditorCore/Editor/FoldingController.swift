@@ -22,6 +22,12 @@ public protocol FoldStatusProviding: AnyObject {
     func foldState(atLine line: Int) -> FoldArrow
     /// Toggles the fold whose header is `line`, if any.
     func toggleFold(atLine line: Int)
+    /// Header lines (1-based) of every region currently folded, so the editor
+    /// can paint their collapsed-block background. Empty when nothing is folded.
+    func foldedHeaderLines() -> [Int]
+    /// Number of lines hidden beneath the folded header `line` (0 when `line` is
+    /// not a folded header), used for the "⋯ N" collapsed-block indicator.
+    func hiddenLineCount(forHeader line: Int) -> Int
 }
 
 /// Owns code-folding state and implements it as an `NSLayoutManagerDelegate`.
@@ -97,6 +103,17 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
             return
         }
         applyFolds()
+    }
+
+    public func foldedHeaderLines() -> [Int] {
+        activeFolds.keys.sorted()
+    }
+
+    public func hiddenLineCount(forHeader line: Int) -> Int {
+        // A folded region hides `startLine + 1 ... endLine` (inclusive), so the
+        // count is simply the header-to-end line span.
+        guard let region = activeFolds[line] else { return 0 }
+        return region.endLine - region.startLine
     }
 
     // MARK: - Applying folds

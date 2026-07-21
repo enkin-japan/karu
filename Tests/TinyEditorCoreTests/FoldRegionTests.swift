@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import TinyEditorCore
@@ -184,4 +185,62 @@ private func scan(_ text: String) -> [FoldRegion] {
 @Test func foldRegionEquatable() {
     #expect(FoldRegion(startLine: 1, endLine: 3) == FoldRegion(startLine: 1, endLine: 3))
     #expect(FoldRegion(startLine: 1, endLine: 3) != FoldRegion(startLine: 1, endLine: 4))
+}
+
+// MARK: - FoldingController: folded-header queries (T7.3)
+
+/// Builds a `FoldingController` over a text view holding `text`, mirroring
+/// production wiring closely enough to exercise the fold-state queries.
+@MainActor
+private func makeController(_ text: String) -> FoldingController {
+    let textView = NSTextView()
+    textView.string = text
+    return FoldingController(textView: textView, lineIndex: LineIndex(text: text))
+}
+
+@MainActor
+@Test func foldedHeadersEmptyBeforeFolding() {
+    let c = makeController("def f():\n    a = 1\n    b = 2\nx = 3\n")
+    #expect(c.foldedHeaderLines() == [])
+    #expect(c.hiddenLineCount(forHeader: 1) == 0)
+}
+
+@MainActor
+@Test func foldingHeaderReportsHiddenCount() {
+    // def block: header line 1, hidden body lines 2..3.
+    let c = makeController("def f():\n    a = 1\n    b = 2\nx = 3\n")
+    c.toggleFold(atLine: 1)
+    #expect(c.foldedHeaderLines() == [1])
+    #expect(c.hiddenLineCount(forHeader: 1) == 2)
+    // A non-folded line reports nothing.
+    #expect(c.hiddenLineCount(forHeader: 2) == 0)
+}
+
+@MainActor
+@Test func unfoldingClearsHeaderState() {
+    let c = makeController("def f():\n    a = 1\n    b = 2\nx = 3\n")
+    c.toggleFold(atLine: 1)
+    c.toggleFold(atLine: 1)
+    #expect(c.foldedHeaderLines() == [])
+    #expect(c.hiddenLineCount(forHeader: 1) == 0)
+}
+
+@MainActor
+@Test func nestedFoldsReportSortedHeadersAndCounts() {
+    // class A { func f() { if x { y() } } } — regions (1,6), (2,5), (3,4).
+    let text = """
+    class A {
+        func f() {
+            if x {
+                y()
+            }
+        }
+    }
+    """
+    let c = makeController(text)
+    c.toggleFold(atLine: 2) // hides 3..5 -> 3 lines
+    c.toggleFold(atLine: 1) // hides 2..6 -> 5 lines
+    #expect(c.foldedHeaderLines() == [1, 2])
+    #expect(c.hiddenLineCount(forHeader: 1) == 5)
+    #expect(c.hiddenLineCount(forHeader: 2) == 3)
 }
