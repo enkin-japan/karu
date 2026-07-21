@@ -1,0 +1,81 @@
+# Karu（軽）
+
+[English](README.md) | [简体中文](README.zh-Hans.md) | **日本語**
+
+macOS 向けに、意図的に極小化されたネイティブのプレーンテキストエディタです。
+**アプリサイズ 1.4 MB、常駐メモリ約 30 MB、依存関係ゼロ。**
+
+Karu（軽）は、テキストエディタはほとんどコストをかけるべきではないという信念の
+もとに作られています。すべての機能は厳格なメモリ予算の審査を通過しなければ
+採用されず、収まらない機能は却下されます——軽自動車が軽量であり続けるのは、
+ルールでそう定められているからであるのと同じです。
+
+## 機能
+
+- 15 言語のシンタックスハイライト（Markdown、JSON/JSONL、Python、HTML、CSS、
+  JavaScript/TypeScript、C、C++、C#、Java、Bash、SQL、XML/plist）——表示領域のみ
+  レンダリング、VS Code Modern 風の配色、ライト・ダーク両対応
+- コードの折りたたみ、行番号、VS Code スタイルのインデントレインボー
+- 正規表現による検索と置換
+- 補完機能：キーワード、ドキュメント内の単語、ドキュメント内のシンボル
+- シンボルへのジャンプ（⌘⇧O）、JSON/JSONL/XML/plist のワンキー整形（⌥⇧F）
+- プレーンテキストのみの貼り付け（リッチフォーマットは貼り付け時に除去）
+- エンコーディングの自動検出 + フォールバックエンコーディングを指定した手動再読込
+- 改行コード（LF/CRLF/CR）の表示と変換
+- インデント幅の自動検出、言語別設定に対応
+- UI は英語 / 简体中文 / 日本語に対応し、ライブ切り替え可能
+- 機能モジュール（ハイライト / 補完 / 整形）は個別にオフにでき、実行時状態を
+  完全に解放します
+- `karu` コマンドラインツール：ターミナルからファイルを開けます
+
+## メモリ予算（努力目標ではなく強制項目）
+
+| 指標 | 上限 |
+|---|---|
+| 空のドキュメント、アイドル時 | 35 MB |
+| 1 MB ファイルを開いた状態 | 50 MB |
+| 10 MB ファイルを開いた状態 | 65 MB |
+| アプリバンドル | 5 MB（実測: 1.4 MB） |
+| コールドスタート | 1 秒未満 |
+
+各リリースごとに `scripts/mem-benchmark.sh` で計測しています。以下は意図的に、
+永久に対象外とします：LSP/言語サーバー、tree-sitter、Electron/web view、
+重量級のフォーマッタ、プラグインシステム。
+
+## インストール
+
+**Homebrew**（`karu` CLI も自動でインストールされます）:
+
+```sh
+brew tap enkin-japan/tap
+brew trust enkin-japan/tap   # 新しい Homebrew ではサードパーティ tap の信頼が必要です
+brew install --cask karu
+```
+
+**手動インストール**: [Releases](https://github.com/enkin-japan/karu/releases)
+から公証済みの DMG をダウンロードし、Applications にドラッグしてください。
+CLI ヘルパー（任意）:
+
+```sh
+ln -s /Applications/Karu.app/Contents/Resources/karu /usr/local/bin/karu
+```
+
+## ソースからのビルド
+
+必要なのは Swift のみです（コマンドラインツールで可、Xcode は不要）、macOS 13+。
+
+```sh
+swift build            # デバッグビルド
+swift test             # 340+ テスト
+bash scripts/bundle-macos.sh   # → build/Karu.app（ad-hoc 署名の場合は SIGN_IDENTITY=-）
+```
+
+## ドキュメント
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— メモリ予算表と、Karu を
+  小さく保つための設計ルール（中国語）
+- [docs/LEDGER.md](docs/LEDGER.md) —— 完全なエンジニアリング記録（中国語）
+
+## ライセンス
+
+[MIT](LICENSE) © 2026 enkin

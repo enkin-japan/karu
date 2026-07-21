@@ -1,5 +1,7 @@
 # Karu（軽）
 
+**English** | [简体中文](README.zh-Hans.md) | [日本語](README.ja.md)
+
 A deliberately tiny, native plain-text editor for macOS. **1.4 MB app, ~30 MB
 resident memory, zero dependencies.**
 
@@ -42,9 +44,16 @@ plugin systems.
 
 ## Install
 
-Download the notarized DMG from
-[Releases](https://github.com/enkin-japan/karu/releases), drag to Applications.
+**Homebrew** (installs the `karu` CLI automatically):
 
+```sh
+brew tap enkin-japan/tap
+brew trust enkin-japan/tap   # newer Homebrew requires trusting third-party taps
+brew install --cask karu
+```
+
+**Manual**: download the notarized DMG from
+[Releases](https://github.com/enkin-japan/karu/releases), drag to Applications.
 CLI helper (optional):
 
 ```sh
