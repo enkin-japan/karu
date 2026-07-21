@@ -9,7 +9,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
-        newDocument(nil)
+
+        // Open any existing file paths passed on the command line (used by
+        // scripts/mem-benchmark.sh and handy for `open -a TinyEditor file`);
+        // arguments that are not existing files (e.g. -NSDebug flags) are
+        // ignored. With no file arguments, start with one untitled window.
+        let fileArgs = CommandLine.arguments.dropFirst().filter {
+            !$0.hasPrefix("-") && FileManager.default.fileExists(atPath: $0)
+        }
+        if fileArgs.isEmpty {
+            newDocument(nil)
+        } else {
+            for path in fileArgs {
+                let controller = makeController()
+                controller.load(url: URL(fileURLWithPath: path))
+                controller.showWindow(nil)
+            }
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
