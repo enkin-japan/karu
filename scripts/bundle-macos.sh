@@ -11,6 +11,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp .build/release/TinyEditorApp "$APP_DIR/Contents/MacOS/TinyEditor"
+cp assets/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -23,6 +24,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<string>TinyEditor</string>
 	<key>CFBundleExecutable</key>
 	<string>TinyEditor</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.enkin.TinyEditor</string>
 	<key>CFBundlePackageType</key>
