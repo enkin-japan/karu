@@ -59,6 +59,15 @@
 
 依赖：T6.1、T6.5 并行先行；T6.2 → T6.3 → T6.4 串行（同文件冲突）；T6.5 完成后主会话接线 bundle-macos.sh 并重跑发布流水线。
 
+## M7 用户反馈迭代（第四轮）
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T7.1 | Finder 打开多开空窗口：didFinishLaunching 加已开窗口守卫 | App/AppDelegate.swift | main | open -a 后 windows=1 | ✅ |
+| T7.2 | VS Code 式缩进检测：按文档内容自动推断缩进单位（detectIndentation），驱动彩虹与 Tab | Core/Editor/IndentDetector.swift（新）等 | implementer | 单测：2/4/8 格与 tab 文档的推断；md 4 格缩进单色带 | ⬜ |
+| T7.3 | 折叠视觉：放大箭头、折叠头行背景色 + 行数提示 | Core/Gutter/, Editor/ | implementer | 视觉冒烟对比 | ⬜ |
+| T7.4 | 文档符号高亮：函数/类/变量名（进程内符号扫描接入高亮引擎） | Core/Highlight/, Completion/WordIndex.swift | implementer | 单测：符号分类；视觉验证 | ⬜ |
+
 ## 依赖关系
 
 T1.1 → T2.1 → T2.2/T2.3/T2.4（可并行）→ T3.1 → T3.2/T3.3（可并行）→ T3.4/T3.5
