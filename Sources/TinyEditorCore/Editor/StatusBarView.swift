@@ -10,15 +10,19 @@ public enum StatusBarMetrics {
         max(1, caretOffset - lineStartOffset + 1)
     }
 
-    /// The "Ln N, Col M" caption shown on the left of the status bar.
-    public static func caretDescription(line: Int, column: Int) -> String {
-        "Ln \(line), Col \(column)"
+    /// The "Ln N, Col M" caption shown on the left of the status bar. `language`
+    /// defaults to the active UI language; tests pass it explicitly to stay
+    /// deterministic without touching global state.
+    public static func caretDescription(line: Int, column: Int,
+                                        language: AppLanguage = L10n.current) -> String {
+        L10n.string(.statusLnCol, language: language, line, column)
     }
 
     /// The character-count caption shown on the right. `count` is the document's
     /// UTF-16 length (what `NSTextView` reports and what the caret offsets share).
-    public static func characterCountDescription(_ count: Int) -> String {
-        count == 1 ? "1 char" : "\(count) chars"
+    public static func characterCountDescription(_ count: Int,
+                                                 language: AppLanguage = L10n.current) -> String {
+        L10n.string(count == 1 ? .statusCharOne : .statusCharMany, language: language, count)
     }
 }
 

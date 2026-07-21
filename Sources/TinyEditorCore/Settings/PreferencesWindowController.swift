@@ -26,6 +26,16 @@ public final class PreferencesWindowController: NSWindowController {
     private let fontStepper = NSStepper()
     private let fontValueLabel = NSTextField(labelWithString: "")
 
+    // UI-language picker (System + the three app languages).
+    private let uiLanguagePopup = NSPopUpButton()
+
+    // Text labels re-pulled on a live language switch.
+    private let modulesHeader = NSTextField(labelWithString: "")
+    private let editorHeader = NSTextField(labelWithString: "")
+    private let indentRowLabel = NSTextField(labelWithString: "")
+    private let fontRowLabel = NSTextField(labelWithString: "")
+    private let uiLanguageRowLabel = NSTextField(labelWithString: "")
+
     /// Languages offered in the indent-width popup (identifiers match those the
     /// highlighter resolves and `IndentSettings` keys on).
     private static let languages: [(id: String, title: String)] = [
@@ -48,23 +58,49 @@ public final class PreferencesWindowController: NSWindowController {
 
     public convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Preferences"
+        window.title = L10n.t(.prefTitle)
         window.isReleasedWhenClosed = false
         window.center()
         self.init(window: window)
         buildUI()
         loadState()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(languageDidChange),
+            name: L10n.didChangeNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: - UI construction
 
     private func buildUI() {
-        let modules = sectionLabel("Modules")
+        // UI-language picker (System + three languages). Sits at the top with its
+        // own "Language:" row label — no section header (the window title already
+        // says Settings).
+        uiLanguagePopup.removeAllItems()
+        uiLanguagePopup.addItem(withTitle: L10n.t(.prefLanguageSystem))
+        for language in AppLanguage.allCases {
+            uiLanguagePopup.addItem(withTitle: language.displayName)
+        }
+        uiLanguagePopup.target = self
+        uiLanguagePopup.action = #selector(uiLanguageChanged(_:))
+        uiLanguageRowLabel.stringValue = L10n.t(.prefLanguageLabel)
+        let languageRow = NSStackView(views: [uiLanguageRowLabel, uiLanguagePopup])
+        languageRow.orientation = .horizontal
+        languageRow.spacing = 8
+        languageRow.alignment = .centerY
+
+        styleSectionLabel(modulesHeader, text: L10n.t(.prefModules))
         let moduleStack = NSStackView()
         moduleStack.orientation = .vertical
         moduleStack.alignment = .leading
@@ -78,7 +114,7 @@ public final class PreferencesWindowController: NSWindowController {
             moduleStack.addArrangedSubview(button)
         }
 
-        let editor = sectionLabel("Editor")
+        styleSectionLabel(editorHeader, text: L10n.t(.prefEditor))
 
         // Indent width row: language popup + stepper + value.
         for lang in Self.languages {
@@ -97,8 +133,9 @@ public final class PreferencesWindowController: NSWindowController {
         indentValueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         indentValueLabel.setContentHuggingPriority(.required, for: .horizontal)
 
+        indentRowLabel.stringValue = L10n.t(.prefIndentWidthLabel)
         let indentRow = NSStackView(views: [
-            NSTextField(labelWithString: "Indent width:"),
+            indentRowLabel,
             languagePopup, indentStepper, indentValueLabel,
         ])
         indentRow.orientation = .horizontal
@@ -107,12 +144,12 @@ public final class PreferencesWindowController: NSWindowController {
 
         // Tab → spaces + indent rainbow checkboxes.
         usesSpacesButton.setButtonType(.switch)
-        usesSpacesButton.title = "Insert spaces for Tab"
+        usesSpacesButton.title = L10n.t(.prefInsertSpaces)
         usesSpacesButton.target = self
         usesSpacesButton.action = #selector(usesSpacesToggled(_:))
 
         rainbowButton.setButtonType(.switch)
-        rainbowButton.title = "Indent rainbow"
+        rainbowButton.title = L10n.t(.prefIndentRainbow)
         rainbowButton.target = self
         rainbowButton.action = #selector(rainbowToggled(_:))
 
@@ -127,8 +164,9 @@ public final class PreferencesWindowController: NSWindowController {
         fontValueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         fontValueLabel.setContentHuggingPriority(.required, for: .horizontal)
 
+        fontRowLabel.stringValue = L10n.t(.prefFontSizeLabel)
         let fontRow = NSStackView(views: [
-            NSTextField(labelWithString: "Font size:"),
+            fontRowLabel,
             fontStepper, fontValueLabel,
         ])
         fontRow.orientation = .horizontal
@@ -136,9 +174,11 @@ public final class PreferencesWindowController: NSWindowController {
         fontRow.alignment = .centerY
 
         let content = NSStackView(views: [
-            modules, moduleStack,
+            languageRow,
             separator(),
-            editor, indentRow, usesSpacesButton, rainbowButton, fontRow,
+            modulesHeader, moduleStack,
+            separator(),
+            editorHeader, indentRow, usesSpacesButton, rainbowButton, fontRow,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -149,10 +189,9 @@ public final class PreferencesWindowController: NSWindowController {
         window?.contentView = content
     }
 
-    private func sectionLabel(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
+    private func styleSectionLabel(_ label: NSTextField, text: String) {
+        label.stringValue = text
         label.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-        return label
     }
 
     private func separator() -> NSView {
@@ -166,6 +205,8 @@ public final class PreferencesWindowController: NSWindowController {
     // MARK: - Loading current state
 
     private func loadState() {
+        selectCurrentUILanguage()
+
         let modules = ModuleSettings()
         for (i, module) in FeatureModule.allCases.enumerated() {
             moduleButtons[i].state = modules.isEnabled(module) ? .on : .off
@@ -181,6 +222,18 @@ public final class PreferencesWindowController: NSWindowController {
         let size = EditorFontSettings().fontSize
         fontStepper.doubleValue = Double(size)
         updateFontLabel()
+    }
+
+    /// Selects the popup row matching the stored UI-language override, or "System"
+    /// (row 0) when no override is set.
+    private func selectCurrentUILanguage() {
+        if let raw = UserDefaults.standard.string(forKey: L10n.defaultsKey),
+           let language = AppLanguage(rawValue: raw),
+           let index = AppLanguage.allCases.firstIndex(of: language) {
+            uiLanguagePopup.selectItem(at: index + 1)   // +1 for the System row
+        } else {
+            uiLanguagePopup.selectItem(at: 0)
+        }
     }
 
     private var selectedLanguage: String {
@@ -209,6 +262,39 @@ public final class PreferencesWindowController: NSWindowController {
 
     @objc private func languageChanged(_ sender: NSPopUpButton) {
         reloadIndentWidth()
+    }
+
+    /// UI-language row: row 0 is "System" (clears the override); rows 1… map to
+    /// `AppLanguage.allCases`. `L10n.set` persists and broadcasts, driving the
+    /// live relayout of this window and every open editor.
+    @objc private func uiLanguageChanged(_ sender: NSPopUpButton) {
+        let index = sender.indexOfSelectedItem
+        if index <= 0 {
+            L10n.set(nil)
+        } else {
+            L10n.set(AppLanguage.allCases[index - 1])
+        }
+    }
+
+    /// Re-pulls every localized string after a language switch. Called from the
+    /// `L10n.didChangeNotification` observer so the window updates in place.
+    @objc private func languageDidChange() {
+        window?.title = L10n.t(.prefTitle)
+        styleSectionLabel(modulesHeader, text: L10n.t(.prefModules))
+        styleSectionLabel(editorHeader, text: L10n.t(.prefEditor))
+        uiLanguageRowLabel.stringValue = L10n.t(.prefLanguageLabel)
+        indentRowLabel.stringValue = L10n.t(.prefIndentWidthLabel)
+        fontRowLabel.stringValue = L10n.t(.prefFontSizeLabel)
+        usesSpacesButton.title = L10n.t(.prefInsertSpaces)
+        rainbowButton.title = L10n.t(.prefIndentRainbow)
+        for (i, module) in FeatureModule.allCases.enumerated() {
+            moduleButtons[i].title = module.displayName
+        }
+        // Rebuild the language popup's "System" row (its language names stay in
+        // their own tongue); keep the current selection.
+        let selected = uiLanguagePopup.indexOfSelectedItem
+        uiLanguagePopup.item(at: 0)?.title = L10n.t(.prefLanguageSystem)
+        uiLanguagePopup.selectItem(at: selected)
     }
 
     @objc private func indentWidthChanged(_ sender: NSStepper) {

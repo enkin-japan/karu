@@ -22,15 +22,19 @@ import Testing
 
 // MARK: - StatusBarMetrics captions
 
+// These captions now flow through L10n; pass an explicit language so the
+// assertions are deterministic regardless of the host's system language.
 @Test func caretDescriptionFormatsLineAndColumn() {
-    #expect(StatusBarMetrics.caretDescription(line: 1, column: 1) == "Ln 1, Col 1")
-    #expect(StatusBarMetrics.caretDescription(line: 12, column: 7) == "Ln 12, Col 7")
+    #expect(StatusBarMetrics.caretDescription(line: 1, column: 1, language: .en) == "Ln 1, Col 1")
+    #expect(StatusBarMetrics.caretDescription(line: 12, column: 7, language: .en) == "Ln 12, Col 7")
+    #expect(StatusBarMetrics.caretDescription(line: 3, column: 5, language: .ja) == "3 行、5 桁")
 }
 
 @Test func characterCountDescriptionSingularAndPlural() {
-    #expect(StatusBarMetrics.characterCountDescription(0) == "0 chars")
-    #expect(StatusBarMetrics.characterCountDescription(1) == "1 char")
-    #expect(StatusBarMetrics.characterCountDescription(2048) == "2048 chars")
+    #expect(StatusBarMetrics.characterCountDescription(0, language: .en) == "0 chars")
+    #expect(StatusBarMetrics.characterCountDescription(1, language: .en) == "1 char")
+    #expect(StatusBarMetrics.characterCountDescription(2048, language: .en) == "2048 chars")
+    #expect(StatusBarMetrics.characterCountDescription(5, language: .zhHans) == "5 个字符")
 }
 
 // MARK: - column via a real LineIndex (integration of the pieces)

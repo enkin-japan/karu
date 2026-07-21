@@ -11,12 +11,12 @@ public enum FeatureModule: String, CaseIterable, Sendable {
     case completion
     case format
 
-    /// User-facing display name for the settings UI.
+    /// User-facing display name for the settings UI (localized).
     public var displayName: String {
         switch self {
-        case .highlight: return "Syntax Highlighting"
-        case .completion: return "Completion"
-        case .format: return "Formatting"
+        case .highlight: return L10n.t(.moduleHighlight)
+        case .completion: return L10n.t(.moduleCompletion)
+        case .format: return L10n.t(.moduleFormat)
         }
     }
 

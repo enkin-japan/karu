@@ -10,6 +10,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
 
+        // Rebuild the main menu in the new language on a live switch; open
+        // windows and the preferences window re-pull their own strings via their
+        // own observers.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(languageDidChange),
+            name: L10n.didChangeNotification,
+            object: nil
+        )
+
         // Open any existing file paths passed on the command line (used by
         // scripts/mem-benchmark.sh and handy for `open -a TinyEditor file`);
         // arguments that are not existing files (e.g. -NSDebug flags) are
@@ -42,6 +52,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return .terminateNow
+    }
+
+    @objc private func languageDidChange() {
+        NSApp.mainMenu = MainMenu.build()
     }
 
     @objc public func newDocument(_ sender: Any?) {

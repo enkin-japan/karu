@@ -60,7 +60,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     private func buildControls() {
         // Language popup: Auto, then one entry per supported language.
         let langMenu = NSMenu()
-        let auto = NSMenuItem(title: "Auto", action: nil, keyEquivalent: "")
+        let auto = NSMenuItem(title: L10n.t(.languageAuto), action: nil, keyEquivalent: "")
         auto.tag = Self.autoLanguageTag
         langMenu.addItem(auto)
         langMenu.addItem(.separator())
@@ -72,7 +72,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         languagePopup.menu = langMenu
         languagePopup.target = self
         languagePopup.action = #selector(languageChanged)
-        languagePopup.toolTip = "Language"
+        languagePopup.toolTip = L10n.t(.menuLanguage)
 
         // Indent-width popup: 2 / 4 / 8 columns.
         for width in [2, 4, 8] {
@@ -82,21 +82,21 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         }
         indentPopup.target = self
         indentPopup.action = #selector(indentChanged)
-        indentPopup.toolTip = "Indent width"
+        indentPopup.toolTip = L10n.t(.toolbarIndentTooltip)
 
-        formatButton.title = "Format"
+        formatButton.title = L10n.t(.formatAction)
         formatButton.image = NSImage(systemSymbolName: "wand.and.stars",
-                                     accessibilityDescription: "Format")
+                                     accessibilityDescription: L10n.t(.formatAction))
         formatButton.imagePosition = .imageLeading
         formatButton.bezelStyle = .toolbar
         formatButton.target = self
         formatButton.action = #selector(formatTapped)
-        formatButton.toolTip = "Format Document"
+        formatButton.toolTip = L10n.t(.menuFormatDocument)
 
         // Modules: a compact pull-down whose items toggle each feature module.
         let modMenu = NSMenu()
         modMenu.delegate = self
-        let modTitle = NSMenuItem(title: "Modules", action: nil, keyEquivalent: "")
+        let modTitle = NSMenuItem(title: L10n.t(.prefModules), action: nil, keyEquivalent: "")
         modMenu.addItem(modTitle)  // pull-down title row (not selectable as toggle)
         for module in FeatureModule.allCases {
             let item = NSMenuItem(title: module.displayName,
@@ -106,15 +106,53 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
             modMenu.addItem(item)
         }
         modulePopup.menu = modMenu
-        modulePopup.toolTip = "Feature modules"
+        modulePopup.toolTip = L10n.t(.toolbarFeatureModulesTooltip)
 
         settingsButton.image = NSImage(systemSymbolName: "gearshape",
-                                       accessibilityDescription: "Settings")
+                                       accessibilityDescription: L10n.t(.toolbarSettingsLabel))
         settingsButton.title = ""
         settingsButton.bezelStyle = .toolbar
         settingsButton.target = self
         settingsButton.action = #selector(settingsTapped)
-        settingsButton.toolTip = "Settings…"
+        settingsButton.toolTip = L10n.t(.appSettings)
+    }
+
+    /// Re-pulls tooltips, the Format button title, the module pull-down title, and
+    /// the toolbar item labels after a UI-language switch. Language / module item
+    /// titles themselves are refreshed on next open (language names stay in their
+    /// own tongue; module names re-read via `menuNeedsUpdate` / rebuild).
+    func reloadStrings() {
+        languagePopup.toolTip = L10n.t(.menuLanguage)
+        if let auto = languagePopup.menu?.items.first(where: { $0.tag == Self.autoLanguageTag }) {
+            auto.title = L10n.t(.languageAuto)
+        }
+        indentPopup.toolTip = L10n.t(.toolbarIndentTooltip)
+        formatButton.title = L10n.t(.formatAction)
+        formatButton.toolTip = L10n.t(.menuFormatDocument)
+        modulePopup.toolTip = L10n.t(.toolbarFeatureModulesTooltip)
+        modulePopup.menu?.items.first?.title = L10n.t(.prefModules)
+        for item in modulePopup.menu?.items ?? [] {
+            guard let raw = item.representedObject as? String,
+                  let module = FeatureModule(rawValue: raw) else { continue }
+            item.title = module.displayName
+        }
+        settingsButton.toolTip = L10n.t(.appSettings)
+
+        for item in windowController?.window?.toolbar?.items ?? [] {
+            let label = Self.itemLabel(for: item.itemIdentifier)
+            if let label { item.label = label; item.paletteLabel = label }
+        }
+    }
+
+    private static func itemLabel(for identifier: NSToolbarItem.Identifier) -> String? {
+        switch identifier {
+        case language: return L10n.t(.menuLanguage)
+        case indent: return L10n.t(.toolbarIndentLabel)
+        case format: return L10n.t(.formatAction)
+        case modules: return L10n.t(.prefModules)
+        case settings: return L10n.t(.toolbarSettingsLabel)
+        default: return nil
+        }
     }
 
     // MARK: - Actions
@@ -215,11 +253,11 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
-        case Self.language: return viewItem(itemIdentifier, label: "Language", view: languagePopup)
-        case Self.indent:   return viewItem(itemIdentifier, label: "Indent", view: indentPopup)
-        case Self.format:   return viewItem(itemIdentifier, label: "Format", view: formatButton)
-        case Self.modules:  return viewItem(itemIdentifier, label: "Modules", view: modulePopup)
-        case Self.settings: return viewItem(itemIdentifier, label: "Settings", view: settingsButton)
+        case Self.language: return viewItem(itemIdentifier, label: L10n.t(.menuLanguage), view: languagePopup)
+        case Self.indent:   return viewItem(itemIdentifier, label: L10n.t(.toolbarIndentLabel), view: indentPopup)
+        case Self.format:   return viewItem(itemIdentifier, label: L10n.t(.formatAction), view: formatButton)
+        case Self.modules:  return viewItem(itemIdentifier, label: L10n.t(.prefModules), view: modulePopup)
+        case Self.settings: return viewItem(itemIdentifier, label: L10n.t(.toolbarSettingsLabel), view: settingsButton)
         default: return nil
         }
     }

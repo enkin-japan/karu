@@ -69,26 +69,26 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         separator.translatesAutoresizingMaskIntoConstraints = false
         barView.addSubview(separator)
 
-        searchField.placeholderString = "Find (regex)"
+        searchField.placeholderString = L10n.t(.findPlaceholder)
         searchField.delegate = self
         searchField.sendsWholeSearchString = false
         searchField.sendsSearchStringImmediately = true
 
-        replaceField.placeholderString = "Replace"
+        replaceField.placeholderString = L10n.t(.replacePlaceholder)
         replaceField.isBezeled = true
         replaceField.bezelStyle = .roundedBezel
         replaceField.isEditable = true
         replaceField.cell?.wraps = false
         replaceField.cell?.isScrollable = true
 
-        configureToggle(regexToggle, title: ".*", tooltip: "Regular expression", action: #selector(optionChanged))
-        configureToggle(caseToggle, title: "Aa", tooltip: "Match case", action: #selector(optionChanged))
+        configureToggle(regexToggle, title: ".*", tooltip: L10n.t(.findRegexTooltip), action: #selector(optionChanged))
+        configureToggle(caseToggle, title: "Aa", tooltip: L10n.t(.findCaseTooltip), action: #selector(optionChanged))
 
-        configureButton(prevButton, title: "<", tooltip: "Previous match", action: #selector(findPreviousTapped))
-        configureButton(nextButton, title: ">", tooltip: "Next match", action: #selector(findNextTapped))
-        configureButton(replaceButton, title: "Replace", tooltip: "Replace current match", action: #selector(replaceTapped))
-        configureButton(replaceAllButton, title: "All", tooltip: "Replace all matches", action: #selector(replaceAllTapped))
-        configureButton(closeButton, title: "Done", tooltip: "Close find bar", action: #selector(closeTapped))
+        configureButton(prevButton, title: "<", tooltip: L10n.t(.findPrevTooltip), action: #selector(findPreviousTapped))
+        configureButton(nextButton, title: ">", tooltip: L10n.t(.findNextTooltip), action: #selector(findNextTapped))
+        configureButton(replaceButton, title: L10n.t(.replacePlaceholder), tooltip: L10n.t(.findReplaceTooltip), action: #selector(replaceTapped))
+        configureButton(replaceAllButton, title: L10n.t(.findReplaceAll), tooltip: L10n.t(.findReplaceAllTooltip), action: #selector(replaceAllTapped))
+        configureButton(closeButton, title: L10n.t(.findDone), tooltip: L10n.t(.findDoneTooltip), action: #selector(closeTapped))
 
         countLabel.textColor = .secondaryLabelColor
         countLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -182,6 +182,24 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         matches = []
         currentIndex = -1
         if let textView { textView.window?.makeFirstResponder(textView) }
+    }
+
+    /// Re-pulls every string after a UI-language change. Refreshes placeholders,
+    /// tooltips, button titles, and the current count caption in place.
+    public func reloadStrings() {
+        searchField.placeholderString = L10n.t(.findPlaceholder)
+        replaceField.placeholderString = L10n.t(.replacePlaceholder)
+        regexToggle.toolTip = L10n.t(.findRegexTooltip)
+        caseToggle.toolTip = L10n.t(.findCaseTooltip)
+        prevButton.toolTip = L10n.t(.findPrevTooltip)
+        nextButton.toolTip = L10n.t(.findNextTooltip)
+        replaceButton.title = L10n.t(.replacePlaceholder)
+        replaceButton.toolTip = L10n.t(.findReplaceTooltip)
+        replaceAllButton.title = L10n.t(.findReplaceAll)
+        replaceAllButton.toolTip = L10n.t(.findReplaceAllTooltip)
+        closeButton.title = L10n.t(.findDone)
+        closeButton.toolTip = L10n.t(.findDoneTooltip)
+        updateCount()
     }
 
     /// Copies the editor's current selection into the search field and searches.
@@ -340,7 +358,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
             }
             recomputeMatches(moveToFirst: false)
             countLabel.textColor = .secondaryLabelColor
-            countLabel.stringValue = "Replaced \(replacedCount)"
+            countLabel.stringValue = L10n.t(.findReplacedCount, replacedCount)
         }
     }
 
@@ -368,12 +386,12 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         if searchField.stringValue.isEmpty {
             countLabel.stringValue = ""
         } else if matches.isEmpty {
-            countLabel.stringValue = "No results"
+            countLabel.stringValue = L10n.t(.findNoResults)
         } else if matches.indices.contains(currentIndex) {
             let line = lineIndex.lineNumber(forOffset: matches[currentIndex].location)
-            countLabel.stringValue = "\(currentIndex + 1)/\(matches.count) · L\(line)"
+            countLabel.stringValue = L10n.t(.findMatchPosition, currentIndex + 1, matches.count, line)
         } else {
-            countLabel.stringValue = "\(matches.count) found"
+            countLabel.stringValue = L10n.t(.findFoundCount, matches.count)
         }
     }
 

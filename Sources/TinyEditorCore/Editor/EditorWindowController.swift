@@ -128,9 +128,25 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             name: NSTextView.didChangeSelectionNotification,
             object: textView
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(languageDidChange),
+            name: L10n.didChangeNotification,
+            object: nil
+        )
 
         updateWindowState()
         refreshStatusBar()
+    }
+
+    /// Re-pulls every string this window owns after a UI-language switch: window
+    /// title (Untitled), status bar captions, toolbar tooltips/labels, and the
+    /// find bar. The main menu is rebuilt separately by `AppDelegate`.
+    @objc private func languageDidChange() {
+        updateWindowState()
+        refreshStatusBar()
+        toolbarController?.reloadStrings()
+        findBar.reloadStrings()
     }
 
     deinit {
@@ -285,8 +301,15 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         statusBar.updateLanguage(identifier)
     }
 
+    /// The window/UI display name. `DocumentController` stays pure Foundation and
+    /// yields a neutral "Untitled"; the localized untitled label is substituted
+    /// here at the UI layer so the model needs no L10n dependency.
+    private var displayName: String {
+        documentController.fileURL == nil ? L10n.t(.untitled) : documentController.displayName
+    }
+
     private func updateWindowState() {
-        window?.title = documentController.displayName
+        window?.title = displayName
         window?.representedURL = documentController.fileURL
         window?.isDocumentEdited = documentController.isDirty
     }
@@ -353,8 +376,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             textView.scrollRangeToVisible(caret)
 
             let alert = NSAlert()
-            alert.messageText = "Formatting failed"
-            alert.informativeText = "Line \(line): \(message)"
+            alert.messageText = L10n.t(.formatFailedTitle)
+            alert.informativeText = L10n.t(.formatErrorLine, line, message)
             alert.alertStyle = .warning
             if let window {
                 alert.beginSheetModal(for: window, completionHandler: nil)
@@ -489,7 +512,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     @discardableResult
     private func runSaveAsPanel() -> Bool {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = documentController.displayName
+        panel.nameFieldStringValue = displayName
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
@@ -517,11 +540,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         guard documentController.isDirty else { return true }
 
         let alert = NSAlert()
-        alert.messageText = "Do you want to save the changes made to \(documentController.displayName)?"
-        alert.informativeText = "Your changes will be lost if you don't save them."
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Don't Save")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = L10n.t(.closeConfirmMessage, displayName)
+        alert.informativeText = L10n.t(.closeConfirmInfo)
+        alert.addButton(withTitle: L10n.t(.menuSave))
+        alert.addButton(withTitle: L10n.t(.dontSave))
+        alert.addButton(withTitle: L10n.t(.cancel))
 
         switch alert.runModal() {
         case .alertFirstButtonReturn:   // Save
