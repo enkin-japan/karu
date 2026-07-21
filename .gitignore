@@ -1,5 +1,6 @@
 # Reference project (not part of TinyEditor)
 monaco-editor/
+CotEditor/
 
 # macOS
 .DS_Store
