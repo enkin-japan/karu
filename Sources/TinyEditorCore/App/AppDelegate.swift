@@ -28,7 +28,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             !$0.hasPrefix("-") && FileManager.default.fileExists(atPath: $0)
         }
         if fileArgs.isEmpty {
-            newDocument(nil)
+            // application(_:open:) may already have opened documents before
+            // didFinishLaunching runs (Finder double-click launch) — only
+            // create the untitled window when nothing else is open, otherwise
+            // every Finder open spawned a stray empty window.
+            if windowControllers.isEmpty {
+                newDocument(nil)
+            }
         } else {
             for path in fileArgs {
                 let controller = makeController()
@@ -50,7 +56,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? rep.representation(using: .png, properties: [:])?
                         .write(to: URL(fileURLWithPath: snapshotPath))
                     // Companion hierarchy dump for frame-level diagnostics.
-                    var dump = ""
+                    var dump = "windows=\(NSApp.windows.filter { $0.isVisible && $0.contentView != nil }.count)\n"
                     func walk(_ v: NSView, _ depth: Int) {
                         dump += String(repeating: "  ", count: depth)
                         dump += "\(type(of: v)) frame=\(v.frame) hidden=\(v.isHidden)"
