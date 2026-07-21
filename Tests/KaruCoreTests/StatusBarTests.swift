@@ -72,8 +72,8 @@ import Testing
 }
 
 @Test func supportedLanguageListCoversFifteenLanguagesPlusPlain() {
-    // Plain Text + the 15 supported languages (ARCHITECTURE.md §4).
-    #expect(SupportedLanguage.all.count == 16)
+    // Plain Text + the 20 supported languages (ARCHITECTURE.md §4).
+    #expect(SupportedLanguage.all.count == 21)
     #expect(SupportedLanguage.all.first?.identifier == "")
     // Every non-plain identifier resolves to a real definition.
     for lang in SupportedLanguage.all where !lang.identifier.isEmpty {

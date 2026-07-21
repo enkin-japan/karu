@@ -24,9 +24,9 @@ public enum CommentToggle {
     /// JSON / JSONL carry no comment syntax and return `nil`.
     static func tokens(for languageIdentifier: String) -> Tokens? {
         switch languageIdentifier.lowercased() {
-        case "python", "bash", "sh", "shell", "yaml":
+        case "python", "bash", "sh", "shell", "yaml", "toml":
             return Tokens(line: "#", block: nil)
-        case "javascript", "typescript", "c", "cpp", "csharp", "java", "swift":
+        case "javascript", "typescript", "c", "cpp", "csharp", "java", "swift", "go", "rust":
             return Tokens(line: "//", block: nil)
         case "sql":
             return Tokens(line: "--", block: nil)

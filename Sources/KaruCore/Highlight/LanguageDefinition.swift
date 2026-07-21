@@ -178,6 +178,12 @@ public enum LanguageRegistry {
         "svg": XMLPlistLanguage.make,
         "xib": XMLPlistLanguage.make,
         "storyboard": XMLPlistLanguage.make,
+        "yaml": YAMLLanguage.make,
+        "yml": YAMLLanguage.make,
+        "toml": TOMLLanguage.make,
+        "go": GoLanguage.make,
+        "rs": RustLanguage.make,
+        "swift": SwiftLanguage.make,
     ]
 
     /// Extensions that have a registered definition, without building any of
@@ -214,6 +220,11 @@ public enum LanguageRegistry {
         "bash": BashLanguage.make,
         "sql": SQLLanguage.make,
         "xml": XMLPlistLanguage.make,
+        "yaml": YAMLLanguage.make,
+        "toml": TOMLLanguage.make,
+        "go": GoLanguage.make,
+        "rust": RustLanguage.make,
+        "swift": SwiftLanguage.make,
     ]
 
     /// Returns a freshly built definition whose `identifier` matches `id`

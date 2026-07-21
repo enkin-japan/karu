@@ -22,6 +22,7 @@ public struct IndentSettings {
         "xml": 2,
         "plist": 2,
         "yaml": 2,
+        "toml": 2,
         "markdown": 2,
     ]
 

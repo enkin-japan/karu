@@ -199,6 +199,29 @@ public struct WordIndex {
                 DeclarationPattern(pattern: #"(\w+)\s*\("#, kind: .function),
                 DeclarationPattern(pattern: #"\b(?:class|struct)\s+(\w+)"#, kind: .type),
             ]
+        case "go":
+            return [
+                // Free functions and methods (`func Name(` / `func (r T) Name(`).
+                DeclarationPattern(pattern: #"\bfunc\s+(\w+)"#, kind: .function),
+                DeclarationPattern(pattern: #"\bfunc\s+\([^)]*\)\s+(\w+)"#, kind: .function),
+                DeclarationPattern(pattern: #"\btype\s+(\w+)"#, kind: .type),
+            ]
+        case "rust":
+            return [
+                DeclarationPattern(pattern: #"\bfn\s+(\w+)"#, kind: .function),
+                DeclarationPattern(pattern: #"\b(?:struct|enum|trait|union)\s+(\w+)"#, kind: .type),
+            ]
+        case "swift":
+            return [
+                DeclarationPattern(pattern: #"\bfunc\s+(\w+)"#, kind: .function),
+                DeclarationPattern(pattern: #"\b(?:class|struct|enum|protocol|extension)\s+(\w+)"#, kind: .type),
+                // Top-level `var` / `let` bindings (declared at column 0, past any
+                // access / storage modifiers), so nested properties are excluded.
+                DeclarationPattern(
+                    pattern: #"(?m)^(?:(?:public|private|internal|fileprivate|open|static|final|lazy|weak|unowned)\s+)*(?:var|let)\s+(\w+)"#,
+                    kind: .variable
+                ),
+            ]
         default:
             return []
         }

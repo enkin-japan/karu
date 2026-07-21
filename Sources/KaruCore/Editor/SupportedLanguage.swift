@@ -28,6 +28,11 @@ public enum SupportedLanguage {
         ("Bash", "bash"),
         ("SQL", "sql"),
         ("XML", "xml"),
+        ("YAML", "yaml"),
+        ("TOML", "toml"),
+        ("Go", "go"),
+        ("Rust", "rust"),
+        ("Swift", "swift"),
     ]
 
     /// Human-readable name for a language identifier (case-insensitive). Returns

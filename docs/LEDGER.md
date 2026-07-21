@@ -132,7 +132,7 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T12.13 | E4 折叠跨编辑保持：行号三规则维护（上方保留/下方平移/相交展开）+ applyFolds 定向失效 | Editor/FoldingController.swift | implementer | 平移/相交/undo 测试矩阵；10MB 逐键无卡顿 | ✅ 519 全绿；2000 行全折+50 键 0.23s；applyFolds 定向失效 |
 | T12.14 | E1 失焦自动保存（默认关，设置开关；失败静默回 dirty + 状态栏提示，绝不弹窗；untitled 跳过） | App/, Editor/, Settings, L10n | implementer | 触发条件纯逻辑单测；开关持久 | ✅ 7 测试；失败静默降级+状态栏瞬时提示 |
 | T12.15 | C8 CSS 颜色装饰器（viewport 正则 + 色块 attachment-free 绘制） | Editor/ColorDecorator（新）, Highlight | implementer | 颜色解析单测（hex/rgb/hsl/命名色） | ✅ 16 测试，542 全绿 |
-| T12.16 | A9 语言定义扩充：YAML / TOML / Go / Rust / Swift（懒加载；Ruby/PHP/Kotlin/INI/Dockerfile 留积压） | Highlight/Languages/*（新×5）, SupportedLanguage | implementer | 每语言 tokenizer 测试；builtins 高亮 | ⬜ |
+| T12.16 | A9 语言定义扩充：YAML / TOML / Go / Rust / Swift（懒加载；Ruby/PHP/Kotlin/INI/Dockerfile 留积压） | Highlight/Languages/*（新×5）, SupportedLanguage | implementer | 每语言 tokenizer 测试；builtins 高亮 | ✅ 26 测试，568 全绿；CommentToggle/符号导航/缩进宽度一并接线 |
 | T12.17 | 文档对齐（README×3 功能项、ARCHITECTURE 语言数、变更记录）+ v0.8.0 发布（版本号红线文件 main 改） | README*, docs/, scripts/bundle-macos.sh | chore-worker + main | 370+ 全绿、visual-smoke、mem-benchmark、公证发布 | ⬜ |
 
 （B1 多光标维持独立里程碑不混排；C 组除 C8 外按决议不做。）
