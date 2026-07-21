@@ -18,6 +18,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private let observerHub = TextStorageObserverHub()
     private var highlightEngine: HighlightEngine!
 
+    /// Code-folding layer: acts as the layout manager's delegate (glyph
+    /// suppression + fragment collapsing) and answers the gutter's arrow /
+    /// hidden-line queries. Folding never mutates text, so the shared
+    /// `LineIndex` — and thus line numbers / highlighting — stay correct.
+    private var foldingController: FoldingController!
+
     public convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -51,6 +57,15 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let engine = HighlightEngine(textView: textView, scrollView: scrollView)
         observerHub.add(engine)
         self.highlightEngine = engine
+
+        // Code folding: layout-manager delegate + gutter arrow provider.
+        // Registered on the hub after the gutter so the shared LineIndex is
+        // already updated when folding reacts to an edit.
+        let folding = FoldingController(textView: textView, lineIndex: lineIndex)
+        textView.layoutManager?.delegate = folding
+        observerHub.add(folding)
+        gutter.foldProvider = folding
+        self.foldingController = folding
 
         // Find bar shares the window's LineIndex; it sits above the editor in a
         // vertical stack and collapses out of layout when hidden.

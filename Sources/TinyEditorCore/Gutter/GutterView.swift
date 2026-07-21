@@ -25,6 +25,19 @@ public final class GutterView: NSRulerView, TextStorageObserving {
     /// Horizontal padding inside the ruler.
     private let horizontalPadding: CGFloat = 6
 
+    /// Width reserved on the left for fold arrows.
+    private let arrowColumnWidth: CGFloat = 12
+
+    /// Folding layer queried for arrow state and hidden lines. Weak: owned by
+    /// the window controller. When `nil` the gutter behaves exactly as before
+    /// (no arrows, no reserved column).
+    public weak var foldProvider: FoldStatusProviding? {
+        didSet {
+            updateThickness()
+            needsDisplay = true
+        }
+    }
+
     public init(scrollView: NSScrollView,
                 textView: NSTextView,
                 lineIndex: LineIndex,
@@ -101,12 +114,14 @@ public final class GutterView: NSRulerView, TextStorageObserving {
 
     // MARK: - Width
 
-    /// Sizes the ruler to fit the widest line number plus padding.
+    /// Sizes the ruler to fit the widest line number plus padding, plus the
+    /// fold-arrow column when a fold provider is attached.
     private func updateThickness() {
         let digits = max(2, String(lineIndex.lineCount).count)
         let sample = String(repeating: "8", count: digits) as NSString
         let width = sample.size(withAttributes: [.font: numberFont]).width
-        let thickness = max(40, ceil(width) + horizontalPadding * 2)
+        let arrowColumn = foldProvider != nil ? arrowColumnWidth : 0
+        let thickness = max(40, ceil(width) + horizontalPadding * 2 + arrowColumn)
         if abs(thickness - ruleThickness) > 0.5 {
             ruleThickness = thickness
         }
@@ -130,6 +145,32 @@ public final class GutterView: NSRulerView, TextStorageObserving {
         let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
 
         let currentLine = lineIndex.lineNumber(forOffset: textView.selectedRange().location)
+
+        enumerateVisibleLines(textView: textView,
+                              layoutManager: layoutManager,
+                              content: content,
+                              charRange: charRange) { lineNumber, rect in
+            // Hidden (folded-away) lines produce zero-height fragments; don't
+            // draw their numbers.
+            if foldProvider?.isLineHidden(lineNumber) == true { return }
+            drawNumber(lineNumber,
+                       atY: rect.minY,
+                       height: rect.height,
+                       isCurrent: lineNumber == currentLine)
+            if let provider = foldProvider {
+                drawArrow(provider.foldState(atLine: lineNumber), atY: rect.minY, height: rect.height)
+            }
+        }
+    }
+
+    /// Walks the visible line numbers, invoking `body` with each line's rect in
+    /// this ruler's coordinate space. Shared by drawing and click hit-testing so
+    /// the geometry stays in one place.
+    private func enumerateVisibleLines(textView: NSTextView,
+                                       layoutManager: NSLayoutManager,
+                                       content: NSString,
+                                       charRange: NSRange,
+                                       _ body: (_ line: Int, _ rect: NSRect) -> Void) {
         let inset = textView.textContainerOrigin
         let relativePoint = convert(NSPoint.zero, from: textView)
 
@@ -149,13 +190,68 @@ public final class GutterView: NSRulerView, TextStorageObserving {
             }
 
             let y = fragmentRect.minY + inset.y + relativePoint.y
-            drawNumber(lineNumber,
-                       atY: y,
-                       height: fragmentRect.height,
-                       isCurrent: lineNumber == currentLine)
+            body(lineNumber, NSRect(x: 0, y: y, width: ruleThickness, height: fragmentRect.height))
 
             if lineStart > endChar { break }
             lineNumber += 1
+        }
+    }
+
+    /// Draws the fold control (▾ expanded / ▸ folded) in the left arrow column.
+    private func drawArrow(_ state: FoldArrow, atY y: CGFloat, height: CGFloat) {
+        let glyph: String
+        switch state {
+        case .none:     return
+        case .foldable: glyph = "\u{25BE}" // ▾
+        case .folded:   glyph = "\u{25B8}" // ▸
+        }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let text = glyph as NSString
+        let size = text.size(withAttributes: attrs)
+        let drawRect = NSRect(x: (arrowColumnWidth - size.width) / 2,
+                              y: y + (height - size.height) / 2,
+                              width: size.width,
+                              height: size.height)
+        text.draw(in: drawRect, withAttributes: attrs)
+    }
+
+    // MARK: - Click handling
+
+    public override func mouseDown(with event: NSEvent) {
+        guard let provider = foldProvider,
+              let textView = clientView as? NSTextView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer,
+              let scrollView else {
+            super.mouseDown(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        guard point.x <= arrowColumnWidth else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let content = textView.string as NSString
+        let visibleRect = scrollView.contentView.bounds
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: container)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+
+        var hitLine: Int?
+        enumerateVisibleLines(textView: textView,
+                              layoutManager: layoutManager,
+                              content: content,
+                              charRange: charRange) { lineNumber, rect in
+            if hitLine == nil, rect.height > 0, rect.contains(point),
+               provider.foldState(atLine: lineNumber) != .none {
+                hitLine = lineNumber
+            }
+        }
+        if let hitLine {
+            provider.toggleFold(atLine: hitLine)
         }
     }
 
