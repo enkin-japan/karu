@@ -12,13 +12,21 @@ rules say they must.
 
 ## Features
 
-- Syntax highlighting for 15 languages (Markdown, JSON/JSONL, Python, HTML, CSS,
-  JavaScript/TypeScript, C, C++, C#, Java, Bash, SQL, XML/plist) — viewport-only,
-  VS Code Modern-style colors, light & dark
+- Syntax highlighting for 20 languages (Markdown, JSON/JSONL, YAML, TOML, Python,
+  HTML, CSS, JavaScript/TypeScript, C, C++, C#, Java, Go, Rust, Swift, Bash, SQL,
+  XML/plist) — viewport-only, VS Code Modern-style colors, light & dark
 - Code folding, line numbers, VS Code-style indent rainbow
+- One-key fold/unfold (⌥⌘[ / ⌥⌘]), fold/unfold all (⌘K ⌘0 / ⌘K ⌘J) — fold state
+  persists across edits
 - Regex find & replace
+- Cursor-word highlight, invisible-character & bidirectional-control-character
+  warnings, inline CSS color swatches
 - Completion: keywords, document words, and in-document symbols
 - Jump to Symbol (⌘⇧O), one-key formatting for JSON/JSONL/XML/plist (⌥⇧F)
+- Comment toggle (⌘/), line move/duplicate/delete (⌥↑↓ / ⇧⌥↑↓ / ⌘⇧K),
+  auto-closing brackets/quotes with selection wrapping, bracket-pair highlight
+  & jump (⌘⇧\)
+- Command palette (⌘⇧P)
 - Plain-text-only paste (rich formatting stripped at the door)
 - Automatic encoding detection + manual re-open with encoding fallback
 - Line-ending (LF/CRLF/CR) display and conversion
@@ -26,6 +34,8 @@ rules say they must.
 - UI in English / 简体中文 / 日本語, switchable live
 - Feature modules (highlight / completion / format) can be toggled off, releasing
   their runtime state entirely
+- Auto-save on focus loss (optional, off by default), selection character count,
+  font zoom (⌘+ / ⌘- / ⌘0)
 - `karu` CLI: open files from the terminal
 - One-click in-app updates (Sparkle, from v0.7.0)
 
