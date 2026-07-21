@@ -85,6 +85,10 @@ extension L10n {
         .cancel: "Cancel",
         .untitled: "Untitled",
 
+        .downloadingTitle: "%@ (Downloading…)",
+        .downloadTimeoutTitle: "Download timed out",
+        .downloadTimeoutMessage: "“%@” could not be downloaded from iCloud. Please try again.",
+
         .prefTitle: "Settings",
         .prefModules: "Modules",
         .prefEditor: "Editor",
@@ -179,6 +183,10 @@ extension L10n {
         .cancel: "取消",
         .untitled: "未命名",
 
+        .downloadingTitle: "%@（下载中…）",
+        .downloadTimeoutTitle: "下载超时",
+        .downloadTimeoutMessage: "无法从 iCloud 下载“%@”。请重试。",
+
         .prefTitle: "设置",
         .prefModules: "模块",
         .prefEditor: "编辑器",
@@ -272,6 +280,10 @@ extension L10n {
         .dontSave: "保存しない",
         .cancel: "キャンセル",
         .untitled: "無題",
+
+        .downloadingTitle: "%@（ダウンロード中…）",
+        .downloadTimeoutTitle: "ダウンロードがタイムアウトしました",
+        .downloadTimeoutMessage: "iCloud から“%@”をダウンロードできませんでした。もう一度お試しください。",
 
         .prefTitle: "設定",
         .prefModules: "モジュール",

@@ -141,19 +141,63 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "saved a file but can't reopen it" bug.
     public func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            // Reuse a single pristine untitled window (fresh launch case)
-            // instead of leaving it orphaned next to the opened document.
-            if windowControllers.count == 1,
-               let only = windowControllers.first,
-               only.isPristineUntitled {
-                only.load(url: url)
-                only.showWindow(nil)
-                continue
-            }
-            let controller = makeController()
-            controller.load(url: url)
-            controller.showWindow(nil)
+            openFromFinder(url)
         }
+    }
+
+    /// Opens (or re-fronts) a single URL arriving from Finder/LaunchServices.
+    /// Handles three things beyond a plain load (T10.4):
+    ///   1. `.name.icloud` placeholder → real file URL.
+    ///   2. De-duplication: if a window is already open (or mid-download) for
+    ///      the same file, bring it forward instead of opening a duplicate —
+    ///      this kills the "two identical windows" report, including the extra
+    ///      `open` event LaunchServices re-sends after a download finishes.
+    ///   3. A not-yet-synced iCloud item opens a window immediately in a
+    ///      "(Downloading…)" state and loads once the download lands, rather
+    ///      than opening a blank/failed window that needs a second double-click.
+    private func openFromFinder(_ rawURL: URL) {
+        let url = UbiquitousFile.resolvedURL(for: rawURL)
+
+        // De-duplicate against an already-open (or downloading) window.
+        if let existing = windowControllers.first(where: {
+            guard let open = $0.currentFileURL else { return false }
+            return UbiquitousFile.sameFile(open, url)
+        }) {
+            existing.showWindow(nil)
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        // Reuse a single pristine untitled window (fresh launch case) instead of
+        // leaving it orphaned next to the opened document; otherwise open a new
+        // one. A window mid-download is not pristine, so it is never reused here.
+        let controller: EditorWindowController
+        if windowControllers.count == 1,
+           let only = windowControllers.first, only.isPristineUntitled {
+            controller = only
+        } else {
+            controller = makeController()
+        }
+
+        if shouldDownloadBeforeOpening(rawURL: rawURL, resolved: url) {
+            controller.beginDownloading(url: url)
+        } else {
+            controller.load(url: url)
+        }
+        controller.showWindow(nil)
+    }
+
+    /// Whether `url` must be pulled down from iCloud before it can be read.
+    /// A `.icloud` placeholder means the real file is not on disk yet, so it
+    /// always needs downloading; otherwise consult the item's resource values.
+    private func shouldDownloadBeforeOpening(rawURL: URL, resolved: URL) -> Bool {
+        if UbiquitousFile.isPlaceholder(rawURL) { return true }
+        guard let values = try? resolved.resourceValues(
+            forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey])
+        else { return false }
+        return UbiquitousFile.needsDownload(
+            isUbiquitous: values.isUbiquitousItem ?? false,
+            status: values.ubiquitousItemDownloadingStatus)
     }
 
     @objc public func showPreferences(_ sender: Any?) {

@@ -53,6 +53,19 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// keystroke after it has already been classified.
     private var didAutoDetectLanguage = false
 
+    /// While an iCloud item is being downloaded before it can be shown, this
+    /// holds the file's URL and a repeating poll timer. The window is "opened"
+    /// for this URL (so a second Finder double-click just fronts it, per T10.4
+    /// de-duplication) even though its content hasn't loaded yet. Both are
+    /// cleared — and the timer invalidated — when the download finishes or times
+    /// out, keeping with the "transient, not resident" rule (no standing service).
+    private var pendingDownloadURL: URL?
+    private var downloadTimer: Timer?
+
+    /// Poll interval and overall deadline for the iCloud download wait.
+    private static let downloadPollInterval: TimeInterval = 0.4
+    private static let downloadTimeout: TimeInterval = 120
+
     /// The document's current line-ending style. Detected on open / reopen and
     /// updated after a manual conversion; deliberately *not* re-detected on every
     /// keystroke (a document-level property, and detection scans the whole buffer),
@@ -205,6 +218,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        downloadTimer?.invalidate()
     }
 
     private static func makeEditorView() -> (NSScrollView, NSTextView) {
@@ -250,11 +264,84 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     // MARK: - Loading
 
-    /// True for a freshly created window: untitled, empty, never edited.
-    /// Used by the app delegate to reuse (rather than orphan) the initial
-    /// window when a file arrives from Finder right after launch.
+    /// True for a freshly created window: untitled, empty, never edited, and not
+    /// currently mid-download. Used by the app delegate to reuse (rather than
+    /// orphan) the initial window when a file arrives from Finder right after
+    /// launch. A window waiting on an iCloud download is *not* pristine — it is
+    /// already committed to a URL — so a second, different open opens elsewhere.
     var isPristineUntitled: Bool {
-        documentController.fileURL == nil && !documentController.isDirty && textView.string.isEmpty
+        pendingDownloadURL == nil
+            && documentController.fileURL == nil
+            && !documentController.isDirty
+            && textView.string.isEmpty
+    }
+
+    /// The URL this window is bound to for open/de-duplication purposes: the
+    /// in-flight download target while syncing, otherwise the loaded file's URL
+    /// (`nil` for an untitled document). Lets the app delegate front an existing
+    /// window instead of opening a duplicate for the same file (T10.4).
+    var currentFileURL: URL? {
+        pendingDownloadURL ?? documentController.fileURL
+    }
+
+    // MARK: - iCloud download (open a not-yet-synced ubiquitous file)
+
+    /// Opens a window for a ubiquitous item that is not yet on disk: kicks off
+    /// the iCloud download, shows a "(Downloading…)" title, and polls until the
+    /// file is readable (then loads it) or the deadline passes (then alerts).
+    /// The window counts as "open for `url`" for the whole wait, so repeated
+    /// double-clicks just re-front it rather than spawning duplicates.
+    public func beginDownloading(url: URL) {
+        pendingDownloadURL = url
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+
+        window?.title = L10n.t(.downloadingTitle, url.lastPathComponent)
+        window?.representedURL = url
+        window?.isDocumentEdited = false
+
+        let deadline = Date().addingTimeInterval(Self.downloadTimeout)
+        let timer = Timer.scheduledTimer(
+            withTimeInterval: Self.downloadPollInterval, repeats: true
+        ) { [weak self] timer in
+            self?.pollDownload(url: url, timer: timer, deadline: deadline)
+        }
+        downloadTimer = timer
+    }
+
+    private func pollDownload(url: URL, timer: Timer, deadline: Date) {
+        let status = (try? url.resourceValues(
+            forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
+
+        if UbiquitousFile.isDownloadComplete(status: status) {
+            endDownload(timer: timer)
+            load(url: url)
+            return
+        }
+        if Date() >= deadline {
+            endDownload(timer: timer)
+            updateWindowState()
+            showDownloadTimeout(url: url)
+        }
+    }
+
+    /// Tears down the transient poll timer and download state (no resident
+    /// service survives the operation).
+    private func endDownload(timer: Timer) {
+        timer.invalidate()
+        downloadTimer = nil
+        pendingDownloadURL = nil
+    }
+
+    private func showDownloadTimeout(url: URL) {
+        let alert = NSAlert()
+        alert.messageText = L10n.t(.downloadTimeoutTitle)
+        alert.informativeText = L10n.t(.downloadTimeoutMessage, url.lastPathComponent)
+        alert.alertStyle = .warning
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: nil)
+        } else {
+            alert.runModal()
+        }
     }
 
     /// Loads `url` into this window (used when opening a file in a new window).

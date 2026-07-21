@@ -57,6 +57,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case formatFailedTitle, formatErrorLine
     case closeConfirmMessage, closeConfirmInfo
     case dontSave, cancel, untitled
+    // iCloud download (opening a not-yet-synced ubiquitous file).
+    case downloadingTitle, downloadTimeoutTitle, downloadTimeoutMessage
     // Preferences.
     case prefTitle, prefModules, prefEditor
     case prefIndentWidthLabel, prefInsertSpaces, prefIndentRainbow, prefFontSizeLabel
