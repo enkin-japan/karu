@@ -37,14 +37,52 @@ public final class DocumentController {
 
     // MARK: - Load / save (UTF-8 plain text)
 
-    /// Reads `url` as UTF-8 text, adopts it as the current file, and clears
-    /// the dirty flag. Returns the loaded contents for the editor to display.
+    /// Reads `url` as text, adopts it as the current file, and clears the
+    /// dirty flag. Returns the loaded contents for the editor to display.
+    ///
+    /// Encoding: UTF-8 first (the format we save), then Foundation's own
+    /// detection (`usedEncoding` — catches UTF-16/32 BOMs and more), then the
+    /// common CJK legacy encodings (GB18030, Shift-JIS, Big5). Whatever the
+    /// source encoding was, the document is saved back as UTF-8.
     @discardableResult
     public func load(from url: URL) throws -> String {
-        let text = try String(contentsOf: url, encoding: .utf8)
+        let text = try Self.decodeText(from: url)
         fileURL = url
         isDirty = false
         return text
+    }
+
+    /// Decoding strategy shared by `load`; internal so tests can exercise it.
+    static func decodeText(from url: URL) throws -> String {
+        if let utf8 = try? String(contentsOf: url, encoding: .utf8) {
+            return utf8
+        }
+        // BOM-based detection. `usedEncoding` never really fails (it happily
+        // "decodes" anything as Latin-1 / MacRoman), so only trust it when it
+        // identified an actual Unicode variant — i.e. the file carried a BOM.
+        var detected: String.Encoding = .utf8
+        if let sniffed = try? String(contentsOf: url, usedEncoding: &detected),
+           [.utf16, .utf16BigEndian, .utf16LittleEndian,
+            .utf32, .utf32BigEndian, .utf32LittleEndian].contains(detected) {
+            return sniffed
+        }
+        // Statistical detection for legacy encodings (GB18030 / Shift-JIS /
+        // Big5 / Latin-1, …). Trying them in a fixed order would mis-decode:
+        // GB18030 accepts nearly every byte sequence, so Shift-JIS files turn
+        // to mojibake. `stringEncoding(for:)` weighs the candidates instead.
+        let data = try Data(contentsOf: url)
+        var converted: NSString?
+        let encoding = NSString.stringEncoding(
+            for: data,
+            encodingOptions: [.allowLossyKey: false],
+            convertedString: &converted,
+            usedLossyConversion: nil
+        )
+        if encoding != 0, let converted {
+            return converted as String
+        }
+        throw CocoaError(.fileReadInapplicableStringEncoding,
+                         userInfo: [NSFilePathErrorKey: url.path])
     }
 
     /// Writes `text` to the current file. Fails if there is no file yet.

@@ -538,6 +538,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard documentController.isDirty else { return true }
+        // An untitled document whose text is empty has nothing worth saving
+        // (e.g. the user typed and deleted everything) — close silently.
+        if documentController.fileURL == nil && textView.string.isEmpty { return true }
 
         let alert = NSAlert()
         alert.messageText = L10n.t(.closeConfirmMessage, displayName)

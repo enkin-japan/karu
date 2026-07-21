@@ -107,3 +107,50 @@ private func makeTempURL(ext: String = "txt") -> URL {
     let reloaded = try DocumentController().load(from: url)
     #expect(reloaded == "b")
 }
+
+// MARK: - Encoding fallback (v0.2.1 regression tests)
+
+@Test func loadsUTF16FileWithBOM() throws {
+    let url = makeTempURL(ext: "md")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let original = "# 参考文献\n[1] Gemma モデルの概要， https://example.com (参照2026-07-21)．"
+    try original.data(using: .utf16)!.write(to: url)
+
+    let doc = DocumentController()
+    #expect(try doc.load(from: url) == original)
+}
+
+@Test func loadsShiftJISFile() throws {
+    let url = makeTempURL(ext: "txt")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let original = """
+    日本語のドキュメントです。文字コードの自動判定を検証します。
+    [1] Gemma モデルの概要 | Google AI for Developers （参照2026-07-21）．
+    [2] MLX - Apple Open Source プロジェクトの解説と利用方法について。
+    改行を含む複数行のテキストで、実際のファイルに近いサンプルとする。
+    """
+    try original.data(using: .shiftJIS)!.write(to: url)
+
+    let doc = DocumentController()
+    #expect(try doc.load(from: url) == original)
+}
+
+@Test func loadsGB18030File() throws {
+    let url = makeTempURL(ext: "txt")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let gbk = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+        CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
+    let original = "中文文档，全角标点。"
+    try original.data(using: gbk)!.write(to: url)
+
+    let doc = DocumentController()
+    #expect(try doc.load(from: url) == original)
+}
+
+@Test func savedFileIsAlwaysUTF8RoundTrip() throws {
+    let url = makeTempURL(ext: "txt")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let doc = DocumentController()
+    try doc.save(text: "混合 テキスト mixed", to: url)
+    #expect(try String(contentsOf: url, encoding: .utf8) == "混合 テキスト mixed")
+}

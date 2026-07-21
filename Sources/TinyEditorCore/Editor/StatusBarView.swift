@@ -98,11 +98,12 @@ public final class StatusBarView: NSView {
         ])
     }
 
-    public override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
-        dirtyRect.fill()
-        super.draw(dirtyRect)
-    }
+    // Deliberately NO draw(_:) override here. Overriding draw with an opaque
+    // fill on a stack sibling of the editor's scroll view switches the whole
+    // window onto a compositing path (macOS 26 beta) where NSTextView /
+    // NSRulerView classic drawing never reaches the screen — the "completely
+    // blank editor" bug shipped in v0.2.0. The window background showing
+    // through is exactly the look we want anyway.
 
     // MARK: - Updates
 

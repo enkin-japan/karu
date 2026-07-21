@@ -37,6 +37,37 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         NSApp.activate(ignoringOtherApps: true)
+
+        // Headless visual-diagnostics hook: TINYEDITOR_SNAPSHOT=<png-path>
+        // renders the first window's content view to a PNG after layout settles
+        // and exits. Lets scripts verify real rendering without the screen-
+        // recording permission that `screencapture` needs.
+        if let snapshotPath = ProcessInfo.processInfo.environment["TINYEDITOR_SNAPSHOT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if let view = NSApp.windows.first(where: { $0.isVisible })?.contentView,
+                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?
+                        .write(to: URL(fileURLWithPath: snapshotPath))
+                    // Companion hierarchy dump for frame-level diagnostics.
+                    var dump = ""
+                    func walk(_ v: NSView, _ depth: Int) {
+                        dump += String(repeating: "  ", count: depth)
+                        dump += "\(type(of: v)) frame=\(v.frame) hidden=\(v.isHidden)"
+                        if let tv = v as? NSTextView {
+                            dump += " textLen=\((tv.string as NSString).length)"
+                            dump += " container=\(tv.textContainer?.size ?? .zero)"
+                            dump += " usedRect=\(tv.layoutManager?.usedRect(for: tv.textContainer!) ?? .zero)"
+                        }
+                        dump += "\n"
+                        for sub in v.subviews { walk(sub, depth + 1) }
+                    }
+                    walk(view, 0)
+                    try? dump.write(toFile: snapshotPath + ".txt", atomically: true, encoding: .utf8)
+                }
+                NSApp.terminate(nil)
+            }
+        }
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
