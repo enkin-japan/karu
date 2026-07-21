@@ -98,10 +98,10 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
 |---|---|---|---|---|---|
 | T10.1 | 标题栏透明致标题与文本重叠（macOS 26 Liquid Glass）：内容 stack 锚定 contentLayoutGuide + 显式不透明标题栏；快照钩子增强（整窗捕捉/外观/滚动参数）但未能静态复现，待用户实测确认 | Editor/EditorWindowController.swift, App/AppDelegate.swift | main | 用户复测不再重叠 | ✅ 防护已上，待用户确认 |
-| T10.2 | 内置函数（print/open 等 builtins）高亮 + 变量声明模式补漏 + VS Code Dark/Light Modern 风格配色（动态外观） | Highlight/, Completion/WordIndex.swift | implementer | builtin 染色测试；深浅色快照 | 🔄 |
+| T10.2 | 内置函数（print/open 等 builtins）高亮 + 变量声明模式补漏 + VS Code Dark/Light Modern 风格配色（动态外观） | Highlight/, Completion/WordIndex.swift | implementer | builtin 染色测试；深浅色快照 | ✅ 14 新测试；主会话补 tokenizer 边界修复（.withTransparentBounds，main 内 in 误染类 bug 根治）|
 | T10.3 | Format Document 快捷键 ⌃⇧F → ⌥⇧F（VS Code 同款） | App/MainMenu.swift | main | 菜单显示 ⌥⇧F | ✅ |
-| T10.4 | iCloud 未下载文件：双击触发下载但不打开、再次双击开双窗 → 下载中窗口 + 轮询完成自动载入 + 同 URL 去重 | App/AppDelegate.swift, Editor/ | implementer | 去重/占位名换算单测；双击两次 windows=1 | 🔄 |
-| T10.5 | 开源准备：MIT LICENSE、git remote（github.com/enkin-japan/karu）、README、首个 Release | LICENSE, README.md | main | push 成功、Release 挂 DMG | 🔄 LICENSE 就绪 |
+| T10.4 | iCloud 未下载文件：双击触发下载但不打开、再次双击开双窗 → 下载中窗口 + 轮询完成自动载入 + 同 URL 去重 | App/AppDelegate.swift, Editor/ | implementer | 去重/占位名换算单测；双击两次 windows=1 | ✅ 18 新测试；无 iCloud 测试环境，真机行为待用户确认 |
+| T10.5 | 开源准备：MIT LICENSE、git remote（github.com/enkin-japan/karu）、README、首个 Release | LICENSE, README.md | main | push 成功、Release 挂 DMG | ✅ v0.6.0 |
 
 ## 依赖关系
 
