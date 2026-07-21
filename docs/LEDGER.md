@@ -113,6 +113,30 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T11.4 | 标题栏文件名胶囊点击改名（方框+背景色差暗示；DocumentController.rename 可单测；untitled 不启用） | Editor/TitleRenameControl（新）等 | implementer | rename 校验单测；快照确认胶囊 | ✅ 6 rename 测试 |
 | T11.5 | Ctrl+G 直达某行（预算评估：瞬时面板+复用 LineIndex，常驻 ≈ 0，绿灯）；键位对齐 VS Code | Editor/GoToLineController（新）, MainMenu, L10n | implementer | parseLineInput 单测；跳转选中滚动正确 | ✅ 370 全绿 |
 
+## M12 Monaco 对比采纳 + 用户反馈第八轮（2026-07-22，决议见 notes/monaco-gap-analysis.md，不入仓库）
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T12.1 | bug：⌥⇧F 变成输入特殊字符——无 ⌘ 的 Option 组合菜单匹配不可靠，落入 keyDown 被插入"Ï"。EditorTextView 键路径前置拦截 → 发 formatDocument 到响应链 | Editor/EditorTextView.swift | implementer | 静态匹配函数单测；实际按键不再插入字符 | ✅ 7 测试 |
+| T12.2 | 关闭确认按**内容**判定：DocumentController 存基线 SHA256（load/save/reload/init 时更新，常驻 32 字节），关闭/重开确认时瞬时比对，undo 回原文不弹窗 | App/DocumentController.swift, Editor/EditorWindowController.swift | implementer | 基线转移单测（load→edit→undo 回原文 = clean）；suite 全绿 | ✅ 6 测试，383 全绿 |
+| T12.3 | A1 注释切换 ⌘/：per-language 行/块注释表 + 纯文本变换 | Editor/CommentToggle（新）, MainMenu, L10n, Languages | implementer | 变换纯函数单测（含块注释语言）；370+ 全绿 | ⬜ |
+| T12.4 | A2 行操作：上移/下移 ⌥↑↓、复制行 ⇧⌥↑↓、删除行 ⌘⇧K（join 暂不做） | Editor/LineOperations（新）, MainMenu, L10n | implementer | 纯函数单测（选区保持/首尾行边界）；undo 正确 | ⬜ |
+| T12.5 | A6 字体缩放：新建"视图"菜单，放大 ⌘+ / 缩小 ⌘- / 实际大小 ⌘0，UserDefaults 持久 | Editor/, MainMenu, L10n, Settings | implementer | 缩放范围钳制单测 | ⬜ |
+| T12.6 | A4 自动闭合括号/引号 + 选中包裹（右侧已闭合跳过、词内引号不闭合；设置开关默认开） | Editor/AutoClosePairs（新）, EditorTextView, Settings | implementer | 决策纯函数单测（成对/跳过/包裹/词内） | ⬜ |
+| T12.7 | A3 括号配对高亮 + ⌘⇧\ 跳转（viewport 扫描，temporary attributes） | Editor/BracketMatcher（新）, EditorWindowController, MainMenu | implementer | 配对定位纯函数单测（嵌套/字符串内跳过可后补） | ⬜ |
+| T12.8 | A5 命令面板 ⌘⇧P：枚举主菜单树 + 模糊过滤，复用瞬时面板模板 | Editor/CommandPalette（新）, MainMenu, L10n | implementer | 过滤/枚举单测；执行走 NSApp.sendAction | ⬜ |
+| T12.9 | A7 光标词高亮（viewport 内同词匹配，debounce，temporary attributes 独立通道） | Editor/WordOccurrenceHighlighter（新） | implementer | 词边界匹配单测；快照可见 | ⬜ |
+| T12.10 | A8 不可见/易混淆字符警示 + 异常行终止符（viewport 正则 + 着色边框） | Editor/UnicodeAlert（新） | implementer | 检测纯函数单测（零宽/BOM/双向控制/LS·PS） | ⬜ |
+| T12.11 | E2 状态栏选中字符数（选区>0 显示"已选 N 字符·M 行"，UTF-16 口径 O(1)） | Editor/EditorWindowController.swift, StatusBarView, L10n | chore-worker | 有/无选区状态切换；三语 key 完整性测试 | ⬜ |
+| T12.12 | E3 一键折叠/展开：视图菜单 + 折叠当前块 ⌥⌘[/⌥⌘] + 全折/全展（⌘K ⌘0 / ⌘K ⌘J 前缀和弦状态机）；isHidden 改二分 | Editor/FoldingController, EditorTextView, MainMenu, L10n | implementer | foldAll/unfoldAll/当前块单测；和弦状态机单测 | ⬜ |
+| T12.13 | E4 折叠跨编辑保持：行号三规则维护（上方保留/下方平移/相交展开）+ applyFolds 定向失效 | Editor/FoldingController.swift | implementer | 平移/相交/undo 测试矩阵；10MB 逐键无卡顿 | ⬜ |
+| T12.14 | E1 失焦自动保存（默认关，设置开关；失败静默回 dirty + 状态栏提示，绝不弹窗；untitled 跳过） | App/, Editor/, Settings, L10n | implementer | 触发条件纯逻辑单测；开关持久 | ⬜ |
+| T12.15 | C8 CSS 颜色装饰器（viewport 正则 + 色块 attachment-free 绘制） | Editor/ColorDecorator（新）, Highlight | implementer | 颜色解析单测（hex/rgb/hsl/命名色） | ⬜ |
+| T12.16 | A9 语言定义扩充：YAML / TOML / Go / Rust / Swift（懒加载；Ruby/PHP/Kotlin/INI/Dockerfile 留积压） | Highlight/Languages/*（新×5）, SupportedLanguage | implementer | 每语言 tokenizer 测试；builtins 高亮 | ⬜ |
+| T12.17 | 文档对齐（README×3 功能项、ARCHITECTURE 语言数、变更记录）+ v0.8.0 发布（版本号红线文件 main 改） | README*, docs/, scripts/bundle-macos.sh | chore-worker + main | 370+ 全绿、visual-smoke、mem-benchmark、公证发布 | ⬜ |
+
+（B1 多光标维持独立里程碑不混排；C 组除 C8 外按决议不做。）
+
 ## 依赖关系
 
 T1.1 → T2.1 → T2.2/T2.3/T2.4（可并行）→ T3.1 → T3.2/T3.3（可并行）→ T3.4/T3.5

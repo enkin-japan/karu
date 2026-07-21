@@ -370,12 +370,41 @@ public final class EditorTextView: NSTextView {
         }
     }
 
+    // MARK: Format Document chord
+
+    /// Pure predicate for the Format Document chord (⌥⇧F). Factored out so it
+    /// can be unit-tested without a live event.
+    ///
+    /// AppKit's menu matching for Option-bearing key equivalents is unreliable
+    /// (the event's `characters` are already remapped by Option, e.g. "Ï"), so
+    /// the chord can slip past the menu and land in `keyDown` as literal text.
+    /// We match on `charactersIgnoringModifiers`, which still reflects Shift —
+    /// hence the `lowercased()` comparison against "f".
+    static func isFormatDocumentChord(
+        modifiers: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers: String?
+    ) -> Bool {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.option), flags.contains(.shift),
+              !flags.contains(.command), !flags.contains(.control) else {
+            return false
+        }
+        return charactersIgnoringModifiers?.lowercased() == "f"
+    }
+
     // MARK: Completion key routing
 
     /// Give an active completion popup first refusal on navigation keys, then
     /// let the normal input path run and notify the popup of the keystroke so it
     /// can open / refilter / dismiss. Zero overhead when no handler is attached.
     public override func keyDown(with event: NSEvent) {
+        // Intercept ⌥⇧F before it can be inserted as a literal "Ï": route it to
+        // the Format Document action (which self-gates on module/language).
+        if Self.isFormatDocumentChord(modifiers: event.modifierFlags,
+                                      charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
+            NSApp.sendAction(#selector(EditorWindowController.formatDocument(_:)), to: nil, from: self)
+            return
+        }
         if let handler = completionKeyHandler,
            handler.isCompletionActive,
            handler.handleCompletionKeyDown(event) {

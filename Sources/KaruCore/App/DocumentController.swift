@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// UI-independent document state model.
 ///
@@ -14,8 +15,29 @@ public final class DocumentController {
     /// `true` once the in-memory text diverges from what is on disk.
     public private(set) var isDirty: Bool = false
 
+    /// SHA-256 of the last known on-disk contents (a fixed 32-byte summary — no
+    /// full-text copy is retained, honouring the resident-memory red line).
+    /// Used by `matchesBaseline` so a close/discard prompt can be skipped when
+    /// the current text is byte-for-byte the saved contents (e.g. edited then
+    /// undone). Seeded with the digest of the empty string so a fresh untitled
+    /// document treats "" as its baseline.
+    private var baselineDigest: SHA256.Digest = SHA256.hash(data: Data())
+
     public init(fileURL: URL? = nil) {
         self.fileURL = fileURL
+    }
+
+    /// Records `text` as the new on-disk baseline. Called only at low-frequency
+    /// moments (load / reload / save), never per keystroke.
+    private func setBaseline(text: String) {
+        baselineDigest = SHA256.hash(data: Data(text.utf8))
+    }
+
+    /// `true` when `text` hashes to the current baseline — i.e. it is identical
+    /// to the last loaded/saved contents. Computed on demand (close/confirm
+    /// time) so no digest work happens on the typing hot path.
+    public func matchesBaseline(_ text: String) -> Bool {
+        SHA256.hash(data: Data(text.utf8)) == baselineDigest
     }
 
     /// Title suitable for a window: the file name, or "Untitled".
@@ -69,6 +91,7 @@ public final class DocumentController {
         let text = try Self.decodeText(from: url)
         fileURL = url
         isDirty = false
+        setBaseline(text: text)
         return text
     }
 
@@ -128,6 +151,7 @@ public final class DocumentController {
         }
         fileURL = url
         isDirty = false
+        setBaseline(text: text)
         return text
     }
 
@@ -136,6 +160,7 @@ public final class DocumentController {
         guard let url = fileURL else { throw DocumentError.noFileURL }
         try write(text, to: url)
         isDirty = false
+        setBaseline(text: text)
     }
 
     /// Writes `text` to `url`, adopts it as the current file, and clears the
@@ -144,6 +169,7 @@ public final class DocumentController {
         try write(text, to: url)
         fileURL = url
         isDirty = false
+        setBaseline(text: text)
     }
 
     private func write(_ text: String, to url: URL) throws {

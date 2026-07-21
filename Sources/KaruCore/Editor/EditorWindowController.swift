@@ -652,8 +652,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
               let encoding = TextEncoding(rawValue: raw),
               let url = documentController.fileURL else { NSSound.beep(); return }
 
-        // Warn before discarding unsaved edits.
-        if documentController.isDirty && !confirmReopenDiscardingChanges() { return }
+        // Warn before discarding unsaved edits (only when the text actually
+        // diverges from the saved contents).
+        if documentController.isDirty,
+           !documentController.matchesBaseline(textView.string),
+           !confirmReopenDiscardingChanges() { return }
 
         do {
             let text = try documentController.reload(from: url, encoding: encoding)
@@ -889,10 +892,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     // MARK: - Close confirmation
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard documentController.isDirty else { return true }
-        // An untitled document whose text is empty has nothing worth saving
-        // (e.g. the user typed and deleted everything) — close silently.
-        if documentController.fileURL == nil && textView.string.isEmpty { return true }
+        // Prompt only when the flag is dirty *and* the current text truly
+        // differs from the saved contents. Editing then undoing back to the
+        // baseline (or emptying a fresh untitled doc — its baseline is "")
+        // hashes equal, so we close silently.
+        guard documentController.isDirty,
+              !documentController.matchesBaseline(textView.string) else { return true }
 
         let alert = NSAlert()
         alert.messageText = L10n.t(.closeConfirmMessage, displayName)

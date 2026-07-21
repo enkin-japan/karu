@@ -241,3 +241,76 @@ private func makeTempURL(ext: String = "txt") -> URL {
         try doc.rename(to: "whatever.txt")
     }
 }
+
+// MARK: - Content baseline (T12.2 close-by-content)
+
+@Test func newDocumentBaselineIsEmptyString() {
+    let doc = DocumentController()
+    #expect(doc.matchesBaseline("") == true)
+    #expect(doc.matchesBaseline("x") == false)
+}
+
+@Test func loadEstablishesBaseline() throws {
+    let url = makeTempURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    try Data("loaded content".utf8).write(to: url)
+
+    let doc = DocumentController()
+    let text = try doc.load(from: url)
+    #expect(doc.matchesBaseline(text) == true)
+    #expect(doc.matchesBaseline("loaded content") == true)
+    #expect(doc.matchesBaseline("different") == false)
+}
+
+@Test func baselineIsIndependentOfDirtyFlag() throws {
+    let url = makeTempURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    try Data("original".utf8).write(to: url)
+
+    let doc = DocumentController()
+    let text = try doc.load(from: url)
+    // Simulate an edit-then-undo: the dirty flag latches, but the current text
+    // is back to the loaded contents, so it still matches the baseline.
+    doc.markEdited()
+    #expect(doc.isDirty == true)
+    #expect(doc.matchesBaseline(text) == true)
+}
+
+@Test func plainSaveTransfersBaseline() throws {
+    let url = makeTempURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let doc = DocumentController()
+    try doc.save(text: "first", to: url)   // establishes URL + baseline
+    try doc.save(text: "second")           // plain save moves the baseline
+    #expect(doc.matchesBaseline("second") == true)
+    #expect(doc.matchesBaseline("first") == false)
+}
+
+@Test func saveAsTransfersBaseline() throws {
+    let first = makeTempURL()
+    let second = makeTempURL()
+    defer {
+        try? FileManager.default.removeItem(at: first)
+        try? FileManager.default.removeItem(at: second)
+    }
+
+    let doc = DocumentController()
+    try doc.save(text: "v1", to: first)
+    try doc.save(text: "v2", to: second)
+    #expect(doc.matchesBaseline("v2") == true)
+    #expect(doc.matchesBaseline("v1") == false)
+}
+
+@Test func reloadWithEncodingResetsBaseline() throws {
+    let url = makeTempURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let original = "日本語のサンプル"
+    try original.data(using: .shiftJIS)!.write(to: url)
+
+    let doc = DocumentController()
+    doc.markEdited()
+    let text = try doc.reload(from: url, encoding: .shiftJIS)
+    #expect(doc.matchesBaseline(text) == true)
+    #expect(doc.matchesBaseline(original) == true)
+}
