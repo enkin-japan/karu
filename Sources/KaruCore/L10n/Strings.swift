@@ -133,6 +133,8 @@ extension L10n {
         .statusLnCol: "Ln %d, Col %d",
         .statusCharOne: "%d char",
         .statusCharMany: "%d chars",
+        .statusSelection: "%d selected · %d lines",
+        .statusSelectionSingleLine: "%d selected",
     ]
 
     static let zhHansTable: [L10nKey: String] = [
@@ -258,6 +260,8 @@ extension L10n {
         .statusLnCol: "行 %d，列 %d",
         .statusCharOne: "%d 个字符",
         .statusCharMany: "%d 个字符",
+        .statusSelection: "已选 %d 字符 · %d 行",
+        .statusSelectionSingleLine: "已选 %d 字符",
     ]
 
     static let jaTable: [L10nKey: String] = [
@@ -383,5 +387,7 @@ extension L10n {
         .statusLnCol: "%d 行、%d 桁",
         .statusCharOne: "%d 文字",
         .statusCharMany: "%d 文字",
+        .statusSelection: "%d 文字選択 · %d 行",
+        .statusSelectionSingleLine: "%d 文字選択",
     ]
 }

@@ -523,9 +523,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         textView.scrollRangeToVisible(destination)
     }
 
-    /// Recomputes the status strip's caret position, language, and char count.
+    /// Recomputes the status strip's caret position, language, and char count
+    /// (or, while there is an active selection, the selection's character
+    /// count and line span).
     private func refreshStatusBar() {
-        let caret = textView.selectedRange().location
+        let selection = textView.selectedRange()
+        let caret = selection.location
         let line = lineIndex.lineNumber(forOffset: caret)
         let lineStart = lineIndex.offsetRange(ofLine: line).lowerBound
         statusBar.updateCaret(line: line,
@@ -533,7 +536,18 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
                                                               lineStartOffset: lineStart))
         statusBar.updateLanguage(currentLanguageIdentifierValue)
         statusBar.updateLineEnding(currentLineEnding)
+
+        // Keep the full-document count current (also what `clearSelection()`
+        // restores) before deciding which caption the right-hand field shows.
         statusBar.updateCharacterCount((textView.string as NSString).length)
+
+        if selection.length > 0 {
+            let startLine = lineIndex.lineNumber(forOffset: selection.location)
+            let endLine = lineIndex.lineNumber(forOffset: selection.location + selection.length)
+            statusBar.updateSelection(length: selection.length, lines: endLine - startLine + 1)
+        } else {
+            statusBar.clearSelection()
+        }
     }
 
     /// Sniffs the buffer for a language once it has accumulated enough content,

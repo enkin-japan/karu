@@ -24,6 +24,17 @@ public enum StatusBarMetrics {
                                                  language: AppLanguage = L10n.current) -> String {
         L10n.string(count == 1 ? .statusCharOne : .statusCharMany, language: language, count)
     }
+
+    /// The caption shown on the right while there is an active selection:
+    /// selected character count, plus the number of lines it spans (omitted
+    /// when the selection sits on a single line).
+    public static func selectionDescription(length: Int, lines: Int,
+                                            language: AppLanguage = L10n.current) -> String {
+        if lines <= 1 {
+            return L10n.string(.statusSelectionSingleLine, language: language, length)
+        }
+        return L10n.string(.statusSelection, language: language, length, lines)
+    }
 }
 
 /// A slim (22 pt) footer strip: caret position on the left, current language in
@@ -37,6 +48,11 @@ public final class StatusBarView: NSView {
     private let languageLabel = NSTextField(labelWithString: "")
     private let countLabel = NSTextField(labelWithString: "")
     private let separator = NSBox()
+
+    /// The full-document character count last reported via
+    /// `updateCharacterCount(_:)`, kept so `clearSelection()` can restore the
+    /// count label without the caller having to re-supply it.
+    private var lastCharacterCount = 0
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -123,6 +139,23 @@ public final class StatusBarView: NSView {
     }
 
     public func updateCharacterCount(_ count: Int) {
+        lastCharacterCount = count
         countLabel.stringValue = StatusBarMetrics.characterCountDescription(count)
     }
+
+    /// Switches the count field to the selection caption ("N selected · M
+    /// lines") while there is an active, non-empty selection.
+    public func updateSelection(length: Int, lines: Int) {
+        countLabel.stringValue = StatusBarMetrics.selectionDescription(length: length, lines: lines)
+    }
+
+    /// Restores the count field to the plain full-document character count
+    /// (as last reported via `updateCharacterCount(_:)`) once the selection
+    /// collapses back to a caret.
+    public func clearSelection() {
+        countLabel.stringValue = StatusBarMetrics.characterCountDescription(lastCharacterCount)
+    }
+
+    /// The count field's current text (exposed for tests / diagnostics).
+    var characterCountText: String { countLabel.stringValue }
 }

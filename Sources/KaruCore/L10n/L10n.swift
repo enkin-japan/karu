@@ -80,6 +80,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case moduleHighlight, moduleCompletion, moduleFormat
     // Status bar.
     case statusLnCol, statusCharOne, statusCharMany
+    case statusSelection, statusSelectionSingleLine
 }
 
 /// Lightweight, in-code localization: three string tables selected at runtime by
