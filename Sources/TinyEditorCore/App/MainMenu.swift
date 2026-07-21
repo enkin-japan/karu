@@ -12,6 +12,9 @@ enum MainMenu {
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…",
+                        action: #selector(AppDelegate.showPreferences(_:)), keyEquivalent: ",")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide TinyEditor",
                         action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
@@ -61,6 +64,18 @@ enum MainMenu {
         findPrev.keyEquivalentModifierMask = [.command, .shift]
         findMenu.addItem(withTitle: "Use Selection for Find",
                          action: #selector(EditorWindowController.useSelectionForFind(_:)), keyEquivalent: "e")
+
+        // Format menu: targets the first responder (EditorWindowController),
+        // which gates the item on the `format` module + supported language via
+        // validateMenuItem.
+        let formatMenuItem = NSMenuItem()
+        mainMenu.addItem(formatMenuItem)
+        let formatMenu = NSMenu(title: "Format")
+        formatMenuItem.submenu = formatMenu
+        let formatDoc = formatMenu.addItem(withTitle: "Format Document",
+                                           action: #selector(EditorWindowController.formatDocument(_:)),
+                                           keyEquivalent: "f")
+        formatDoc.keyEquivalentModifierMask = [.control, .shift]
 
         return mainMenu
     }

@@ -3,6 +3,10 @@ import AppKit
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowControllers: [EditorWindowController] = []
 
+    /// Single shared preferences window; created on first use, then just
+    /// brought forward on subsequent opens.
+    private lazy var preferencesController = PreferencesWindowController()
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
         newDocument(nil)
@@ -40,6 +44,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.load(url: url)
             controller.showWindow(nil)
         }
+    }
+
+    @objc public func showPreferences(_ sender: Any?) {
+        preferencesController.showWindow(nil)
+        preferencesController.window?.makeKeyAndOrderFront(nil)
     }
 
     private func makeController() -> EditorWindowController {

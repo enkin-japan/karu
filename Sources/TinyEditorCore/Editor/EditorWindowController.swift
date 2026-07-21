@@ -1,6 +1,6 @@
 import AppKit
 
-public final class EditorWindowController: NSWindowController, NSWindowDelegate {
+public final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
     var onClose: (() -> Void)?
 
     let documentController = DocumentController()
@@ -116,7 +116,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let textView = EditorTextView()
         textView.isRichText = false
         textView.allowsUndo = true
-        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.font = .monospacedSystemFont(ofSize: EditorFontSettings().fontSize, weight: .regular)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
@@ -194,6 +194,70 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
     @objc public func useSelectionForFind(_ sender: Any?) {
         findBar.useSelectionForFind()
+    }
+
+    // MARK: - Format action (first-responder target)
+
+    /// Pretty-prints the whole document using the built-in formatter for its
+    /// language. Gated on the `format` module and on the language being one the
+    /// dispatcher supports (JSON / JSONL / XML / plist); `validateMenuItem`
+    /// greys the item out otherwise, so this is a belt-and-suspenders beep.
+    @objc public func formatDocument(_ sender: Any?) {
+        guard ModuleSettings().isEnabled(.format) else { NSSound.beep(); return }
+        let language = (textView as? EditorTextView)?.languageIdentifier ?? ""
+        guard FormatDispatch.supports(languageIdentifier: language) else { NSSound.beep(); return }
+
+        let width = IndentSettings().width(for: language)
+        switch FormatDispatch.format(text: textView.string,
+                                     languageIdentifier: language,
+                                     indentWidth: width) {
+        case .success(let formatted):
+            guard formatted != textView.string else { return }
+            // Whole-document replacement as a single undo step (mirrors the
+            // find bar's Replace All path).
+            let full = NSRange(location: 0, length: (textView.string as NSString).length)
+            if textView.shouldChangeText(in: full, replacementString: formatted) {
+                textView.textStorage?.replaceCharacters(in: full, with: formatted)
+                textView.didChangeText()
+            }
+        case .failure(let error):
+            handleFormatError(error)
+        }
+    }
+
+    private func handleFormatError(_ error: FormatDispatchError) {
+        switch error {
+        case .unsupportedLanguage:
+            NSSound.beep()
+        case .syntax(let line, let message):
+            // Move the caret to the offending line using the window's shared
+            // line index, then scroll it into view.
+            let range = lineIndex.offsetRange(ofLine: line)
+            let caret = NSRange(location: range.lowerBound, length: 0)
+            textView.setSelectedRange(caret)
+            textView.scrollRangeToVisible(caret)
+
+            let alert = NSAlert()
+            alert.messageText = "Formatting failed"
+            alert.informativeText = "Line \(line): \(message)"
+            alert.alertStyle = .warning
+            if let window {
+                alert.beginSheetModal(for: window, completionHandler: nil)
+            } else {
+                alert.runModal()
+            }
+        }
+    }
+
+    // MARK: - Menu validation
+
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(formatDocument(_:)) {
+            guard ModuleSettings().isEnabled(.format) else { return false }
+            let language = (textView as? EditorTextView)?.languageIdentifier ?? ""
+            return FormatDispatch.supports(languageIdentifier: language)
+        }
+        return true
     }
 
     // MARK: - Save actions (first-responder targets)
