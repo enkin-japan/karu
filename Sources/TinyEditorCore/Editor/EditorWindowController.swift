@@ -53,6 +53,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// keystroke after it has already been classified.
     private var didAutoDetectLanguage = false
 
+    /// The document's current line-ending style. Detected on open / reopen and
+    /// updated after a manual conversion; deliberately *not* re-detected on every
+    /// keystroke (a document-level property, and detection scans the whole buffer),
+    /// so the status bar just renders this stored value.
+    private var currentLineEnding: LineEnding = .lf
+
     public convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -238,6 +244,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             layoutModeController?.setLength((text as NSString).length)
             textView.string = text
 
+            // Detect the file's line-ending style for the status bar.
+            currentLineEnding = LineEnding.detect(in: text)
+
             // Loading a file resets any prior manual override / detection.
             userOverrodeLanguage = false
             didAutoDetectLanguage = false
@@ -307,6 +316,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
                               column: StatusBarMetrics.column(caretOffset: caret,
                                                               lineStartOffset: lineStart))
         statusBar.updateLanguage(currentLanguageIdentifierValue)
+        statusBar.updateLineEnding(currentLineEnding)
         statusBar.updateCharacterCount((textView.string as NSString).length)
     }
 
@@ -457,6 +467,86 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
     }
 
+    // MARK: - Reopen with Encoding (first-responder target)
+
+    /// Re-reads the file from disk and force-decodes it with the user-chosen
+    /// encoding (File ▸ Reopen with Encoding), the fallback when auto-detection
+    /// guessed wrong. Confirms first if there are unsaved changes (reopening
+    /// discards them); reports a decode failure with an alert. Saving is
+    /// unaffected — the document is still written back as UTF-8.
+    @objc public func reopenWithEncoding(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let raw = item.representedObject as? String,
+              let encoding = TextEncoding(rawValue: raw),
+              let url = documentController.fileURL else { NSSound.beep(); return }
+
+        // Warn before discarding unsaved edits.
+        if documentController.isDirty && !confirmReopenDiscardingChanges() { return }
+
+        do {
+            let text = try documentController.reload(from: url, encoding: encoding)
+            layoutModeController?.setLength((text as NSString).length)
+            textView.string = text
+            currentLineEnding = LineEnding.detect(in: text)
+
+            // Re-index / re-detect exactly as a fresh load would; the reopen
+            // clears the dirty flag (the on-disk bytes are now authoritative).
+            completionController.indexDocument()
+            redetectIndentUnit()
+            updateWindowState()
+            toolbarController?.refreshAll()
+            refreshStatusBar()
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = L10n.t(.encodingDecodeFailedTitle)
+            alert.informativeText = L10n.t(.encodingDecodeFailedMessage)
+            alert.alertStyle = .warning
+            if let window {
+                alert.beginSheetModal(for: window, completionHandler: nil)
+            } else {
+                alert.runModal()
+            }
+        }
+    }
+
+    /// Modal confirmation shown before a reopen throws away unsaved edits.
+    /// Returns `true` if the user chose to proceed.
+    private func confirmReopenDiscardingChanges() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = L10n.t(.reopenConfirmMessage, displayName)
+        alert.informativeText = L10n.t(.reopenConfirmInfo)
+        alert.addButton(withTitle: L10n.t(.reopenDiscardButton))
+        alert.addButton(withTitle: L10n.t(.cancel))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    // MARK: - Convert Line Endings (first-responder target)
+
+    /// Rewrites every line ending in the document to the chosen style
+    /// (Format ▸ Convert Line Endings). The replacement flows through the text
+    /// view's `shouldChangeText` / `didChangeText` channel so it lands as one
+    /// undoable step; the status bar and dirty flag then reflect the new style.
+    @objc public func convertLineEndings(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let raw = item.representedObject as? String,
+              let target = LineEnding(rawValue: raw) else { NSSound.beep(); return }
+
+        let converted = LineEnding.convert(textView.string, to: target)
+        guard converted != textView.string else {
+            // Nothing changed (already this style) — just refresh the caption.
+            currentLineEnding = target
+            refreshStatusBar()
+            return
+        }
+        let full = NSRange(location: 0, length: (textView.string as NSString).length)
+        if textView.shouldChangeText(in: full, replacementString: converted) {
+            textView.textStorage?.replaceCharacters(in: full, with: converted)
+            textView.didChangeText()
+            currentLineEnding = target
+        }
+        refreshStatusBar()
+    }
+
     // MARK: - Language selection (first-responder targets)
 
     /// Manual language override from the Language menu. The item's
@@ -546,6 +636,16 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     // MARK: - Menu validation
 
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(reopenWithEncoding(_:)) {
+            // Reopening reads from disk, so an untitled (never-saved) document
+            // has nothing to reopen — grey the whole submenu out.
+            return documentController.fileURL != nil
+        }
+        if menuItem.action == #selector(convertLineEndings(_:)) {
+            let raw = (menuItem.representedObject as? String) ?? ""
+            menuItem.state = (raw == currentLineEnding.rawValue) ? .on : .off
+            return true
+        }
         if menuItem.action == #selector(formatDocument(_:)) {
             guard ModuleSettings().isEnabled(.format) else { return false }
             let language = (textView as? EditorTextView)?.languageIdentifier ?? ""

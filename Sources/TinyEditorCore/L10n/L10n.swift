@@ -26,6 +26,10 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case appAbout, appSettings, appHide, appQuit
     // File menu.
     case menuFile, menuNew, menuOpen, menuClose, menuSave, menuSaveAs
+    // Reopen-with-encoding submenu + its alerts.
+    case menuReopenWithEncoding
+    case reopenConfirmMessage, reopenConfirmInfo, reopenDiscardButton
+    case encodingDecodeFailedTitle, encodingDecodeFailedMessage
     // Edit menu.
     case menuEdit, menuUndo, menuRedo, menuCut, menuCopy, menuPaste, menuSelectAll
     // Find submenu.
@@ -34,6 +38,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuJumpToSymbol, symbolFilterPlaceholder, symbolNone
     // Format menu.
     case menuFormat, menuFormatDocument
+    // Convert-line-endings submenu.
+    case menuConvertLineEndings
     // Language menu.
     case menuLanguage, languageAuto
     // Toolbar labels / tooltips.

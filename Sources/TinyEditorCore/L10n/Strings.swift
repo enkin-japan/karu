@@ -23,6 +23,13 @@ extension L10n {
         .menuSave: "Save",
         .menuSaveAs: "Save As…",
 
+        .menuReopenWithEncoding: "Reopen with Encoding",
+        .reopenConfirmMessage: "Reopen “%@” with a different encoding?",
+        .reopenConfirmInfo: "Your unsaved changes will be lost.",
+        .reopenDiscardButton: "Reopen",
+        .encodingDecodeFailedTitle: "Cannot decode file",
+        .encodingDecodeFailedMessage: "This file cannot be decoded using the selected encoding.",
+
         .menuEdit: "Edit",
         .menuUndo: "Undo",
         .menuRedo: "Redo",
@@ -43,6 +50,7 @@ extension L10n {
 
         .menuFormat: "Format",
         .menuFormatDocument: "Format Document",
+        .menuConvertLineEndings: "Convert Line Endings",
 
         .menuLanguage: "Language",
         .languageAuto: "Auto",
@@ -109,6 +117,13 @@ extension L10n {
         .menuSave: "存储",
         .menuSaveAs: "存储为…",
 
+        .menuReopenWithEncoding: "以编码重新打开",
+        .reopenConfirmMessage: "以其他编码重新打开“%@”？",
+        .reopenConfirmInfo: "你未存储的更改将会丢失。",
+        .reopenDiscardButton: "重新打开",
+        .encodingDecodeFailedTitle: "无法解码文件",
+        .encodingDecodeFailedMessage: "该编码无法解码此文件。",
+
         .menuEdit: "编辑",
         .menuUndo: "撤销",
         .menuRedo: "重做",
@@ -129,6 +144,7 @@ extension L10n {
 
         .menuFormat: "格式",
         .menuFormatDocument: "格式化文档",
+        .menuConvertLineEndings: "转换换行符",
 
         .menuLanguage: "语言",
         .languageAuto: "自动",
@@ -195,6 +211,13 @@ extension L10n {
         .menuSave: "保存",
         .menuSaveAs: "別名で保存…",
 
+        .menuReopenWithEncoding: "エンコーディングを指定して再オープン",
+        .reopenConfirmMessage: "“%@” を別のエンコーディングで再オープンしますか？",
+        .reopenConfirmInfo: "保存していない変更は失われます。",
+        .reopenDiscardButton: "再オープン",
+        .encodingDecodeFailedTitle: "ファイルをデコードできません",
+        .encodingDecodeFailedMessage: "選択したエンコーディングではこのファイルをデコードできません。",
+
         .menuEdit: "編集",
         .menuUndo: "取り消す",
         .menuRedo: "やり直す",
@@ -215,6 +238,7 @@ extension L10n {
 
         .menuFormat: "フォーマット",
         .menuFormatDocument: "ドキュメントをフォーマット",
+        .menuConvertLineEndings: "改行コードを変換",
 
         .menuLanguage: "言語",
         .languageAuto: "自動",

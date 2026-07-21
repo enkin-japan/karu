@@ -35,6 +35,21 @@ enum MainMenu {
                                           keyEquivalent: "s")
         saveAsItem.keyEquivalentModifierMask = [.command, .shift]
 
+        // Reopen with Encoding: manual override when auto-detection guessed wrong.
+        // Each item carries its `TextEncoding.rawValue` on `representedObject`;
+        // EditorWindowController gates the whole submenu on there being a file URL.
+        fileMenu.addItem(.separator())
+        let reopenItem = NSMenuItem(title: L10n.t(.menuReopenWithEncoding), action: nil, keyEquivalent: "")
+        fileMenu.addItem(reopenItem)
+        let reopenMenu = NSMenu(title: L10n.t(.menuReopenWithEncoding))
+        reopenItem.submenu = reopenMenu
+        for encoding in TextEncoding.allCases {
+            let item = reopenMenu.addItem(withTitle: encoding.displayName,
+                                          action: #selector(EditorWindowController.reopenWithEncoding(_:)),
+                                          keyEquivalent: "")
+            item.representedObject = encoding.rawValue
+        }
+
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: L10n.t(.menuEdit))
@@ -83,6 +98,21 @@ enum MainMenu {
                                            action: #selector(EditorWindowController.formatDocument(_:)),
                                            keyEquivalent: "f")
         formatDoc.keyEquivalentModifierMask = [.control, .shift]
+
+        // Convert Line Endings: LF / CRLF / CR, the current file's style checked.
+        // Each item carries its `LineEnding.rawValue` on `representedObject`;
+        // EditorWindowController drives the check state via validateMenuItem.
+        formatMenu.addItem(.separator())
+        let lineEndingItem = NSMenuItem(title: L10n.t(.menuConvertLineEndings), action: nil, keyEquivalent: "")
+        formatMenu.addItem(lineEndingItem)
+        let lineEndingMenu = NSMenu(title: L10n.t(.menuConvertLineEndings))
+        lineEndingItem.submenu = lineEndingMenu
+        for ending in LineEnding.allCases {
+            let item = lineEndingMenu.addItem(withTitle: ending.displayName,
+                                              action: #selector(EditorWindowController.convertLineEndings(_:)),
+                                              keyEquivalent: "")
+            item.representedObject = ending.rawValue
+        }
 
         // Language menu: Auto (content/extension detection) plus a manual
         // override for each supported language. Targets the first responder

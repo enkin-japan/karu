@@ -26,6 +26,9 @@ public final class DocumentController {
     public enum DocumentError: Error {
         /// A plain `save` was requested but the document has no URL yet.
         case noFileURL
+        /// A manual "Reopen with Encoding" failed: the chosen encoding could not
+        /// decode the file's bytes.
+        case decodingFailed
     }
 
     // MARK: - Dirty state machine
@@ -83,6 +86,32 @@ public final class DocumentController {
         }
         throw CocoaError(.fileReadInapplicableStringEncoding,
                          userInfo: [NSFilePathErrorKey: url.path])
+    }
+
+    // MARK: - Manual encoding override (Reopen with Encoding)
+
+    /// Pure forced decode: interprets `data` strictly as `encoding`, returning
+    /// `nil` when the bytes are not valid in that encoding. Non-lossy — a byte
+    /// sequence that cannot be represented fails rather than substituting
+    /// replacement characters. Kept static and side-effect-free so tests can
+    /// exercise it with raw `Data` + `encoding` pairs.
+    static func decode(_ data: Data, encoding: String.Encoding) -> String? {
+        String(data: data, encoding: encoding)
+    }
+
+    /// Re-reads the current (or given) file from disk and force-decodes it with
+    /// `encoding`, adopting the URL and clearing the dirty flag on success.
+    /// Throws `DocumentError.decodingFailed` if the bytes are invalid for the
+    /// chosen encoding. Used by File ▸ Reopen with Encoding.
+    @discardableResult
+    public func reload(from url: URL, encoding: TextEncoding) throws -> String {
+        let data = try Data(contentsOf: url)
+        guard let text = Self.decode(data, encoding: encoding.encoding) else {
+            throw DocumentError.decodingFailed
+        }
+        fileURL = url
+        isDirty = false
+        return text
     }
 
     /// Writes `text` to the current file. Fails if there is no file yet.

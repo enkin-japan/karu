@@ -33,6 +33,7 @@ public enum StatusBarMetrics {
 @MainActor
 public final class StatusBarView: NSView {
     private let positionLabel = NSTextField(labelWithString: "")
+    private let lineEndingLabel = NSTextField(labelWithString: "")
     private let languageLabel = NSTextField(labelWithString: "")
     private let countLabel = NSTextField(labelWithString: "")
     private let separator = NSBox()
@@ -55,23 +56,25 @@ public final class StatusBarView: NSView {
         setContentHuggingPriority(.required, for: .vertical)
         setContentCompressionResistancePriority(.required, for: .vertical)
 
-        for label in [positionLabel, languageLabel, countLabel] {
+        for label in [positionLabel, lineEndingLabel, languageLabel, countLabel] {
             label.font = .systemFont(ofSize: 11)
             label.textColor = .secondaryLabelColor
             label.lineBreakMode = .byTruncatingTail
         }
         positionLabel.alignment = .left
+        lineEndingLabel.alignment = .left
         languageLabel.alignment = .center
         countLabel.alignment = .right
 
-        // Position hugs its content on the left; language stays centered; count
-        // hugs on the right. Letting the language label absorb the slack keeps it
-        // visually centered between the two fixed-width ends.
+        // Position and the line-ending caption hug their content on the left;
+        // language stays centered; count hugs on the right. Letting the language
+        // label absorb the slack keeps it visually centered between the ends.
         positionLabel.setContentHuggingPriority(.required, for: .horizontal)
+        lineEndingLabel.setContentHuggingPriority(.required, for: .horizontal)
         countLabel.setContentHuggingPriority(.required, for: .horizontal)
         languageLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let stack = NSStackView(views: [positionLabel, languageLabel, countLabel])
+        let stack = NSStackView(views: [positionLabel, lineEndingLabel, languageLabel, countLabel])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.distribution = .fill
@@ -113,6 +116,10 @@ public final class StatusBarView: NSView {
 
     public func updateLanguage(_ identifier: String) {
         languageLabel.stringValue = SupportedLanguage.title(forIdentifier: identifier)
+    }
+
+    public func updateLineEnding(_ lineEnding: LineEnding) {
+        lineEndingLabel.stringValue = lineEnding.displayName
     }
 
     public func updateCharacterCount(_ count: Int) {
