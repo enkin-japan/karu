@@ -671,6 +671,33 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         findBar.useSelectionForFind()
     }
 
+    // MARK: - Code folding (first-responder targets, T12.12)
+
+    /// Folds the innermost foldable block containing the caret (⌘⌥[).
+    @objc public func foldCurrentBlock(_ sender: Any?) {
+        foldingController.foldCurrent(atLine: caretLine)
+    }
+
+    /// Unfolds the innermost folded block containing the caret (⌘⌥]).
+    @objc public func unfoldCurrentBlock(_ sender: Any?) {
+        foldingController.unfoldCurrent(atLine: caretLine)
+    }
+
+    /// Folds every foldable region in the document (⌘K ⌘0).
+    @objc public func foldAll(_ sender: Any?) {
+        foldingController.foldAll()
+    }
+
+    /// Unfolds every folded region in the document (⌘K ⌘J).
+    @objc public func unfoldAllFolds(_ sender: Any?) {
+        foldingController.unfoldAll()
+    }
+
+    /// 1-based line number of the caret, from the shared line index.
+    private var caretLine: Int {
+        lineIndex.lineNumber(forOffset: textView.selectedRange().location)
+    }
+
     // MARK: - Jump to Symbol (first-responder target)
 
     /// Opens the transient symbol navigator (Cmd+Shift+O). Scans the current

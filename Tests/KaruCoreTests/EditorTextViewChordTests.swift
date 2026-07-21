@@ -119,3 +119,79 @@ private let downArrow = String(UnicodeScalar(NSDownArrowFunctionKey)!)
         modifiers: [.option, .capsLock], charactersIgnoringModifiers: upArrow)
         == #selector(EditorWindowController.moveLinesUp(_:)))
 }
+
+// MARK: - Fold ⌘K prefix chord state machine (T12.12)
+
+private let escape = "\u{1B}"
+
+@MainActor
+@Test func chordCommandKArmsPrefix() {
+    #expect(EditorTextView.chordStep(
+        prefixActive: false, modifiers: [.command], charactersIgnoringModifiers: "k") == .enterPrefix)
+}
+
+@MainActor
+@Test func chordCommandKUppercaseAlsoArms() {
+    // charactersIgnoringModifiers is lowercased before comparison.
+    #expect(EditorTextView.chordStep(
+        prefixActive: false, modifiers: [.command], charactersIgnoringModifiers: "K") == .enterPrefix)
+}
+
+@MainActor
+@Test func chordCommandShiftKDoesNotArm() {
+    // ⌘⇧K is Delete Line — must not be swallowed as a fold prefix.
+    #expect(EditorTextView.chordStep(
+        prefixActive: false, modifiers: [.command, .shift], charactersIgnoringModifiers: "K") == .cancelAndHandle)
+}
+
+@MainActor
+@Test func chordCommandOptionKDoesNotArm() {
+    #expect(EditorTextView.chordStep(
+        prefixActive: false, modifiers: [.command, .option], charactersIgnoringModifiers: "k") == .cancelAndHandle)
+}
+
+@MainActor
+@Test func chordPlainKeyWithoutPrefixIsHandled() {
+    #expect(EditorTextView.chordStep(
+        prefixActive: false, modifiers: [], charactersIgnoringModifiers: "a") == .cancelAndHandle)
+}
+
+@MainActor
+@Test func chordPrefixCommandZeroFoldsAll() {
+    #expect(EditorTextView.chordStep(
+        prefixActive: true, modifiers: [.command], charactersIgnoringModifiers: "0") == .foldAll)
+}
+
+@MainActor
+@Test func chordPrefixCommandJUnfoldsAll() {
+    #expect(EditorTextView.chordStep(
+        prefixActive: true, modifiers: [.command], charactersIgnoringModifiers: "j") == .unfoldAll)
+}
+
+@MainActor
+@Test func chordPrefixEscapeCancelsAndSwallows() {
+    #expect(EditorTextView.chordStep(
+        prefixActive: true, modifiers: [], charactersIgnoringModifiers: escape) == .cancelAndSwallow)
+}
+
+@MainActor
+@Test func chordPrefixOtherKeyCancelsAndHandles() {
+    // Any non-chord key while armed exits the prefix and is handled normally.
+    #expect(EditorTextView.chordStep(
+        prefixActive: true, modifiers: [.command], charactersIgnoringModifiers: "x") == .cancelAndHandle)
+    #expect(EditorTextView.chordStep(
+        prefixActive: true, modifiers: [], charactersIgnoringModifiers: "0") == .cancelAndHandle)
+}
+
+@MainActor
+@Test func chordPrefixCommandZeroIgnoresExtraneousDeviceFlags() {
+    #expect(EditorTextView.chordStep(
+        prefixActive: true, modifiers: [.command, .capsLock], charactersIgnoringModifiers: "0") == .foldAll)
+}
+
+@MainActor
+@Test func chordPrefixCommandShiftZeroIsNotFoldAll() {
+    // Requires a clean ⌘ (no Shift) — ⌘⇧0 falls through to normal handling.
+    #expect(EditorTextView.chordStep(
+        prefixActive: true, modifiers: [.command, .shift], charactersIgnoringModifiers: "0") == .cancelAndHandle)
+}

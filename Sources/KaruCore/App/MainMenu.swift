@@ -203,6 +203,28 @@ enum MainMenu {
                                           keyEquivalent: "0")
         actualSize.keyEquivalentModifierMask = [.command]
 
+        // Code folding (T12.12). Fold / Unfold Current carry ⌘⌥[ / ⌘⌥] — the ⌘
+        // makes their menu equivalents reliable (VS Code parity). Fold All /
+        // Unfold All use the ⌘K ⌘0 / ⌘K ⌘J prefix chord, which a plain
+        // NSMenuItem cannot express, so they carry no key equivalent (the chord
+        // is handled in EditorTextView.keyDown). All four target the first
+        // responder (EditorWindowController).
+        viewMenu.addItem(.separator())
+        let foldCurrent = viewMenu.addItem(withTitle: L10n.t(.menuFoldCurrent),
+                                           action: #selector(EditorWindowController.foldCurrentBlock(_:)),
+                                           keyEquivalent: "[")
+        foldCurrent.keyEquivalentModifierMask = [.command, .option]
+        let unfoldCurrent = viewMenu.addItem(withTitle: L10n.t(.menuUnfoldCurrent),
+                                             action: #selector(EditorWindowController.unfoldCurrentBlock(_:)),
+                                             keyEquivalent: "]")
+        unfoldCurrent.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(withTitle: L10n.t(.menuFoldAll),
+                         action: #selector(EditorWindowController.foldAll(_:)),
+                         keyEquivalent: "")
+        viewMenu.addItem(withTitle: L10n.t(.menuUnfoldAll),
+                         action: #selector(EditorWindowController.unfoldAllFolds(_:)),
+                         keyEquivalent: "")
+
         // Language menu: Auto (content/extension detection) plus a manual
         // override for each supported language. Targets the first responder
         // (EditorWindowController); check state is driven by validateMenuItem.

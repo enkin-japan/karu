@@ -481,6 +481,55 @@ public final class EditorTextView: NSTextView {
         }
     }
 
+    // MARK: Fold chord (⌘K prefix, VS Code style)
+
+    /// One decision of the ⌘K fold-chord state machine.
+    enum ChordStep: Equatable {
+        /// ⌘K pressed with no prefix active — arm the prefix and swallow the key.
+        case enterPrefix
+        /// ⌘K ⌘0 — fold the whole document.
+        case foldAll
+        /// ⌘K ⌘J — unfold the whole document.
+        case unfoldAll
+        /// Not a chord key: clear any prefix and let normal handling run.
+        case cancelAndHandle
+        /// Esc while the prefix is armed: clear it and swallow the key.
+        case cancelAndSwallow
+    }
+
+    /// Pure state machine for the VS Code-style ⌘K prefix chord (hold ⌘, press K,
+    /// then 0 to fold-all or J to unfold-all). Factored out so every branch is
+    /// unit-testable without a live event.
+    ///
+    /// - `prefixActive`: whether ⌘K has already armed the prefix.
+    /// - `modifiers` / `charactersIgnoringModifiers`: the incoming key event.
+    static func chordStep(
+        prefixActive: Bool,
+        modifiers: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers chars: String?
+    ) -> ChordStep {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        // A plain ⌘ + <letter/digit> with none of Option / Control / Shift.
+        let isCleanCommand = flags.contains(.command)
+            && !flags.contains(.option) && !flags.contains(.control) && !flags.contains(.shift)
+        let key = chars?.lowercased()
+
+        guard prefixActive else {
+            return (isCleanCommand && key == "k") ? .enterPrefix : .cancelAndHandle
+        }
+        // Prefix armed.
+        if chars == "\u{1B}" { return .cancelAndSwallow } // Esc
+        if isCleanCommand {
+            if key == "0" { return .foldAll }
+            if key == "j" { return .unfoldAll }
+        }
+        return .cancelAndHandle
+    }
+
+    /// Whether the ⌘K fold-chord prefix is currently armed. Transient (a single
+    /// Bool), reset the moment the next key resolves the chord.
+    private var foldChordPrefixActive = false
+
     // MARK: Completion key routing
 
     /// Give an active completion popup first refusal on navigation keys, then
@@ -493,6 +542,29 @@ public final class EditorTextView: NSTextView {
                                       charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
             NSApp.sendAction(#selector(EditorWindowController.formatDocument(_:)), to: nil, from: self)
             return
+        }
+        // ⌘K fold-chord prefix (VS Code parity): ⌘K then ⌘0 (fold all) / ⌘J
+        // (unfold all). ⌘K carries no conflicting binding here (Delete Line is
+        // ⌘⇧K), so it is safe to intercept before the rest of keyDown.
+        switch Self.chordStep(prefixActive: foldChordPrefixActive,
+                              modifiers: event.modifierFlags,
+                              charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
+        case .enterPrefix:
+            foldChordPrefixActive = true
+            return // swallow ⌘K
+        case .foldAll:
+            foldChordPrefixActive = false
+            NSApp.sendAction(#selector(EditorWindowController.foldAll(_:)), to: nil, from: self)
+            return
+        case .unfoldAll:
+            foldChordPrefixActive = false
+            NSApp.sendAction(#selector(EditorWindowController.unfoldAllFolds(_:)), to: nil, from: self)
+            return
+        case .cancelAndSwallow:
+            foldChordPrefixActive = false
+            return // swallow Esc that dismissed the armed prefix
+        case .cancelAndHandle:
+            foldChordPrefixActive = false // fall through to normal handling
         }
         if let handler = completionKeyHandler,
            handler.isCompletionActive,

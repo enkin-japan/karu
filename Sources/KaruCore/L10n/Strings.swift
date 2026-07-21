@@ -77,6 +77,10 @@ extension L10n {
         .menuCommandPalette: "Command Palette…",
         .commandPalettePlaceholder: "Type a command…",
         .commandPaletteEmpty: "No commands",
+        .menuFoldCurrent: "Fold Current Block",
+        .menuUnfoldCurrent: "Unfold Current Block",
+        .menuFoldAll: "Fold All",
+        .menuUnfoldAll: "Unfold All",
 
         .menuLanguage: "Language",
         .languageAuto: "Auto",
@@ -204,6 +208,10 @@ extension L10n {
         .menuCommandPalette: "命令面板…",
         .commandPalettePlaceholder: "输入命令…",
         .commandPaletteEmpty: "无命令",
+        .menuFoldCurrent: "折叠当前块",
+        .menuUnfoldCurrent: "展开当前块",
+        .menuFoldAll: "全部折叠",
+        .menuUnfoldAll: "全部展开",
 
         .menuLanguage: "语言",
         .languageAuto: "自动",
@@ -331,6 +339,10 @@ extension L10n {
         .menuCommandPalette: "コマンドパレット…",
         .commandPalettePlaceholder: "コマンドを入力…",
         .commandPaletteEmpty: "コマンドなし",
+        .menuFoldCurrent: "現在のブロックを折りたたむ",
+        .menuUnfoldCurrent: "現在のブロックを展開",
+        .menuFoldAll: "すべて折りたたむ",
+        .menuUnfoldAll: "すべて展開",
 
         .menuLanguage: "言語",
         .languageAuto: "自動",

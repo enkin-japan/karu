@@ -53,6 +53,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuView, viewZoomIn, viewZoomOut, viewActualSize
     // View menu — command palette (⌘⇧P).
     case menuCommandPalette, commandPalettePlaceholder, commandPaletteEmpty
+    // View menu — code folding (T12.12).
+    case menuFoldCurrent, menuUnfoldCurrent, menuFoldAll, menuUnfoldAll
     // Language menu.
     case menuLanguage, languageAuto
     // Toolbar labels / tooltips.
