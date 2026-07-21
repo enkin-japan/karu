@@ -89,26 +89,9 @@ enum MainMenu {
                                             keyEquivalent: "")
         autoItem.state = .on
         languageMenu.addItem(.separator())
-        // (title, identifier). The empty identifier is Plain Text (no highlight).
-        let languages: [(String, String)] = [
-            ("Plain Text", ""),
-            ("JSON", "json"),
-            ("JSONL", "jsonl"),
-            ("Markdown", "markdown"),
-            ("Python", "python"),
-            ("JavaScript", "javascript"),
-            ("TypeScript", "typescript"),
-            ("HTML", "html"),
-            ("CSS", "css"),
-            ("C", "c"),
-            ("C++", "cpp"),
-            ("C#", "csharp"),
-            ("Java", "java"),
-            ("Bash", "bash"),
-            ("SQL", "sql"),
-            ("XML", "xml"),
-        ]
-        for (title, identifier) in languages {
+        // Shared with the toolbar's language popup (SupportedLanguage) so the two
+        // lists never drift. The empty identifier is Plain Text (no highlight).
+        for (title, identifier) in SupportedLanguage.all {
             let item = languageMenu.addItem(withTitle: title,
                                             action: #selector(EditorWindowController.selectLanguage(_:)),
                                             keyEquivalent: "")

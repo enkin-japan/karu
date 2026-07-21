@@ -12,6 +12,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     private var gutterView: GutterView!
     private var findBar: FindBarController!
 
+    /// Native unified toolbar (language / indent / Format / modules / settings)
+    /// and the bottom status strip (caret position / language / char count).
+    private var toolbarController: EditorToolbarController!
+    private let statusBar = StatusBarView()
+
     /// Multiplexes the single `textStorage.delegate` slot to the gutter (line
     /// index) and the highlight engine. Retained here because the storage holds
     /// its delegate weakly.
@@ -93,7 +98,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         self.findBar = findBar
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView(views: [findBar.barView, scrollView])
+        let stack = NSStackView(views: [findBar.barView, scrollView, statusBar])
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
@@ -101,7 +106,15 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         NSLayoutConstraint.activate([
             findBar.barView.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            statusBar.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            statusBar.heightAnchor.constraint(equalToConstant: 22),
         ])
+
+        // Native unified toolbar with the most-reached-for controls (user
+        // feedback #3: settings should be directly above the document).
+        let toolbar = EditorToolbarController(windowController: self)
+        toolbar.install(in: window)
+        self.toolbarController = toolbar
 
         NotificationCenter.default.addObserver(
             self,
@@ -109,8 +122,15 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             name: NSText.didChangeNotification,
             object: textView
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(selectionDidChange(_:)),
+            name: NSTextView.didChangeSelectionNotification,
+            object: textView
+        )
 
         updateWindowState()
+        refreshStatusBar()
     }
 
     deinit {
@@ -139,6 +159,20 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
+
+        // A little breathing room around the text: left / right padding so the
+        // first glyph is not jammed against the gutter, top padding so line 1
+        // clears the toolbar seam.
+        textView.textContainerInset = NSSize(width: 6, height: 8)
+
+        // Loosen line spacing slightly. Applied via the *default* paragraph style
+        // + typing attributes only — never written into the text storage — so the
+        // "don't pre-store per-line attributes" rule (ARCHITECTURE.md §3) holds
+        // and highlighting's temporary attributes stay untouched.
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineHeightMultiple = 1.15
+        textView.defaultParagraphStyle = paragraph
+        textView.typingAttributes[.paragraphStyle] = paragraph
 
         scrollView.documentView = textView
         return (scrollView, textView)
@@ -170,14 +204,22 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             (textView as? EditorTextView)?.languageIdentifier = identifier ?? ext.lowercased()
 
             // Point completion at the same language (for its keywords / symbol
-            // dialect) and index the freshly loaded document.
-            completionController.setLanguage(fileExtension: ext)
+            // dialect) and index the freshly loaded document. Prefer the resolved
+            // identifier (covers the sniffed case); fall back to the raw
+            // extension when nothing resolved.
+            if let identifier {
+                completionController.setLanguage(identifier: identifier)
+            } else {
+                completionController.setLanguage(fileExtension: ext)
+            }
             completionController.indexDocument()
 
             // Loading fresh content should not go through the undo stack, and
             // the didChange notification only fires for user edits, so we
             // simply refresh window chrome here.
             updateWindowState()
+            toolbarController?.refreshAll()
+            refreshStatusBar()
         } catch {
             showSaveError(error)
         }
@@ -192,6 +234,23 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             window?.isDocumentEdited = true
         }
         maybeAutoDetectLanguage()
+        refreshStatusBar()
+    }
+
+    @objc private func selectionDidChange(_ notification: Notification) {
+        refreshStatusBar()
+    }
+
+    /// Recomputes the status strip's caret position, language, and char count.
+    private func refreshStatusBar() {
+        let caret = textView.selectedRange().location
+        let line = lineIndex.lineNumber(forOffset: caret)
+        let lineStart = lineIndex.offsetRange(ofLine: line).lowerBound
+        statusBar.updateCaret(line: line,
+                              column: StatusBarMetrics.column(caretOffset: caret,
+                                                              lineStartOffset: lineStart))
+        statusBar.updateLanguage(currentLanguageIdentifierValue)
+        statusBar.updateCharacterCount((textView.string as NSString).length)
     }
 
     /// Sniffs the buffer for a language once it has accumulated enough content,
@@ -210,9 +269,20 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         guard charCount >= 120 || newlineCount >= 2 else { return }
 
         guard let identifier = LanguageSniffer.sniff(text) else { return }
-        highlightEngine.setLanguage(identifier: identifier)
-        editorView.languageIdentifier = identifier
+        applyLanguage(identifier: identifier)
         didAutoDetectLanguage = true
+    }
+
+    /// Single choke point for a language change: points the highlighter and the
+    /// completion module at `identifier`, records it on the text view (for indent
+    /// width / formatting), then refreshes the toolbar popup and status bar so
+    /// every entry path (menu / toolbar / sniffer / load) stays in sync.
+    private func applyLanguage(identifier: String) {
+        highlightEngine.setLanguage(identifier: identifier)
+        (textView as? EditorTextView)?.languageIdentifier = identifier
+        completionController.setLanguage(identifier: identifier)
+        toolbarController?.refreshAll()
+        statusBar.updateLanguage(identifier)
     }
 
     private func updateWindowState() {
@@ -301,15 +371,36 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     @objc public func selectLanguage(_ sender: Any?) {
         guard let item = sender as? NSMenuItem,
               let identifier = item.representedObject as? String else { return }
-        userOverrodeLanguage = true
-        didAutoDetectLanguage = true
-        highlightEngine.setLanguage(identifier: identifier)
-        (textView as? EditorTextView)?.languageIdentifier = identifier
+        chooseLanguage(identifier: identifier)
     }
 
     /// Clears any manual override and re-runs automatic detection immediately:
     /// by file extension when the document has a URL, otherwise by content.
     @objc public func selectAutoLanguage(_ sender: Any?) {
+        chooseAutoLanguage()
+    }
+
+    // MARK: - Language selection (shared by menu + toolbar)
+
+    /// True while automatic detection is in charge (no manual override).
+    var isLanguageAuto: Bool { !userOverrodeLanguage }
+
+    /// The language identifier currently applied to the document (`""` = Plain).
+    var currentLanguageIdentifierValue: String {
+        (textView as? EditorTextView)?.languageIdentifier ?? ""
+    }
+
+    /// Manual override to a specific language (from the Language menu or the
+    /// toolbar popup). Suppresses automatic detection until Auto is chosen again.
+    func chooseLanguage(identifier: String) {
+        userOverrodeLanguage = true
+        didAutoDetectLanguage = true
+        applyLanguage(identifier: identifier)
+    }
+
+    /// Clears any manual override and re-detects: by extension for a saved file,
+    /// otherwise by sniffing the buffer's content.
+    func chooseAutoLanguage() {
         userOverrodeLanguage = false
         didAutoDetectLanguage = false
 
@@ -320,14 +411,33 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
                 identifier = highlightEngine.setLanguage(identifier: sniffed)
                 didAutoDetectLanguage = true
             }
-            (textView as? EditorTextView)?.languageIdentifier = identifier ?? ext.lowercased()
+            let resolved = identifier ?? ext.lowercased()
+            (textView as? EditorTextView)?.languageIdentifier = resolved
+            if let identifier {
+                completionController.setLanguage(identifier: identifier)
+            } else {
+                completionController.setLanguage(fileExtension: ext)
+            }
+            toolbarController?.refreshAll()
+            statusBar.updateLanguage(resolved)
         } else {
             // Untitled: reset to plain, then let the sniffer re-classify if the
             // buffer already holds enough content.
             highlightEngine.setLanguage(identifier: nil)
             (textView as? EditorTextView)?.languageIdentifier = ""
+            completionController.setLanguage(identifier: nil)
+            toolbarController?.refreshAll()
+            statusBar.updateLanguage("")
             maybeAutoDetectLanguage()
         }
+    }
+
+    /// Sets the indent width for the current language (from the toolbar popup)
+    /// and repaints open editors so the indent rainbow reflects the new width.
+    func setIndentWidth(_ width: Int) {
+        let language = currentLanguageIdentifierValue
+        UserDefaults.standard.set(width, forKey: IndentSettings.widthKey(for: language))
+        textView.needsDisplay = true
     }
 
     // MARK: - Menu validation

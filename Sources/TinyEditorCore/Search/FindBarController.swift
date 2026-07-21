@@ -54,7 +54,22 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         barView.wantsLayer = true
         barView.translatesAutoresizingMaskIntoConstraints = false
 
-        searchField.placeholderString = "Find"
+        // Chrome background that follows light / dark automatically, with a
+        // hairline separator along the bottom edge so the bar reads as a distinct
+        // band above the editor.
+        let background = NSVisualEffectView()
+        background.material = .headerView
+        background.blendingMode = .withinWindow
+        background.state = .followsWindowActiveState
+        background.translatesAutoresizingMaskIntoConstraints = false
+        barView.addSubview(background)
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        barView.addSubview(separator)
+
+        searchField.placeholderString = "Find (regex)"
         searchField.delegate = self
         searchField.sendsWholeSearchString = false
         searchField.sendsSearchStringImmediately = true
@@ -92,16 +107,28 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
             countLabel, closeButton,
         ])
         stack.orientation = .horizontal
-        stack.spacing = 6
+        // 8 pt grid; the option toggles hug into a tighter group of their own.
+        stack.spacing = 8
+        stack.setCustomSpacing(4, after: regexToggle)
+        stack.setCustomSpacing(4, after: prevButton)
         stack.alignment = .centerY
         stack.translatesAutoresizingMaskIntoConstraints = false
         barView.addSubview(stack)
 
         NSLayoutConstraint.activate([
+            background.leadingAnchor.constraint(equalTo: barView.leadingAnchor),
+            background.trailingAnchor.constraint(equalTo: barView.trailingAnchor),
+            background.topAnchor.constraint(equalTo: barView.topAnchor),
+            background.bottomAnchor.constraint(equalTo: barView.bottomAnchor),
+
+            separator.leadingAnchor.constraint(equalTo: barView.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: barView.trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: barView.bottomAnchor),
+
             stack.leadingAnchor.constraint(equalTo: barView.leadingAnchor, constant: 8),
             stack.trailingAnchor.constraint(equalTo: barView.trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: barView.topAnchor, constant: 5),
-            stack.bottomAnchor.constraint(equalTo: barView.bottomAnchor, constant: -5),
+            stack.topAnchor.constraint(equalTo: barView.topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(equalTo: barView.bottomAnchor, constant: -6),
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
             replaceField.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
             countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
@@ -111,7 +138,10 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     private func configureToggle(_ button: NSButton, title: String, tooltip: String, action: Selector) {
         button.title = title
         button.toolTip = tooltip
+        // Bordered on/off toggle: bezels in when active so regex / case state is
+        // legible at a glance.
         button.bezelStyle = .roundRect
+        button.isBordered = true
         button.setButtonType(.pushOnPushOff)
         button.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
         button.target = self

@@ -114,6 +114,23 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         languageKeywords = def.keywords
     }
 
+    /// Points the controller at the language whose stable `identifier` is `id`
+    /// (e.g. `"python"`, chosen from the Language menu / toolbar or inferred by
+    /// the content sniffer). An empty / unknown identifier drops back to no
+    /// language keywords. This is the menu/sniff-driven counterpart to
+    /// `setLanguage(fileExtension:)`; keeping completion in step with the
+    /// highlighter was the wiring T6.2's review flagged as outstanding.
+    public func setLanguage(identifier id: String?) {
+        guard let id, !id.isEmpty,
+              let def = LanguageRegistry.definition(forIdentifier: id) else {
+            languageIdentifier = ""
+            languageKeywords = []
+            return
+        }
+        languageIdentifier = def.identifier
+        languageKeywords = def.keywords
+    }
+
     // MARK: - Indexing
 
     /// Synchronously (re)builds the word index and symbol set from the current
