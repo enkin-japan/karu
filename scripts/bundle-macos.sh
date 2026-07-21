@@ -1,0 +1,54 @@
+#!/bin/bash
+# TinyEditor 打包脚本：SPM release 产物 → TinyEditor.app
+# 红线：.p8 / .env* / .secrets.env 绝不允许进入 bundle（脚本末尾强制检查）。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+swift build -c release
+
+APP_DIR="build/TinyEditor.app"
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+
+cp .build/release/TinyEditorApp "$APP_DIR/Contents/MacOS/TinyEditor"
+
+cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>TinyEditor</string>
+	<key>CFBundleDisplayName</key>
+	<string>TinyEditor</string>
+	<key>CFBundleExecutable</key>
+	<string>TinyEditor</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.tinyeditor</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+</dict>
+</plist>
+PLIST
+
+# 红线检查：任何密钥类文件出现在 bundle 内立即失败
+if find "$APP_DIR" \( -name '*.p8' -o -name '.env' -o -name '.env.*' -o -name '.secrets.env' \) -print | grep -q .; then
+    echo "ERROR: secret files found inside bundle — aborting" >&2
+    exit 1
+fi
+
+# ad-hoc 签名（arm64 必需）
+codesign --force --deep --sign - "$APP_DIR"
+
+echo "OK: $APP_DIR"
+du -sh "$APP_DIR"
