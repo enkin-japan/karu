@@ -85,17 +85,40 @@ public enum IndentRainbow {
         return result
     }
 
-    /// Fill colour for `level`, cycling through a rainbow of system colours at
-    /// a low alpha so it stays subtle in both light and dark appearances.
-    public static func color(forLevel level: Int) -> NSColor {
+    /// Base alpha used for the fill of each indent block.
+    private static let fillAlpha: CGFloat = 0.16
+
+    /// Alpha used for the 1px separator line drawn at the right edge of each
+    /// indent unit — roughly double the fill alpha so the boundary between
+    /// consecutive indent levels reads clearly at a glance.
+    private static let separatorAlpha: CGFloat = 0.32
+
+    /// The underlying hue for `level`, cycling through a high-discrimination
+    /// 5-colour ramp (yellow -> green -> cyan -> blue -> purple, in the style
+    /// of VS Code's indent-rainbow) so adjacent levels never look alike.
+    private static func baseColor(forLevel level: Int) -> NSColor {
         let palette: [NSColor] = [
-            .systemRed,
             .systemYellow,
             .systemGreen,
+            .systemTeal,
             .systemBlue,
             .systemPurple,
         ]
-        let base = palette[((level % colorCount) + colorCount) % colorCount]
-        return base.withAlphaComponent(0.10)
+        return palette[((level % colorCount) + colorCount) % colorCount]
+    }
+
+    /// Fill colour for `level`, cycling through a rainbow of system colours at
+    /// a low alpha so it stays legible (but not overwhelming) in both light
+    /// and dark appearances.
+    public static func color(forLevel level: Int) -> NSColor {
+        baseColor(forLevel: level).withAlphaComponent(fillAlpha)
+    }
+
+    /// Separator colour for the 1px boundary line drawn at the right edge of
+    /// `level`'s indent unit. Same hue as `color(forLevel:)` but at roughly
+    /// double the alpha, so the width of "one indent" is easy to count even
+    /// when several levels share a similar column width.
+    public static func separatorColor(forLevel level: Int) -> NSColor {
+        baseColor(forLevel: level).withAlphaComponent(separatorAlpha)
     }
 }

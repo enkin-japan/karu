@@ -235,6 +235,20 @@ public final class EditorTextView: NSTextView {
                 blockRect.origin.y += origin.y
                 IndentRainbow.color(forLevel: block.level).setFill()
                 blockRect.fill()
+
+                // Draw a 1px separator at the right edge of full indent units
+                // so the width of "one indent" is easy to count at a glance.
+                // Partial (remainder) blocks keep their existing fill-only
+                // treatment.
+                if block.columnRange.count == width {
+                    let scale = window?.backingScaleFactor ?? 1
+                    let lineWidth = max(1, scale) / scale
+                    var separatorRect = blockRect
+                    separatorRect.origin.x = blockRect.maxX - lineWidth
+                    separatorRect.size.width = lineWidth
+                    IndentRainbow.separatorColor(forLevel: block.level).setFill()
+                    separatorRect.fill()
+                }
             }
             let next = lineRange.location + lineRange.length
             if next <= loc { break } // guard against zero-length final line
