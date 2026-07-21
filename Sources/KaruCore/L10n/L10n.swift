@@ -51,6 +51,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuConvertLineEndings
     // View menu — font zoom.
     case menuView, viewZoomIn, viewZoomOut, viewActualSize
+    // View menu — command palette (⌘⇧P).
+    case menuCommandPalette, commandPalettePlaceholder, commandPaletteEmpty
     // Language menu.
     case menuLanguage, languageAuto
     // Toolbar labels / tooltips.

@@ -248,6 +248,9 @@ public final class EditorTextView: NSTextView {
         super.drawBackground(in: rect)
         // Fold highlights draw independently of the indent rainbow toggle.
         drawFoldedHeaders(in: rect)
+        // Invisible / dangerous-character warning boxes: always on, storage-free,
+        // viewport-only (drawn every frame from a fresh scan).
+        drawUnicodeAlerts(in: rect)
         guard indentRainbowEnabled,
               let layoutManager,
               let container = textContainer else { return }
@@ -372,6 +375,51 @@ public final class EditorTextView: NSTextView {
             let hintX = usedRect.maxX + origin.x + 12
             let hintY = fragRect.midY + origin.y - hintSize.height / 2
             hint.draw(at: NSPoint(x: hintX, y: hintY), withAttributes: hintAttrs)
+        }
+    }
+
+    // MARK: Invisible / dangerous character alerts (T12.10)
+
+    /// Orange warning-box stroke, resolved per appearance (a touch brighter in
+    /// dark mode so it reads over a dark page).
+    private static let unicodeAlertColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 1.0, green: 0.62, blue: 0.24, alpha: 0.95)
+            : NSColor(srgbRed: 0.85, green: 0.45, blue: 0.0, alpha: 0.95)
+    }
+
+    /// Draws a rounded orange stroke box around every invisible / dangerous
+    /// character in the dirty rect. Viewport-only and storage-free: the visible
+    /// character range is scanned fresh (`UnicodeAlert.scan`) each draw and each
+    /// box is positioned from the layout manager; nothing is retained. Zero-width
+    /// characters (glyph width 0) get a minimum 4pt box so the mark is visible.
+    private func drawUnicodeAlerts(in rect: NSRect) {
+        guard let layoutManager, let container = textContainer else { return }
+        let ns = string as NSString
+        guard ns.length > 0 else { return }
+
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        let hits = UnicodeAlert.scan(text: string, range: charRange)
+        guard !hits.isEmpty else { return }
+
+        let origin = textContainerOrigin
+        Self.unicodeAlertColor.setStroke()
+        for hit in hits {
+            let gRange = layoutManager.glyphRange(forCharacterRange: hit.range, actualCharacterRange: nil)
+            var box = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
+            box.origin.x += origin.x
+            box.origin.y += origin.y
+            // Zero-width scalars render as an empty rect; give them a visible width.
+            if box.width < 4 {
+                box.origin.x -= (4 - box.width) / 2
+                box.size.width = 4
+            }
+            let framed = box.insetBy(dx: 0.5, dy: 0.5)
+            guard framed.width > 0, framed.height > 0 else { continue }
+            let path = NSBezierPath(roundedRect: framed, xRadius: 2, yRadius: 2)
+            path.lineWidth = 1
+            path.stroke()
         }
     }
 

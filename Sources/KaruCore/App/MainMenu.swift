@@ -176,6 +176,13 @@ enum MainMenu {
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: L10n.t(.menuView))
         viewMenuItem.submenu = viewMenu
+        // Command Palette (⌘⇧P): first item. Carries ⌘, so its menu equivalent is
+        // reliable. Targets the first responder (EditorWindowController).
+        let commandPalette = viewMenu.addItem(withTitle: L10n.t(.menuCommandPalette),
+                                              action: #selector(EditorWindowController.showCommandPalette(_:)),
+                                              keyEquivalent: "p")
+        commandPalette.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(.separator())
         // Zoom In (⌘+). A hidden alternate on ⌘= handles the common US-keyboard
         // habit of pressing ⌘= to mean ⌘+ (same action, same mask).
         let zoomIn = viewMenu.addItem(withTitle: L10n.t(.viewZoomIn),

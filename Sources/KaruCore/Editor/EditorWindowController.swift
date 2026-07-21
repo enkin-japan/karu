@@ -49,6 +49,17 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// no resident state (ARCHITECTURE.md §3.4).
     private var goToLineController: GoToLineController?
 
+    /// Transient "Command Palette" (T12.8, ⌘⇧P). Held only while its panel is on
+    /// screen and dropped the moment it closes, so no command index survives the
+    /// operation (ARCHITECTURE.md §3.4).
+    private var commandPalette: CommandPalette?
+
+    /// Cursor-word occurrence highlighter (T12.9). Viewport-only + debounced;
+    /// registered on the observer hub for edit notifications and pinged from
+    /// `selectionDidChange`. Retained for the window's lifetime (its resident
+    /// cost is one bounded range array), cancelled on teardown.
+    private var wordHighlighter: WordOccurrenceHighlighter!
+
     /// True once the user has manually picked a language from the Language menu.
     /// Suppresses all automatic detection until they choose Auto again.
     private var userOverrodeLanguage = false
@@ -166,6 +177,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         (textView as? EditorTextView)?.lineIndex = lineIndex
         self.foldingController = folding
 
+        // Cursor-word occurrence highlighter: viewport-only, debounced. Shares
+        // the observer hub for edit notifications; pinged from selectionDidChange.
+        let wordHighlighter = WordOccurrenceHighlighter(textView: textView)
+        observerHub.add(wordHighlighter)
+        self.wordHighlighter = wordHighlighter
+
         // Find bar shares the window's LineIndex; it sits above the editor in a
         // vertical stack and collapses out of layout when hidden.
         let findBar = FindBarController(textView: textView, lineIndex: lineIndex)
@@ -255,6 +272,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     deinit {
         NotificationCenter.default.removeObserver(self)
         downloadTimer?.invalidate()
+        // The word highlighter cancels its own pending work item in its deinit,
+        // which runs as this controller (its sole owner) is released.
     }
 
     private static func makeEditorView() -> (NSScrollView, NSTextView) {
@@ -451,6 +470,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     @objc private func selectionDidChange(_ notification: Notification) {
         refreshStatusBar()
         updateBracketMatchHighlight()
+        wordHighlighter.selectionChanged()
     }
 
     /// Recomputes the matched-bracket background highlight for the current caret.
@@ -665,6 +685,21 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         goToLineController = controller
         controller.present { [weak self] in
             self?.goToLineController = nil
+        }
+    }
+
+    // MARK: - Command Palette (first-responder target)
+
+    /// Opens the transient command palette (⌘⇧P). Enumerates the live menu tree
+    /// once, then lets the user fuzzy-filter and run any command. The palette is
+    /// released when its panel closes, so no command index survives the operation
+    /// (ARCHITECTURE.md §3.4).
+    @objc public func showCommandPalette(_ sender: Any?) {
+        guard commandPalette == nil else { return }
+        let palette = CommandPalette(textView: textView)
+        commandPalette = palette
+        palette.present { [weak self] in
+            self?.commandPalette = nil
         }
     }
 

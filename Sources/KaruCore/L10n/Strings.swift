@@ -74,6 +74,9 @@ extension L10n {
         .viewZoomIn: "Zoom In",
         .viewZoomOut: "Zoom Out",
         .viewActualSize: "Actual Size",
+        .menuCommandPalette: "Command Palette…",
+        .commandPalettePlaceholder: "Type a command…",
+        .commandPaletteEmpty: "No commands",
 
         .menuLanguage: "Language",
         .languageAuto: "Auto",
@@ -196,6 +199,9 @@ extension L10n {
         .viewZoomIn: "放大",
         .viewZoomOut: "缩小",
         .viewActualSize: "实际大小",
+        .menuCommandPalette: "命令面板…",
+        .commandPalettePlaceholder: "输入命令…",
+        .commandPaletteEmpty: "无命令",
 
         .menuLanguage: "语言",
         .languageAuto: "自动",
@@ -318,6 +324,9 @@ extension L10n {
         .viewZoomIn: "拡大",
         .viewZoomOut: "縮小",
         .viewActualSize: "実際のサイズ",
+        .menuCommandPalette: "コマンドパレット…",
+        .commandPalettePlaceholder: "コマンドを入力…",
+        .commandPaletteEmpty: "コマンドなし",
 
         .menuLanguage: "言語",
         .languageAuto: "自動",
