@@ -122,8 +122,8 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T12.3 | A1 注释切换 ⌘/：per-language 行/块注释表 + 纯文本变换 | Editor/CommentToggle（新）, MainMenu, L10n, Languages | implementer | 变换纯函数单测（含块注释语言）；370+ 全绿 | ✅ 13 测试 |
 | T12.4 | A2 行操作：上移/下移 ⌥↑↓、复制行 ⇧⌥↑↓、删除行 ⌘⇧K（join 暂不做） | Editor/LineOperations（新）, MainMenu, L10n | implementer | 纯函数单测（选区保持/首尾行边界）；undo 正确 | ✅ 15+9 测试 |
 | T12.5 | A6 字体缩放：新建"视图"菜单，放大 ⌘+ / 缩小 ⌘- / 实际大小 ⌘0，UserDefaults 持久 | Editor/, MainMenu, L10n, Settings | implementer | 缩放范围钳制单测 | ✅ 6 测试；视图菜单新建 |
-| T12.6 | A4 自动闭合括号/引号 + 选中包裹（右侧已闭合跳过、词内引号不闭合；设置开关默认开） | Editor/AutoClosePairs（新）, EditorTextView, Settings | implementer | 决策纯函数单测（成对/跳过/包裹/词内） | ⬜ |
-| T12.7 | A3 括号配对高亮 + ⌘⇧\ 跳转（viewport 扫描，temporary attributes） | Editor/BracketMatcher（新）, EditorWindowController, MainMenu | implementer | 配对定位纯函数单测（嵌套/字符串内跳过可后补） | ⬜ |
+| T12.6 | A4 自动闭合括号/引号 + 选中包裹（右侧已闭合跳过、词内引号不闭合；设置开关默认开） | Editor/AutoClosePairs（新）, EditorTextView, Settings | implementer | 决策纯函数单测（成对/跳过/包裹/词内） | ✅ 16 测试 |
+| T12.7 | A3 括号配对高亮 + ⌘⇧\ 跳转（viewport 扫描，temporary attributes） | Editor/BracketMatcher（新）, EditorWindowController, MainMenu | implementer | 配对定位纯函数单测（嵌套/字符串内跳过可后补） | ✅ 13 测试，455 全绿 |
 | T12.8 | A5 命令面板 ⌘⇧P：枚举主菜单树 + 模糊过滤，复用瞬时面板模板 | Editor/CommandPalette（新）, MainMenu, L10n | implementer | 过滤/枚举单测；执行走 NSApp.sendAction | ⬜ |
 | T12.9 | A7 光标词高亮（viewport 内同词匹配，debounce，temporary attributes 独立通道） | Editor/WordOccurrenceHighlighter（新） | implementer | 词边界匹配单测；快照可见 | ⬜ |
 | T12.10 | A8 不可见/易混淆字符警示 + 异常行终止符（viewport 正则 + 着色边框） | Editor/UnicodeAlert（新） | implementer | 检测纯函数单测（零宽/BOM/双向控制/LS·PS） | ⬜ |

@@ -43,6 +43,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     // Edit menu — comment toggle + line operations.
     case menuToggleComment
     case menuMoveLineUp, menuMoveLineDown, menuCopyLineUp, menuCopyLineDown, menuDeleteLine
+    // Edit menu — jump to matching bracket (⌘⇧\).
+    case menuJumpToMatchingBracket
     // Format menu.
     case menuFormat, menuFormatDocument
     // Convert-line-endings submenu.
@@ -70,7 +72,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case downloadingTitle, downloadTimeoutTitle, downloadTimeoutMessage
     // Preferences.
     case prefTitle, prefModules, prefEditor
-    case prefIndentWidthLabel, prefInsertSpaces, prefIndentRainbow, prefFontSizeLabel
+    case prefIndentWidthLabel, prefInsertSpaces, prefIndentRainbow, prefAutoClosePairs, prefFontSizeLabel
     case prefLanguageLabel, prefLanguageSystem
     // Feature-module display names.
     case moduleHighlight, moduleCompletion, moduleFormat

@@ -134,6 +134,14 @@ enum MainMenu {
                                           keyEquivalent: "k")
         deleteLine.keyEquivalentModifierMask = [.command, .shift]
 
+        // Jump to Matching Bracket (⌘⇧\). Carries ⌘, so its menu equivalent is
+        // reliable. Targets the first responder (EditorWindowController).
+        editMenu.addItem(.separator())
+        let jumpBracket = editMenu.addItem(withTitle: L10n.t(.menuJumpToMatchingBracket),
+                                           action: #selector(EditorWindowController.jumpToMatchingBracket(_:)),
+                                           keyEquivalent: "\\")
+        jumpBracket.keyEquivalentModifierMask = [.command, .shift]
+
         // Format menu: targets the first responder (EditorWindowController),
         // which gates the item on the `format` module + supported language via
         // validateMenuItem.

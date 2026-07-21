@@ -77,6 +77,24 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// so the status bar just renders this stored value.
     private var currentLineEnding: LineEnding = .lf
 
+    /// The two one-character ranges most recently painted by the bracket-match
+    /// highlight (opener + closer), or `nil` when none is showing. Fixed-size
+    /// state (never a growing structure): it exists only so the *next*
+    /// `selectionDidChange` can clear exactly what it drew before recomputing.
+    private var bracketHighlight: (open: NSRange, close: NSRange)?
+
+    /// Low-saturation background tint for the matched bracket pair, resolved per
+    /// appearance (mirrors `HighlightTheme`'s dynamic-colour approach). Bracket
+    /// highlighting deliberately uses `.backgroundColor` — the same temporary
+    /// attribute the find bar uses — so where a match overlaps a search hit the
+    /// two tints visually stack; clearing only ever touches the two ranges this
+    /// controller recorded, never the find bar's attributes.
+    private static let bracketMatchColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.55, green: 0.58, blue: 0.66, alpha: 0.42)
+            : NSColor(srgbRed: 0.36, green: 0.42, blue: 0.52, alpha: 0.26)
+    }
+
     public convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -432,6 +450,57 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     @objc private func selectionDidChange(_ notification: Notification) {
         refreshStatusBar()
+        updateBracketMatchHighlight()
+    }
+
+    /// Recomputes the matched-bracket background highlight for the current caret.
+    /// Clears the previous pair (only the two ranges this controller recorded —
+    /// never the find bar's own background attributes), then, when the caret is
+    /// adjacent to a balanced bracket, tints both the opener and its match.
+    /// Storage-free apart from the two-range `bracketHighlight` marker; the match
+    /// itself is a transient scan (`BracketMatcher.findMatch`).
+    private func updateBracketMatchHighlight() {
+        guard let layoutManager = textView.layoutManager else { return }
+
+        if let previous = bracketHighlight {
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: previous.open)
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: previous.close)
+            bracketHighlight = nil
+        }
+
+        // Only highlight for a plain caret (no active selection).
+        let selection = textView.selectedRange()
+        guard selection.length == 0,
+              let match = BracketMatcher.findMatch(text: textView.string, caret: selection.location) else {
+            return
+        }
+        let color = Self.bracketMatchColor
+        layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: match.open)
+        layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: match.close)
+        bracketHighlight = match
+    }
+
+    // MARK: - Jump to matching bracket (first-responder target)
+
+    /// Moves the caret to the other end of the bracket pair anchored at the
+    /// current caret (⌘⇧\). When the caret sits at the opener, it jumps just past
+    /// the closer; from the closer it jumps to just before the opener — so
+    /// repeated invocations toggle between the two ends. Beeps when the caret is
+    /// not adjacent to a balanced bracket.
+    @objc public func jumpToMatchingBracket(_ sender: Any?) {
+        let caret = textView.selectedRange().location
+        guard let match = BracketMatcher.findMatch(text: textView.string, caret: caret) else {
+            NSSound.beep()
+            return
+        }
+        let atOpenSide = caret == match.open.location
+            || caret == match.open.location + match.open.length
+        let target = atOpenSide
+            ? match.close.location + match.close.length
+            : match.open.location
+        let destination = NSRange(location: target, length: 0)
+        textView.setSelectedRange(destination)
+        textView.scrollRangeToVisible(destination)
     }
 
     /// Recomputes the status strip's caret position, language, and char count.

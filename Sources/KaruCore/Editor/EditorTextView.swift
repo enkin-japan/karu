@@ -234,6 +234,11 @@ public final class EditorTextView: NSTextView {
         }
     }
 
+    /// Whether auto-closing brackets / quotes and selection-wrapping are active.
+    /// Defaults from UserDefaults key `editor.autoClosePairs` (on when unset).
+    /// Pure state flag — no redraw needed, it only gates the input overrides.
+    public var autoClosePairsEnabled: Bool = AutoClosePairs.defaultEnabled
+
     // MARK: Indent rainbow drawing
 
     /// Draws indent-rainbow blocks behind the visible text. Viewport-only: only
@@ -477,6 +482,109 @@ public final class EditorTextView: NSTextView {
     /// can never enter the storage.
     public override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
         [.string]
+    }
+
+    // MARK: Auto-close pairs (T12.6)
+
+    /// Intercepts single-character insertion to auto-close brackets / quotes,
+    /// wrap a selection, or step over an existing closer.
+    ///
+    /// Guards first (falling straight through to `super`) when: auto-close is
+    /// off, an input method is mid-composition (`hasMarkedText()` — CJK input
+    /// must never be disturbed), the payload is not exactly one character, or the
+    /// character is not one we pair. Every mutation goes through the undo-aware
+    /// `shouldChangeText` → `replaceCharacters` → `didChangeText` channel so the
+    /// change coalesces into the undo stack and fires the usual notifications.
+    public override func insertText(_ string: Any, replacementRange: NSRange) {
+        // Extract the committed plain string from either payload form.
+        let typed: String
+        if let s = string as? String {
+            typed = s
+        } else if let attributed = string as? NSAttributedString {
+            typed = attributed.string
+        } else {
+            super.insertText(string, replacementRange: replacementRange)
+            return
+        }
+
+        guard autoClosePairsEnabled, !hasMarkedText(), typed.count == 1 else {
+            super.insertText(string, replacementRange: replacementRange)
+            return
+        }
+
+        // The range this insertion targets: an explicit replacement range if the
+        // caller gave one, otherwise the current selection.
+        let ns = self.string as NSString
+        let target = (replacementRange.location != NSNotFound) ? replacementRange : selectedRange()
+        let hasSelection = target.length > 0
+        let before = character(at: target.location - 1, in: ns)
+        let after = character(at: target.location + target.length, in: ns)
+
+        let decision = AutoClosePairs.decide(typed: typed,
+                                             charBefore: before,
+                                             charAfter: after,
+                                             hasSelection: hasSelection)
+        switch decision {
+        case .passthrough:
+            super.insertText(string, replacementRange: replacementRange)
+
+        case .insertPair(let text, let caretOffset):
+            guard shouldChangeText(in: target, replacementString: text) else { return }
+            textStorage?.replaceCharacters(in: target, with: text)
+            didChangeText()
+            setSelectedRange(NSRange(location: target.location + caretOffset, length: 0))
+
+        case .wrap(let prefix, let suffix):
+            let selected = ns.substring(with: target)
+            let replacement = prefix + selected + suffix
+            guard shouldChangeText(in: target, replacementString: replacement) else { return }
+            textStorage?.replaceCharacters(in: target, with: replacement)
+            didChangeText()
+            // Keep the original text selected, now sitting inside the delimiters.
+            let inner = NSRange(location: target.location + (prefix as NSString).length,
+                                length: (selected as NSString).length)
+            setSelectedRange(inner)
+
+        case .stepOver:
+            // The closer is already there — just advance the caret past it.
+            setSelectedRange(NSRange(location: target.location + 1, length: 0))
+        }
+    }
+
+    /// Deletes both halves of an empty auto-inserted pair when backspacing with
+    /// the caret between them (e.g. `(|)` → `|`). Guards identically to
+    /// `insertText` (off / composing / non-caret selection) before consulting the
+    /// pure `AutoClosePairs.shouldDeletePair` predicate.
+    public override func deleteBackward(_ sender: Any?) {
+        guard autoClosePairsEnabled, !hasMarkedText() else {
+            super.deleteBackward(sender)
+            return
+        }
+        let selection = selectedRange()
+        guard selection.length == 0, selection.location > 0 else {
+            super.deleteBackward(sender)
+            return
+        }
+        let ns = self.string as NSString
+        let before = character(at: selection.location - 1, in: ns)
+        let after = character(at: selection.location, in: ns)
+        guard AutoClosePairs.shouldDeletePair(charBefore: before, charAfter: after) else {
+            super.deleteBackward(sender)
+            return
+        }
+        let pairRange = NSRange(location: selection.location - 1, length: 2)
+        guard shouldChangeText(in: pairRange, replacementString: "") else { return }
+        textStorage?.replaceCharacters(in: pairRange, with: "")
+        didChangeText()
+        setSelectedRange(NSRange(location: pairRange.location, length: 0))
+    }
+
+    /// The `Character` at UTF-16 `index`, or `nil` when out of bounds. Used only
+    /// to compare against ASCII brackets / quotes, so a lone surrogate half
+    /// (decoded to U+FFFD) simply never matches.
+    private func character(at index: Int, in ns: NSString) -> Character? {
+        guard index >= 0, index < ns.length else { return nil }
+        return Character(ns.substring(with: NSRange(location: index, length: 1)))
     }
 
     // MARK: Indentation key handling

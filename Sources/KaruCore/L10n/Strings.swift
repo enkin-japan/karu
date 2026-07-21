@@ -64,6 +64,7 @@ extension L10n {
         .menuCopyLineUp: "Copy Line Up",
         .menuCopyLineDown: "Copy Line Down",
         .menuDeleteLine: "Delete Line",
+        .menuJumpToMatchingBracket: "Jump to Matching Bracket",
 
         .menuFormat: "Format",
         .menuFormatDocument: "Format Document",
@@ -117,6 +118,7 @@ extension L10n {
         .prefIndentWidthLabel: "Indent width:",
         .prefInsertSpaces: "Insert spaces for Tab",
         .prefIndentRainbow: "Indent rainbow",
+        .prefAutoClosePairs: "Auto-close brackets and quotes",
         .prefFontSizeLabel: "Font size:",
         .prefLanguageLabel: "Language:",
         .prefLanguageSystem: "System",
@@ -184,6 +186,7 @@ extension L10n {
         .menuCopyLineUp: "向上复制一行",
         .menuCopyLineDown: "向下复制一行",
         .menuDeleteLine: "删除行",
+        .menuJumpToMatchingBracket: "跳转到配对括号",
 
         .menuFormat: "格式",
         .menuFormatDocument: "格式化文档",
@@ -237,6 +240,7 @@ extension L10n {
         .prefIndentWidthLabel: "缩进宽度：",
         .prefInsertSpaces: "用空格代替 Tab",
         .prefIndentRainbow: "缩进彩虹",
+        .prefAutoClosePairs: "自动闭合括号和引号",
         .prefFontSizeLabel: "字体大小：",
         .prefLanguageLabel: "语言：",
         .prefLanguageSystem: "跟随系统",
@@ -304,6 +308,7 @@ extension L10n {
         .menuCopyLineUp: "行を上にコピー",
         .menuCopyLineDown: "行を下にコピー",
         .menuDeleteLine: "行を削除",
+        .menuJumpToMatchingBracket: "対応する括弧へジャンプ",
 
         .menuFormat: "フォーマット",
         .menuFormatDocument: "ドキュメントをフォーマット",
@@ -357,6 +362,7 @@ extension L10n {
         .prefIndentWidthLabel: "インデント幅：",
         .prefInsertSpaces: "タブをスペースに変換",
         .prefIndentRainbow: "インデントレインボー",
+        .prefAutoClosePairs: "括弧と引用符を自動で閉じる",
         .prefFontSizeLabel: "フォントサイズ：",
         .prefLanguageLabel: "言語：",
         .prefLanguageSystem: "システムに従う",
