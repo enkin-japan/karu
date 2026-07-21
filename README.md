@@ -2,8 +2,8 @@
 
 **English** | [简体中文](README.zh-Hans.md) | [日本語](README.ja.md)
 
-A deliberately tiny, native plain-text editor for macOS. **1.4 MB app, ~30 MB
-resident memory, zero dependencies.**
+A deliberately tiny, native plain-text editor for macOS. **~30 MB resident
+memory, cold start under a second.**
 
 Karu (軽, "light" in Japanese) is built on one belief: a text editor should cost
 almost nothing. Every feature is admitted against a hard memory budget, and
@@ -27,6 +27,7 @@ rules say they must.
 - Feature modules (highlight / completion / format) can be toggled off, releasing
   their runtime state entirely
 - `karu` CLI: open files from the terminal
+- One-click in-app updates (Sparkle, from v0.7.0)
 
 ## The budget (enforced, not aspirational)
 
@@ -35,7 +36,7 @@ rules say they must.
 | Empty document, idle | 35 MB |
 | 1 MB file open | 50 MB |
 | 10 MB file open | 65 MB |
-| App bundle | 5 MB (actual: 1.4 MB) |
+| App bundle | 10 MB |
 | Cold start | < 1 s |
 
 Measured by `scripts/mem-benchmark.sh` on every release. Deliberately excluded,
@@ -59,7 +60,7 @@ Requires only Swift (Command Line Tools — no Xcode needed), macOS 13+.
 
 ```sh
 swift build            # debug build
-swift test             # 340+ tests
+swift test             # run the full test suite
 bash scripts/bundle-macos.sh   # → build/Karu.app (SIGN_IDENTITY=- for ad-hoc)
 ```
 
