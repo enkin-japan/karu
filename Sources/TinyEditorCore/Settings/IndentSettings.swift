@@ -54,6 +54,16 @@ public struct IndentSettings {
         return Self.languageDefaults[language.lowercased()] ?? Self.defaultWidth
     }
 
+    /// Whether the user has an explicit (positive) width override stored for
+    /// `language`. Used to arbitrate against content-detected indentation: an
+    /// explicit choice always wins, otherwise detection takes over.
+    public func hasExplicitWidth(for language: String) -> Bool {
+        if let override = defaults.object(forKey: Self.widthKey(for: language)) as? Int, override > 0 {
+            return true
+        }
+        return false
+    }
+
     /// The UserDefaults key used to store the width for `language`.
     public static func widthKey(for language: String) -> String {
         "indent.width.\(language.lowercased())"

@@ -237,6 +237,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             }
             completionController.indexDocument()
 
+            // Infer the indent unit from the file's actual content (VS Code's
+            // detectIndentation), so the rainbow and Tab match what the file
+            // really uses rather than the language's fixed default.
+            redetectIndentUnit()
+
             // Loading fresh content should not go through the undo stack, and
             // the didChange notification only fires for user edits, so we
             // simply refresh window chrome here.
@@ -304,8 +309,20 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         highlightEngine.setLanguage(identifier: identifier)
         (textView as? EditorTextView)?.languageIdentifier = identifier
         completionController.setLanguage(identifier: identifier)
+        redetectIndentUnit()
         toolbarController?.refreshAll()
         statusBar.updateLanguage(identifier)
+    }
+
+    /// Re-runs `IndentDetector` over the whole buffer and stores the result on
+    /// the text view (driving the indent rainbow and Tab width). Called on open
+    /// and on every language change — deliberately *not* on each keystroke, so a
+    /// half-typed line can't make the rainbow flicker; the file's established
+    /// indentation is a document-level property that a single edit shouldn't
+    /// redefine.
+    private func redetectIndentUnit() {
+        guard let editorView = textView as? EditorTextView else { return }
+        editorView.detectedIndentUnit = IndentDetector.detect(text: textView.string)?.unit
     }
 
     /// The window/UI display name. `DocumentController` stays pure Foundation and
@@ -420,6 +437,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         (textView as? EditorTextView)?.languageIdentifier ?? ""
     }
 
+    /// The indent width currently in effect (explicit override → detected unit →
+    /// language default), so the toolbar popup shows what the editor actually
+    /// uses rather than just the stored default.
+    var currentEffectiveIndentWidth: Int {
+        (textView as? EditorTextView)?.effectiveIndentWidth
+            ?? IndentSettings().width(for: currentLanguageIdentifierValue)
+    }
+
     /// Manual override to a specific language (from the Language menu or the
     /// toolbar popup). Suppresses automatic detection until Auto is chosen again.
     func chooseLanguage(identifier: String) {
@@ -448,6 +473,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             } else {
                 completionController.setLanguage(fileExtension: ext)
             }
+            redetectIndentUnit()
             toolbarController?.refreshAll()
             statusBar.updateLanguage(resolved)
         } else {
@@ -456,6 +482,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             highlightEngine.setLanguage(identifier: nil)
             (textView as? EditorTextView)?.languageIdentifier = ""
             completionController.setLanguage(identifier: nil)
+            redetectIndentUnit()
             toolbarController?.refreshAll()
             statusBar.updateLanguage("")
             maybeAutoDetectLanguage()

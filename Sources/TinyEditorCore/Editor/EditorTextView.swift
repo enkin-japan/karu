@@ -185,6 +185,29 @@ public final class EditorTextView: NSTextView {
     /// Language identifier used to look up the indent width (e.g. "html").
     public var languageIdentifier: String = ""
 
+    /// Indent unit inferred from the document's actual content by
+    /// `IndentDetector`, or `nil` when detection was inconclusive. Set by
+    /// `EditorWindowController` on open / language change (never per keystroke).
+    /// Takes precedence over the language default but yields to an explicit
+    /// UserDefaults width override.
+    public var detectedIndentUnit: Int? {
+        didSet {
+            guard oldValue != detectedIndentUnit else { return }
+            needsDisplay = true
+        }
+    }
+
+    /// Indent width to use for rainbow drawing and the Tab key, honouring the
+    /// VS Code-style precedence: explicit UserDefaults override →
+    /// content-detected unit → built-in language default.
+    public var effectiveIndentWidth: Int {
+        if !indentSettings.hasExplicitWidth(for: languageIdentifier),
+           let detected = detectedIndentUnit {
+            return detected
+        }
+        return indentSettings.width(for: languageIdentifier)
+    }
+
     /// Optional completion popup hook. Held weakly and consulted only in
     /// `keyDown` / `mouseDown`; when unset (or inactive) it adds no per-keystroke
     /// cost beyond a nil / bool check.
@@ -213,7 +236,7 @@ public final class EditorTextView: NSTextView {
         let ns = string as NSString
         guard ns.length > 0 else { return }
 
-        let width = indentSettings.width(for: languageIdentifier)
+        let width = effectiveIndentWidth
         let origin = textContainerOrigin
 
         // Character range covering the dirty rect, expanded to whole lines.
@@ -322,7 +345,7 @@ public final class EditorTextView: NSTextView {
     // MARK: Applying edits
 
     private var currentWidth: Int {
-        indentSettings.width(for: languageIdentifier)
+        effectiveIndentWidth
     }
 
     /// Applies an `IndentEdit` through the standard input path so the change is

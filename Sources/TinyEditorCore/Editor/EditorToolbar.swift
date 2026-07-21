@@ -221,7 +221,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
 
     func refreshIndent() {
         guard let wc = windowController else { return }
-        let width = IndentSettings().width(for: wc.currentLanguageIdentifierValue)
+        let width = wc.currentEffectiveIndentWidth
         if indentPopup.menu?.items.contains(where: { $0.tag == width }) == true {
             indentPopup.selectItem(withTag: width)
         } else {
