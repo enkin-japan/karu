@@ -103,7 +103,8 @@ public struct LanguageDefinition {
 /// the engine drops its reference, the definition and its compiled regexes are
 /// fully released — satisfying the "disabled ⇒ ≈ 0 resident" rule (§2.5). A
 /// rebuild costs only a handful of tiny `NSRegularExpression`s. Batch 1
-/// (T3.2) registers Markdown, JSON(L), Python, JS/Node, TypeScript, HTML, CSS.
+/// (T3.2) registers Markdown, JSON(L), Python, JS/Node, TypeScript, HTML,
+/// CSS. Batch 2 (T3.3) adds C, C++, C#, Java, Bash, SQL, XML/plist.
 public enum LanguageRegistry {
     /// Extension (lowercased) → factory closure. Referencing this map does not
     /// build any definition; only calling a closure does.
@@ -122,6 +123,24 @@ public enum LanguageRegistry {
         "html": HTMLLanguage.make,
         "htm": HTMLLanguage.make,
         "css": CSSLanguage.make,
+        "c": CLanguage.make,
+        "h": CLanguage.make,
+        "cpp": CppLanguage.make,
+        "cc": CppLanguage.make,
+        "cxx": CppLanguage.make,
+        "hpp": CppLanguage.make,
+        "hh": CppLanguage.make,
+        "cs": CSharpLanguage.make,
+        "java": JavaLanguage.make,
+        "sh": BashLanguage.make,
+        "bash": BashLanguage.make,
+        "zsh": BashLanguage.make,
+        "sql": SQLLanguage.make,
+        "xml": XMLPlistLanguage.make,
+        "plist": XMLPlistLanguage.make,
+        "svg": XMLPlistLanguage.make,
+        "xib": XMLPlistLanguage.make,
+        "storyboard": XMLPlistLanguage.make,
     ]
 
     /// Extensions that have a registered definition, without building any of
