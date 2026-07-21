@@ -23,8 +23,14 @@ enum MainMenu {
         let fileMenu = NSMenu(title: "File")
         fileMenuItem.submenu = fileMenu
         fileMenu.addItem(withTitle: "New", action: #selector(AppDelegate.newDocument(_:)), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "Open…", action: #selector(AppDelegate.openDocument(_:)), keyEquivalent: "o")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        fileMenu.addItem(withTitle: "Save", action: #selector(EditorWindowController.saveDocument(_:)), keyEquivalent: "s")
+        let saveAsItem = fileMenu.addItem(withTitle: "Save As…",
+                                          action: #selector(EditorWindowController.saveDocumentAs(_:)),
+                                          keyEquivalent: "s")
+        saveAsItem.keyEquivalentModifierMask = [.command, .shift]
 
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
