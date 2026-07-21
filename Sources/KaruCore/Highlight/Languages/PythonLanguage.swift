@@ -40,6 +40,7 @@ public enum PythonLanguage {
             "FileNotFoundError", "NotImplementedError", "self", "__init__",
             "__name__", "__main__",
         ]
+        let bw = builtins.joined(separator: "|")
 
         return LanguageDefinition(
             identifier: "python",
@@ -60,6 +61,11 @@ public enum PythonLanguage {
                 LanguageRule(pattern: "\\b(?:\(kw))\\b", kind: .keyword),
                 // self / cls.
                 LanguageRule(pattern: #"\b(?:self|cls)\b"#, kind: .property),
+                // Built-in functions / types / common globals (after keywords
+                // and self/cls, so those keep their own colour; strings and
+                // comments are consumed earlier, so a built-in word inside them
+                // is never matched here).
+                LanguageRule(pattern: "\\b(?:\(bw))\\b", kind: .builtin),
                 // Numbers: hex/oct/bin, decimal/float with `_` separators,
                 // optional exponent and imaginary `j` suffix. The lookbehind
                 // stops a digit inside an identifier (e.g. `x1`) from matching.

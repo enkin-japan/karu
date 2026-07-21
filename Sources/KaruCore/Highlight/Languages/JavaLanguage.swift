@@ -55,6 +55,10 @@ public enum JavaLanguage {
                 LanguageRule(pattern: #"@\w+"#, kind: .type),
                 // Keywords.
                 LanguageRule(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
+                // Standard-library types / members after keywords (disjoint);
+                // comments, strings and annotations are consumed earlier, so a
+                // built-in word inside one is never reached here.
+                LanguageRule(pattern: "\\b(?:\(builtins.joined(separator: "|")))\\b", kind: .builtin),
                 // Numbers: hex / binary / decimal / float, with `_`
                 // separators and an optional `L` / `f` / `d` suffix. The
                 // lookbehind avoids matching digits mid-identifier.

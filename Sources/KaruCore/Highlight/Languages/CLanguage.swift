@@ -75,7 +75,14 @@ public enum CLanguage {
         return LanguageDefinition(
             identifier: "c",
             fileExtensions: ["c", "h"],
-            rules: baseRules() + [wordRule(keywords, kind: .keyword)],
+            rules: baseRules() + [
+                wordRule(keywords, kind: .keyword),
+                // Standard-library functions / macros / typedefs after keywords
+                // (disjoint sets); comments, strings and preprocessor lines are
+                // consumed in `baseRules()`, so a built-in word inside one is
+                // never reached here.
+                wordRule(builtins, kind: .builtin),
+            ],
             keywords: keywords,
             builtins: builtins
         )

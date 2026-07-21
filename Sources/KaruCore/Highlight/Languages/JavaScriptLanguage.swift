@@ -74,7 +74,13 @@ public enum JavaScriptLanguage {
         return LanguageDefinition(
             identifier: "javascript",
             fileExtensions: ["js", "mjs", "cjs"],
-            rules: baseRules() + [wordRule(keywords, kind: .keyword)],
+            rules: baseRules() + [
+                wordRule(keywords, kind: .keyword),
+                // Built-in globals after keywords (disjoint sets); strings and
+                // comments are consumed in `baseRules()`, so a built-in word
+                // inside one is never reached here.
+                wordRule(builtins, kind: .builtin),
+            ],
             keywords: keywords,
             builtins: builtins
         )

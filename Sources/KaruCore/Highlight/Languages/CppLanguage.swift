@@ -44,6 +44,7 @@ public enum CppLanguage {
     public static func make() -> LanguageDefinition {
         buildCount += 1
         let keywords = CLanguage.keywords + extraKeywords
+        let builtins = CLanguage.builtins + extraBuiltins
         return LanguageDefinition(
             identifier: "cpp",
             fileExtensions: ["cpp", "cc", "cxx", "hpp", "hh"],
@@ -65,6 +66,9 @@ public enum CppLanguage {
                 LanguageRule(pattern: #"::"#, kind: .punctuation),
                 // Keywords (C's set plus C++-only additions).
                 CLanguage.wordRule(keywords, kind: .keyword),
+                // Standard-library identifiers (C's set plus C++-only
+                // additions), after keywords and disjoint from them.
+                CLanguage.wordRule(builtins, kind: .builtin),
                 // Numbers (same shape as C).
                 LanguageRule(
                     pattern: #"(?<![\w.])(?:0[xX][0-9a-fA-F]+[uUlL]*|(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?[uUlLfF]*)"#,
@@ -72,7 +76,7 @@ public enum CppLanguage {
                 ),
             ],
             keywords: keywords,
-            builtins: CLanguage.builtins + extraBuiltins
+            builtins: builtins
         )
     }
 }

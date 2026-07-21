@@ -1,26 +1,65 @@
 import AppKit
 
-/// Maps `TokenKind`s to colours. System semantic colours are used throughout so
-/// highlighting adapts to light / dark appearance for free. `.plain` returns
-/// `nil` (no attribute → the view's default text colour).
+/// Maps `TokenKind`s to colours, following VS Code's **Dark Modern** palette in
+/// dark appearance and **Light Modern** in light appearance. Each colour is a
+/// dynamic `NSColor` built with `NSColor(name:dynamicProvider:)`, so it resolves
+/// against whichever appearance the text view is drawing in and flips live on a
+/// light/dark switch without the theme storing two concrete values. `.plain`
+/// returns `nil` (no attribute → the view's default text colour).
 public struct HighlightTheme {
     public init() {}
 
     public func color(for kind: TokenKind) -> NSColor? {
         switch kind {
-        case .keyword:     return .systemPurple
-        case .string:      return .systemRed
-        case .number:      return .systemBlue
-        case .comment:     return .systemGreen
-        case .type:           return .systemOrange
-        case .property:       return .systemTeal
-        case .punctuation:    return .secondaryLabelColor
-        // In-document semantic symbols: indigo/brown chosen for good separation
-        // from the five syntax colours above (purple/red/blue/green/orange).
-        case .symbolFunction: return .systemIndigo
-        case .symbolVariable: return .systemBrown
+        case .keyword:        return Self.keyword
+        // Built-ins share the function colour (VS Code renders both in yellow /
+        // brown), while staying a distinct token so the rule wins over symbols.
+        case .builtin:        return Self.function
+        case .string:         return Self.string
+        case .number:         return Self.number
+        case .comment:        return Self.comment
+        case .type:           return Self.type
+        // Keys / member-style names (JSON keys, shell `$VAR`, `self` / `cls`)
+        // read as the variable blue, matching VS Code's property colour.
+        case .property:       return Self.variable
+        case .punctuation:    return Self.punctuation
+        // In-document declared symbols reuse the function / variable colours.
+        case .symbolFunction: return Self.function
+        case .symbolVariable: return Self.variable
         case .plain:          return nil
         }
+    }
+
+    // MARK: - Palette (Dark Modern / Light Modern approximations)
+
+    private static let keyword     = dynamic(dark: 0x569CD6, light: 0x0000FF)
+    private static let string      = dynamic(dark: 0xCE9178, light: 0xA31515)
+    private static let number      = dynamic(dark: 0xB5CEA8, light: 0x098658)
+    private static let comment     = dynamic(dark: 0x6A9955, light: 0x008000)
+    private static let type        = dynamic(dark: 0x4EC9B2, light: 0x267F99)
+    private static let function    = dynamic(dark: 0xDCDCAA, light: 0x795E26)
+    private static let variable    = dynamic(dark: 0x9CDCFE, light: 0x001080)
+    private static let punctuation = dynamic(dark: 0xD4D4D4, light: 0x000000)
+
+    /// Builds a dynamic colour that returns `dark` under a dark appearance and
+    /// `light` otherwise, resolved at draw time so temporary-attribute colours
+    /// track the current appearance.
+    private static func dynamic(dark: UInt32, light: UInt32) -> NSColor {
+        let darkColor = NSColor(rgb: dark)
+        let lightColor = NSColor(rgb: light)
+        return NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
+        }
+    }
+}
+
+private extension NSColor {
+    /// Builds an sRGB colour from a packed `0xRRGGBB` integer.
+    convenience init(rgb: UInt32) {
+        self.init(srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255.0,
+                  green: CGFloat((rgb >> 8) & 0xFF) / 255.0,
+                  blue: CGFloat(rgb & 0xFF) / 255.0,
+                  alpha: 1.0)
     }
 }
 
@@ -84,6 +123,11 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// Pending debounced highlight pass, if any.
     private var pendingHighlight: DispatchWorkItem?
 
+    /// KVO token for the application's effective appearance. A light/dark switch
+    /// invalidates the painted band and repaints the viewport so the temporary
+    /// attribute colours re-resolve to the new appearance.
+    private var appearanceObservation: NSKeyValueObservation?
+
     /// Edit debounce interval (ARCHITECTURE: 0.05–0.1s).
     private let debounceInterval: TimeInterval = 0.07
 
@@ -133,10 +177,18 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
             self, selector: #selector(moduleSettingsChanged(_:)),
             name: ModuleSettings.didChangeNotification, object: nil
         )
+        // React to a light/dark appearance switch. Highlight colours are stored
+        // as *temporary attributes*: they re-resolve on redraw, but the
+        // `paintedRange` short-circuit means a subsequent scroll would skip
+        // repainting, so invalidate the band and repaint the viewport now.
+        appearanceObservation = NSApp?.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.appearanceDidChange() }
+        }
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        appearanceObservation?.invalidate()
         pendingHighlight?.cancel()
     }
 
@@ -225,6 +277,19 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         }
         symbolTable = WordIndex.symbolTable(text: textView.string,
                                             languageIdentifier: language.identifier)
+    }
+
+    // MARK: - Appearance
+
+    /// Invalidates the painted band and repaints the visible range. Public entry
+    /// for anything that changes how the stored temporary-attribute colours
+    /// should render without changing the text — chiefly a light/dark appearance
+    /// switch (the KVO observer calls this; callers may too). Cheap: it repaints
+    /// only the viewport plus overscan, never the whole document, and no-ops when
+    /// the module is off or no language applies.
+    public func appearanceDidChange() {
+        paintedRange = nil
+        scheduleHighlight(debounced: false)
     }
 
     // MARK: - Notifications

@@ -46,8 +46,10 @@ private func location(_ locations: [WordIndex.SymbolLocation],
     let ns = source as NSString
     let locations = WordIndex.scanSymbolLocations(text: source, languageIdentifier: "javascript")
 
-    #expect(locations.map(\.name) == ["Panel", "greet", "answer", "handler"])
-    #expect(locations.map(\.kind) == [.type, .function, .variable, .function])
+    // `name` and `event` are now surfaced as parameter bindings (variables), in
+    // document order between their enclosing declarations.
+    #expect(locations.map(\.name) == ["Panel", "greet", "name", "answer", "handler", "event"])
+    #expect(locations.map(\.kind) == [.type, .function, .variable, .variable, .function, .variable])
 
     // `handler` is an arrow binding: listed once, as a function, at its name range
     // (never duplicated as a variable).

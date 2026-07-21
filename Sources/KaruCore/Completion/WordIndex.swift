@@ -111,6 +111,19 @@ public struct WordIndex {
     private struct DeclarationPattern {
         let pattern: String
         let kind: SymbolKind
+        /// When non-nil, capture group 1 of `pattern` is a **list** substring —
+        /// a parameter list or a destructuring pattern — rather than a single
+        /// name. Each match of this inner pattern's group 1 *within that
+        /// substring* is then one declared name. This keeps the "group 1 is the
+        /// name" contract for the simple patterns while letting a single def /
+        /// arrow / destructuring match yield several bindings.
+        let listItemPattern: String?
+
+        init(pattern: String, kind: SymbolKind, listItemPattern: String? = nil) {
+            self.pattern = pattern
+            self.kind = kind
+            self.listItemPattern = listItemPattern
+        }
     }
 
     /// Control-flow words that look like a call (`if (…)`, `while (…)`) in the
@@ -119,6 +132,17 @@ public struct WordIndex {
         "if", "for", "while", "switch", "catch", "return", "sizeof",
         "else", "do", "new", "delete",
     ]
+
+    /// Names captured by a language's variable heuristics that are pseudo-keywords
+    /// rather than user bindings, so they are dropped from the variable set (and
+    /// from the navigator). Python's `self` / `cls` are the receiver names of a
+    /// method's parameter list; the tokenizer already colours them as `.property`.
+    private static func nonVariableNames(for languageIdentifier: String) -> Set<String> {
+        switch languageIdentifier {
+        case "python": return ["self", "cls"]
+        default:       return []
+        }
+    }
 
     /// The per-language declaration patterns, in the order they should be scanned.
     /// Empty for unsupported languages. Both symbol scans iterate this list; the
@@ -134,6 +158,17 @@ public struct WordIndex {
                 // Module-level / plain assignments `name = …`, excluding the `==`
                 // comparison. `(?m)` anchors `^` to each line, not the whole string.
                 DeclarationPattern(pattern: #"(?m)^\s*(\w+)\s*=(?!=)"#, kind: .variable),
+                // Loop target: `for name in …` (tuple targets capture the first).
+                DeclarationPattern(pattern: #"\bfor\s+(\w+)"#, kind: .variable),
+                // Context-manager / import / except alias: `… as name`.
+                DeclarationPattern(pattern: #"\bas\s+(\w+)"#, kind: .variable),
+                // Function parameters: each name in a `def f(a, b=1, *args, **kw)`
+                // list. Group 1 is the parenthesised list; the inner pattern
+                // picks the name after `(` or a comma, past any `*`/`**` and
+                // skipping default values / annotations. `self` / `cls` are
+                // dropped later by `nonVariableNames`.
+                DeclarationPattern(pattern: #"\bdef\s+\w+\s*\(([^)]*)\)"#, kind: .variable,
+                                   listItemPattern: #"(?:^|,)\s*\*{0,2}\s*([A-Za-z_]\w*)"#),
             ]
         case "javascript", "typescript":
             return [
@@ -144,6 +179,20 @@ public struct WordIndex {
                 // read as functions; the shared demotion rule then drops the
                 // duplicate variable hit for the same name.
                 DeclarationPattern(pattern: #"\b(\w+)\s*=\s*(?:async\s*)?\("#, kind: .function),
+                // Named-function parameters: each simple name in a
+                // `function f(a, b)` list (past an optional `...` rest).
+                DeclarationPattern(pattern: #"\bfunction\s+\w+\s*\(([^)]*)\)"#, kind: .variable,
+                                   listItemPattern: #"(?:^|,)\s*(?:\.\.\.)?\s*([A-Za-z_$][\w$]*)"#),
+                // Arrow-function parameters: each simple name in `(a, b) => …`.
+                DeclarationPattern(pattern: #"\b\w+\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>"#, kind: .variable,
+                                   listItemPattern: #"(?:^|,)\s*(?:\.\.\.)?\s*([A-Za-z_$][\w$]*)"#),
+                // Object destructuring: `const { a, b } = …` (first identifier
+                // per entry; rename targets / defaults are approximated).
+                DeclarationPattern(pattern: #"\b(?:const|let|var)\s*\{([^}]*)\}\s*="#, kind: .variable,
+                                   listItemPattern: #"(?:^|,)\s*([A-Za-z_$][\w$]*)"#),
+                // Array destructuring: `const [ a, b ] = …`.
+                DeclarationPattern(pattern: #"\b(?:const|let|var)\s*\[([^\]]*)\]\s*="#, kind: .variable,
+                                   listItemPattern: #"(?:^|,)\s*([A-Za-z_$][\w$]*)"#),
             ]
         case "c", "cpp", "java", "csharp":
             return [
@@ -168,7 +217,12 @@ public struct WordIndex {
         var types = Set<String>()
         var variables = Set<String>()
         for declaration in patterns {
-            let names = captures(declaration.pattern, in: text)
+            let names: [String]
+            if let itemPattern = declaration.listItemPattern {
+                names = listCaptures(declaration.pattern, item: itemPattern, in: text)
+            } else {
+                names = captures(declaration.pattern, in: text)
+            }
             switch declaration.kind {
             case .function: functions.formUnion(names)
             case .type:     types.formUnion(names)
@@ -181,6 +235,7 @@ public struct WordIndex {
         functions.subtract(cLikeNonSymbols)
         variables.subtract(functions)
         variables.subtract(types)
+        variables.subtract(nonVariableNames(for: languageIdentifier))
         return SymbolTable(functions: functions, types: types, variables: variables)
     }
 
@@ -203,15 +258,34 @@ public struct WordIndex {
         var raw: [SymbolLocation] = []
         for declaration in patterns {
             guard let regex = try? NSRegularExpression(pattern: declaration.pattern) else { continue }
+            let itemRegex = declaration.listItemPattern.flatMap { try? NSRegularExpression(pattern: $0) }
             regex.enumerateMatches(in: text,
                                    range: NSRange(location: 0, length: ns.length)) { match, _, _ in
                 guard let match, match.numberOfRanges > 1 else { return }
-                let range = match.range(at: 1)
-                guard range.location != NSNotFound else { return }
-                raw.append(SymbolLocation(name: ns.substring(with: range),
-                                          kind: declaration.kind, range: range))
+                let listRange = match.range(at: 1)
+                guard listRange.location != NSNotFound else { return }
+                guard let itemRegex else {
+                    raw.append(SymbolLocation(name: ns.substring(with: listRange),
+                                              kind: declaration.kind, range: listRange))
+                    return
+                }
+                // List pattern: scan the captured substring for individual names,
+                // mapping each inner name range back to absolute text offsets.
+                let list = ns.substring(with: listRange)
+                let listNS = list as NSString
+                itemRegex.enumerateMatches(in: list,
+                                           range: NSRange(location: 0, length: listNS.length)) { inner, _, _ in
+                    guard let inner, inner.numberOfRanges > 1 else { return }
+                    let nameRange = inner.range(at: 1)
+                    guard nameRange.location != NSNotFound else { return }
+                    let absolute = NSRange(location: listRange.location + nameRange.location,
+                                           length: nameRange.length)
+                    raw.append(SymbolLocation(name: listNS.substring(with: nameRange),
+                                              kind: declaration.kind, range: absolute))
+                }
             }
         }
+        let excludedVariables = nonVariableNames(for: languageIdentifier)
 
         // Names promoted to function/type (after control-word filtering) demote a
         // same-named variable hit — the positional mirror of `symbolTable`'s set
@@ -226,6 +300,7 @@ public struct WordIndex {
         var out: [SymbolLocation] = []
         for hit in raw {
             if hit.kind == .function, cLikeNonSymbols.contains(hit.name) { continue }
+            if hit.kind == .variable, excludedVariables.contains(hit.name) { continue }
             if hit.kind == .variable,
                functionNames.contains(hit.name) || typeNames.contains(hit.name) { continue }
             // Collapse a name captured at the same range by two patterns (e.g. a
@@ -242,6 +317,34 @@ public struct WordIndex {
     /// stays unchanged while the highlighter gets the classified view.
     public static func symbols(text: String, languageIdentifier: String) -> Set<String> {
         symbolTable(text: text, languageIdentifier: languageIdentifier).all
+    }
+
+    /// Collects declared names from a *list* pattern: for every match of
+    /// `pattern`, capture group 1 is a list substring (a parameter list or a
+    /// destructuring pattern), and every group-1 match of `item` within that
+    /// substring is one name. Used for def / arrow parameters and destructuring.
+    private static func listCaptures(_ pattern: String, item: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let itemRegex = try? NSRegularExpression(pattern: item) else { return [] }
+        let ns = text as NSString
+        guard ns.length > 0 else { return [] }
+        var out: [String] = []
+        regex.enumerateMatches(in: text,
+                               range: NSRange(location: 0, length: ns.length)) { match, _, _ in
+            guard let match, match.numberOfRanges > 1 else { return }
+            let listRange = match.range(at: 1)
+            guard listRange.location != NSNotFound else { return }
+            let list = ns.substring(with: listRange)
+            let listNS = list as NSString
+            itemRegex.enumerateMatches(in: list,
+                                       range: NSRange(location: 0, length: listNS.length)) { inner, _, _ in
+                guard let inner, inner.numberOfRanges > 1 else { return }
+                let nameRange = inner.range(at: 1)
+                guard nameRange.location != NSNotFound else { return }
+                out.append(listNS.substring(with: nameRange))
+            }
+        }
+        return out
     }
 
     /// Collects capture group 1 of every match of `pattern` in `text`.

@@ -50,6 +50,51 @@ private func isolatedDefaults() -> UserDefaults {
     #expect(table.variables.contains("Widget") == false)
 }
 
+// MARK: - Python: extended variable forms (T10.2)
+
+@Test func pythonForWithAndParametersEnterTheVariableSet() {
+    let source = """
+    def transform(data, factor=2, *rest, **opts):
+        for item in data:
+            with open("f") as handle:
+                total = item * factor
+        return total
+    """
+    let table = WordIndex.symbolTable(text: source, languageIdentifier: "python")
+
+    // for-loop target and `as` binding.
+    #expect(table.variables.contains("item"))
+    #expect(table.variables.contains("handle"))
+    // def parameters, each extracted individually (past `*` / `**`).
+    #expect(table.variables.contains("data"))
+    #expect(table.variables.contains("factor"))
+    #expect(table.variables.contains("rest"))
+    #expect(table.variables.contains("opts"))
+    // plain assignment still works.
+    #expect(table.variables.contains("total"))
+
+    // `transform` is the function name, not a variable; `self`-style noise absent.
+    #expect(table.functions.contains("transform"))
+    #expect(table.variables.contains("transform") == false)
+}
+
+@Test func pythonSelfAndClsAreNotVariables() {
+    let source = """
+    class Box:
+        def put(self, value):
+            self.value = value
+
+        @classmethod
+        def make(cls):
+            return cls()
+    """
+    let table = WordIndex.symbolTable(text: source, languageIdentifier: "python")
+    // `value` is a real parameter binding; `self` / `cls` are pseudo-keywords.
+    #expect(table.variables.contains("value"))
+    #expect(table.variables.contains("self") == false)
+    #expect(table.variables.contains("cls") == false)
+}
+
 // MARK: - JavaScript / TypeScript
 
 @Test func javascriptSymbolTableClassifiesFunctionClassBindingsAndArrows() {
@@ -75,6 +120,33 @@ private func isolatedDefaults() -> UserDefaults {
     #expect(table.functions.contains("load"))
     #expect(table.variables.contains("handler") == false)
     #expect(table.variables.contains("load") == false)
+}
+
+@Test func javascriptParametersAndDestructuringEnterTheVariableSet() {
+    let source = """
+    function render(node, depth) { return node; }
+    const scale = (factor, offset) => factor + offset;
+    const { width, height } = box;
+    const [first, second] = pair;
+    """
+    let table = WordIndex.symbolTable(text: source, languageIdentifier: "javascript")
+
+    // Named-function parameters.
+    #expect(table.variables.contains("node"))
+    #expect(table.variables.contains("depth"))
+    // Arrow-function parameters.
+    #expect(table.variables.contains("factor"))
+    #expect(table.variables.contains("offset"))
+    // Object + array destructuring bindings.
+    #expect(table.variables.contains("width"))
+    #expect(table.variables.contains("height"))
+    #expect(table.variables.contains("first"))
+    #expect(table.variables.contains("second"))
+
+    // `render` is a function; `scale` an arrow binding (function), never a variable.
+    #expect(table.functions.contains("render"))
+    #expect(table.functions.contains("scale"))
+    #expect(table.variables.contains("scale") == false)
 }
 
 @Test func typescriptSharesTheJavaScriptClassification() {

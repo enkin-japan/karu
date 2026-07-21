@@ -67,6 +67,10 @@ public enum CSharpLanguage {
                 LanguageRule(pattern: #"\[\w+\]"#, kind: .type),
                 // Keywords.
                 LanguageRule(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
+                // Built-in library types / members after keywords (disjoint);
+                // comments, strings and attributes are consumed earlier, so a
+                // built-in word inside one is never reached here.
+                LanguageRule(pattern: "\\b(?:\(builtins.joined(separator: "|")))\\b", kind: .builtin),
                 // Numbers: hex or decimal/float with optional exponent and
                 // numeric-type suffix.
                 LanguageRule(

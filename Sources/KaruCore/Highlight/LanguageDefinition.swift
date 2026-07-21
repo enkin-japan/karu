@@ -5,6 +5,10 @@ import Foundation
 /// free of any AppKit dependency (so they stay pure and unit-testable).
 public enum TokenKind: Equatable {
     case keyword
+    /// A standard-library / built-in identifier (`print`, `console`, `printf`,
+    /// …). Coloured like a function name, but classified separately so it wins
+    /// over the in-document symbol pass and never gets a plain-identifier look.
+    case builtin
     case string
     case number
     case comment
@@ -104,9 +108,16 @@ public struct LanguageDefinition {
             for rule in rules {
                 // `.anchored` forces the match to begin exactly at `location`,
                 // giving us "first rule that matches here wins" priority.
-                guard let match = rule.regex.firstMatch(in: line,
-                                                        options: [.anchored],
-                                                        range: searchRange),
+                // `.withTransparentBounds` lets `\b` / lookbehind see the text
+                // *before* `location` — without it the search-range start acts
+                // as a fake word boundary, so e.g. the `in` inside `main` was
+                // tokenized as a keyword. `.withoutAnchoringBounds` keeps `^`
+                // from matching at the artificial range start for the same
+                // reason (a mid-line position is not a line start).
+                guard let match = rule.regex.firstMatch(
+                          in: line,
+                          options: [.anchored, .withTransparentBounds, .withoutAnchoringBounds],
+                          range: searchRange),
                       match.range.length > 0 else { continue }
                 tokens.append((range: match.range, kind: rule.kind))
                 location += match.range.length

@@ -73,6 +73,125 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     #expect(tokens.first?.range == NSRange(location: 2, length: 1))
 }
 
+// MARK: - Built-in identifier colouring (T10.2)
+
+@Test func pythonBuiltinFunctionsAreColouredAsBuiltin() {
+    let py = PythonLanguage.make()
+    let pairs = spans(py, "print(len(items))")
+    #expect(kind(of: "print", in: pairs) == .builtin)
+    #expect(kind(of: "len", in: pairs) == .builtin)
+    // A user identifier that is not a built-in stays untokenized (plain).
+    #expect(kind(of: "items", in: pairs) == nil)
+}
+
+@Test func pythonBuiltinDoesNotOverrideKeywordOrSelf() {
+    let py = PythonLanguage.make()
+    // `open` is a built-in, `for`/`in` keywords, `self` a property — each keeps
+    // its own classification (built-in rule runs after keyword and self/cls).
+    let pairs = spans(py, "for self in open(path): return type(self)")
+    #expect(kind(of: "for", in: pairs) == .keyword)
+    #expect(kind(of: "in", in: pairs) == .keyword)
+    #expect(kind(of: "return", in: pairs) == .keyword)
+    #expect(kind(of: "self", in: pairs) == .property)
+    #expect(kind(of: "open", in: pairs) == .builtin)
+    #expect(kind(of: "type", in: pairs) == .builtin)
+}
+
+@Test func builtinsInsideStringsAndCommentsAreNotColoured() {
+    let py = PythonLanguage.make()
+    let pairs = spans(py, #"x = "print len open"  # print open len"#)
+    // The quoted text and the comment are single tokens; no built-in token is
+    // emitted for the built-in words that live inside them.
+    #expect(kind(of: #""print len open""#, in: pairs) == .string)
+    #expect(kind(of: "# print open len", in: pairs) == .comment)
+    #expect(pairs.contains { $0.kind == .builtin } == false)
+}
+
+@Test func javascriptBuiltinGlobalsAreColoured() {
+    let js = JavaScriptLanguage.make()
+    let pairs = spans(js, "console.log(Math.max(a, b));")
+    #expect(kind(of: "console", in: pairs) == .builtin)
+    #expect(kind(of: "Math", in: pairs) == .builtin)
+    // `log`/`max` are member names, not top-level built-ins → untokenized.
+    #expect(kind(of: "log", in: pairs) == nil)
+}
+
+@Test func typescriptInheritsJavaScriptBuiltins() {
+    let ts = TypeScriptLanguage.make()
+    let pairs = spans(ts, "const p: Promise<number> = fetch(url);")
+    #expect(kind(of: "Promise", in: pairs) == .builtin)
+    #expect(kind(of: "fetch", in: pairs) == .builtin)
+    #expect(kind(of: "number", in: pairs) == .type)   // primitive type still wins
+    #expect(kind(of: "const", in: pairs) == .keyword)
+}
+
+@Test func cBuiltinLibraryFunctionsAreColoured() {
+    let c = CLanguage.make()
+    let pairs = spans(c, #"printf("%d", strlen(s));"#)
+    #expect(kind(of: "printf", in: pairs) == .builtin)
+    #expect(kind(of: "strlen", in: pairs) == .builtin)
+}
+
+@Test func cppInheritsCBuiltinsAndAddsStdLib() {
+    let cpp = CppLanguage.make()
+    let pairs = spans(cpp, "std::cout << printf();")
+    #expect(kind(of: "std", in: pairs) == .builtin)
+    #expect(kind(of: "cout", in: pairs) == .builtin)
+    #expect(kind(of: "printf", in: pairs) == .builtin)   // inherited from C
+    #expect(kind(of: "::", in: pairs) == .punctuation)
+}
+
+@Test func csharpJavaAndBashBuiltinsAreColoured() {
+    let cs = CSharpLanguage.make()
+    #expect(kind(of: "Console", in: spans(cs, "Console.WriteLine(x);")) == .builtin)
+
+    let java = JavaLanguage.make()
+    #expect(kind(of: "System", in: spans(java, "System.out.println(x);")) == .builtin)
+
+    let bash = BashLanguage.make()
+    let pairs = spans(bash, "echo hi | grep x")
+    #expect(kind(of: "echo", in: pairs) == .builtin)
+    #expect(kind(of: "grep", in: pairs) == .builtin)
+}
+
+// MARK: - Theme: Dark/Light Modern palette + dynamic appearance
+
+@Test func themeBuiltinSharesFunctionColour() {
+    let theme = HighlightTheme()
+    #expect(theme.color(for: .builtin) === theme.color(for: .symbolFunction))
+    #expect(theme.color(for: .property) === theme.color(for: .symbolVariable))
+    #expect(theme.color(for: .plain) == nil)
+    // The syntax kinds all resolve to a colour.
+    for k in [TokenKind.keyword, .string, .number, .comment, .type, .builtin] {
+        #expect(theme.color(for: k) != nil)
+    }
+}
+
+@Test func themeColoursFlipBetweenLightAndDarkAppearance() {
+    let theme = HighlightTheme()
+    let dark = NSAppearance(named: .darkAqua)!
+    let light = NSAppearance(named: .aqua)!
+
+    func resolve(_ kind: TokenKind, _ appearance: NSAppearance) -> NSColor? {
+        var out: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+            out = theme.color(for: kind)?.usingColorSpace(.sRGB)
+        }
+        return out
+    }
+
+    // Keyword blue differs: Dark Modern #569CD6 vs Light Modern #0000FF.
+    let darkKeyword = resolve(.keyword, dark)
+    let lightKeyword = resolve(.keyword, light)
+    #expect(darkKeyword != nil && lightKeyword != nil)
+    #expect(darkKeyword != lightKeyword)
+
+    // The Dark Modern keyword resolves close to #569CD6.
+    #expect(abs((darkKeyword?.redComponent ?? 0) - 0x56 / 255.0) < 0.02)
+    #expect(abs((darkKeyword?.greenComponent ?? 0) - 0x9C / 255.0) < 0.02)
+    #expect(abs((darkKeyword?.blueComponent ?? 0) - 0xD6 / 255.0) < 0.02)
+}
+
 // MARK: - Registry lookup
 
 @Test func registryResolvesJSONCaseInsensitively() {
@@ -168,4 +287,34 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     // Module off from the start: no runtime state despite a known language.
     #expect(engine.isModuleEnabled == false)
     #expect(engine.isRuntimeStateReleased)
+}
+
+// MARK: - Anchored-search boundary regressions (T10.2 review)
+
+/// `\b` in a rule must respect the character *before* the match position: the
+/// tokenizer advances through unmatched identifiers one character at a time, and
+/// without transparent bounds the search-range start acted as a fake word
+/// boundary — colouring the `in` inside `main`, the `print` inside `sprint`,
+/// and the `1` inside `x1`.
+@Test func keywordDoesNotMatchInsideIdentifier() {
+    let def = LanguageRegistry.definition(forIdentifier: "python")!
+    for line in ["def main(argv):", "def maintain(x):"] {
+        let ns = line as NSString
+        for token in def.tokenize(line: line) where token.kind == .keyword {
+            #expect(ns.substring(with: token.range) == "def",
+                    "unexpected keyword token in \(line)")
+        }
+    }
+}
+
+@Test func builtinDoesNotMatchInsideIdentifier() {
+    let def = LanguageRegistry.definition(forIdentifier: "python")!
+    let tokens = def.tokenize(line: "sprints = 3")
+    #expect(!tokens.contains { $0.kind == .builtin })
+}
+
+@Test func numberDoesNotMatchInsideIdentifier() {
+    let def = LanguageRegistry.definition(forIdentifier: "python")!
+    let tokens = def.tokenize(line: "x1 = y")
+    #expect(!tokens.contains { $0.kind == .number })
 }

@@ -53,6 +53,11 @@ public enum BashLanguage {
                 LanguageRule(pattern: #"\$\w+"#, kind: .property),
                 // Keywords.
                 LanguageRule(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
+                // Common commands / builtins after keywords; a word that is both
+                // (e.g. `set`) already matched as a keyword. Comments, strings
+                // and `$…` expansions are consumed earlier, so a command word
+                // inside one is never reached here.
+                LanguageRule(pattern: "\\b(?:\(builtins.joined(separator: "|")))\\b", kind: .builtin),
                 // Numbers.
                 LanguageRule(pattern: #"(?<![\w.])\d+(?:\.\d+)?"#, kind: .number),
             ],

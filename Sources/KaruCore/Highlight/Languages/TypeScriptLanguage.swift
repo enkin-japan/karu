@@ -38,6 +38,7 @@ public enum TypeScriptLanguage {
     public static func make() -> LanguageDefinition {
         buildCount += 1
         let keywords = JavaScriptLanguage.keywords + extraKeywords
+        let builtins = JavaScriptLanguage.builtins + extraBuiltins
         return LanguageDefinition(
             identifier: "typescript",
             fileExtensions: ["ts"],
@@ -46,9 +47,12 @@ public enum TypeScriptLanguage {
                 // visible as `.type`).
                 JavaScriptLanguage.wordRule(typeNames, kind: .type),
                 JavaScriptLanguage.wordRule(keywords, kind: .keyword),
+                // Built-in globals / utility types last (disjoint from the
+                // above); strings and comments are consumed earlier.
+                JavaScriptLanguage.wordRule(builtins, kind: .builtin),
             ],
             keywords: keywords + typeNames,
-            builtins: JavaScriptLanguage.builtins + extraBuiltins
+            builtins: builtins
         )
     }
 }
