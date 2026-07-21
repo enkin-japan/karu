@@ -54,10 +54,21 @@ public struct LanguageDefinition {
     /// Ordered tokenizing rules; earlier rules take priority at each position.
     public let rules: [LanguageRule]
 
-    public init(identifier: String, fileExtensions: [String], rules: [LanguageRule]) {
+    /// The language's reserved words / built-ins, surfaced here so the
+    /// completion module can offer them as candidates without re-parsing the
+    /// tokenizer rules. Each language definition passes the same word list it
+    /// already uses to build its `.keyword` rule; languages with no fixed
+    /// keyword set (Markdown, HTML, CSS, XML) leave this empty.
+    public let keywords: [String]
+
+    public init(identifier: String,
+                fileExtensions: [String],
+                rules: [LanguageRule],
+                keywords: [String] = []) {
         self.identifier = identifier
         self.fileExtensions = fileExtensions
         self.rules = rules
+        self.keywords = keywords
     }
 
     /// Tokenizes a single line into a list of `(range, kind)` spans.

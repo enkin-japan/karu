@@ -50,7 +50,8 @@ public enum JavaLanguage {
                     pattern: #"(?<![\w.])(?:0[xX][0-9a-fA-F_]+[lL]?|0[bB][01_]+[lL]?|(?:\d[\d_]*(?:\.[\d_]*)?|\.[\d_]+)(?:[eE][+-]?\d+)?[lLfFdD]?)"#,
                     kind: .number
                 ),
-            ]
+            ],
+            keywords: keywords
         )
     }
 }

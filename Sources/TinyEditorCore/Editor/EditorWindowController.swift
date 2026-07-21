@@ -18,6 +18,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private let observerHub = TextStorageObserverHub()
     private var highlightEngine: HighlightEngine!
 
+    /// Prefix-completion driver: indexes the document (debounced), scans symbols
+    /// and drives the suggestion popup. Module-gated on `module.completion`.
+    private var completionController: CompletionController!
+
     /// Code-folding layer: acts as the layout manager's delegate (glyph
     /// suppression + fragment collapsing) and answers the gutter's arrow /
     /// hidden-line queries. Folding never mutates text, so the shared
@@ -57,6 +61,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let engine = HighlightEngine(textView: textView, scrollView: scrollView)
         observerHub.add(engine)
         self.highlightEngine = engine
+
+        // Prefix completion: shares the observer hub for edit notifications and
+        // routes keys through the text view's completion hook. Module-gated.
+        let completion = CompletionController(textView: textView)
+        observerHub.add(completion)
+        (textView as? EditorTextView)?.completionKeyHandler = completion
+        self.completionController = completion
 
         // Code folding: layout-manager delegate + gutter arrow provider.
         // Registered on the hub after the gutter so the shared LineIndex is
@@ -134,6 +145,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
             let ext = url.pathExtension
             let identifier = highlightEngine.setLanguage(fileExtension: ext)
             (textView as? EditorTextView)?.languageIdentifier = identifier ?? ext.lowercased()
+
+            // Point completion at the same language (for its keywords / symbol
+            // dialect) and index the freshly loaded document.
+            completionController.setLanguage(fileExtension: ext)
+            completionController.indexDocument()
 
             // Loading fresh content should not go through the undo stack, and
             // the didChange notification only fires for user edits, so we

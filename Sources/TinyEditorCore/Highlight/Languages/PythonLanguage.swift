@@ -52,7 +52,8 @@ public enum PythonLanguage {
                     pattern: #"(?<![\w.])(?:0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|(?:\d[\d_]*(?:\.[\d_]*)?|\.[\d_]+)(?:[eE][+-]?\d+)?[jJ]?)"#,
                     kind: .number
                 ),
-            ]
+            ],
+            keywords: keywords
         )
     }
 }

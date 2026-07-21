@@ -63,7 +63,8 @@ public enum CLanguage {
         return LanguageDefinition(
             identifier: "c",
             fileExtensions: ["c", "h"],
-            rules: baseRules() + [wordRule(keywords, kind: .keyword)]
+            rules: baseRules() + [wordRule(keywords, kind: .keyword)],
+            keywords: keywords
         )
     }
 }

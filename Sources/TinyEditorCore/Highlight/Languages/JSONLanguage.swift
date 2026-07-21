@@ -30,7 +30,8 @@ public enum JSONLanguage {
                 LanguageRule(pattern: #"\b(?:true|false|null)\b"#, kind: .keyword),
                 // Structural punctuation.
                 LanguageRule(pattern: #"[{}\[\]:,]"#, kind: .punctuation),
-            ]
+            ],
+            keywords: ["true", "false", "null"]
         )
     }
 }

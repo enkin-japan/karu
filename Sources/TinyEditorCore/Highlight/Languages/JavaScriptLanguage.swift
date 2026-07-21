@@ -61,7 +61,8 @@ public enum JavaScriptLanguage {
         return LanguageDefinition(
             identifier: "javascript",
             fileExtensions: ["js", "mjs", "cjs"],
-            rules: baseRules() + [wordRule(keywords, kind: .keyword)]
+            rules: baseRules() + [wordRule(keywords, kind: .keyword)],
+            keywords: keywords
         )
     }
 }

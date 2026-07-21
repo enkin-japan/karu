@@ -62,7 +62,8 @@ public enum CSharpLanguage {
                     pattern: #"(?<![\w.])(?:0[xX][0-9a-fA-F_]+[uUlL]*|(?:\d[\d_]*(?:\.[\d_]*)?|\.[\d_]+)(?:[eE][+-]?\d+)?[fFdDmMuUlL]*)"#,
                     kind: .number
                 ),
-            ]
+            ],
+            keywords: keywords
         )
     }
 }

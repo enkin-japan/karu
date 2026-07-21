@@ -46,7 +46,8 @@ public enum BashLanguage {
                 LanguageRule(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
                 // Numbers.
                 LanguageRule(pattern: #"(?<![\w.])\d+(?:\.\d+)?"#, kind: .number),
-            ]
+            ],
+            keywords: keywords
         )
     }
 }

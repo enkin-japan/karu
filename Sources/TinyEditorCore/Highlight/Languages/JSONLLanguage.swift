@@ -16,7 +16,8 @@ public enum JSONLLanguage {
             identifier: "jsonl",
             fileExtensions: ["jsonl", "ndjson"],
             // Reuse JSON's rule set unchanged — JSONL is JSON per line.
-            rules: JSONLanguage.make().rules
+            rules: JSONLanguage.make().rules,
+            keywords: ["true", "false", "null"]
         )
     }
 }

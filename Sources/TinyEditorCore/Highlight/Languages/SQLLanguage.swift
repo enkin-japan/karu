@@ -50,7 +50,8 @@ public enum SQLLanguage {
                     pattern: #"(?<![\w.])(?:\d+\.\d*|\.\d+|\d+)"#,
                     kind: .number
                 ),
-            ]
+            ],
+            keywords: keywords
         )
     }
 }

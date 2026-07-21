@@ -59,7 +59,8 @@ public enum CppLanguage {
                     pattern: #"(?<![\w.])(?:0[xX][0-9a-fA-F]+[uUlL]*|(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?[uUlLfF]*)"#,
                     kind: .number
                 ),
-            ]
+            ],
+            keywords: keywords
         )
     }
 }

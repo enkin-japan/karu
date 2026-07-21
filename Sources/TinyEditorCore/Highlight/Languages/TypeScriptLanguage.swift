@@ -39,7 +39,8 @@ public enum TypeScriptLanguage {
                 // visible as `.type`).
                 JavaScriptLanguage.wordRule(typeNames, kind: .type),
                 JavaScriptLanguage.wordRule(keywords, kind: .keyword),
-            ]
+            ],
+            keywords: keywords + typeNames
         )
     }
 }

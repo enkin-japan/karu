@@ -185,6 +185,11 @@ public final class EditorTextView: NSTextView {
     /// Language identifier used to look up the indent width (e.g. "html").
     public var languageIdentifier: String = ""
 
+    /// Optional completion popup hook. Held weakly and consulted only in
+    /// `keyDown` / `mouseDown`; when unset (or inactive) it adds no per-keystroke
+    /// cost beyond a nil / bool check.
+    public weak var completionKeyHandler: CompletionKeyHandler?
+
     /// Whether indent-rainbow blocks are drawn. Defaults from UserDefaults key
     /// `editor.indentRainbow` (on when unset). Toggling triggers a redraw.
     public var indentRainbowEnabled: Bool = IndentRainbow.defaultEnabled {
@@ -235,6 +240,27 @@ public final class EditorTextView: NSTextView {
             if next <= loc { break } // guard against zero-length final line
             loc = next
         }
+    }
+
+    // MARK: Completion key routing
+
+    /// Give an active completion popup first refusal on navigation keys, then
+    /// let the normal input path run and notify the popup of the keystroke so it
+    /// can open / refilter / dismiss. Zero overhead when no handler is attached.
+    public override func keyDown(with event: NSEvent) {
+        if let handler = completionKeyHandler,
+           handler.isCompletionActive,
+           handler.handleCompletionKeyDown(event) {
+            return
+        }
+        super.keyDown(with: event)
+        completionKeyHandler?.textViewDidInsertKey(event)
+    }
+
+    /// Clicking in the text dismisses an open completion popup.
+    public override func mouseDown(with event: NSEvent) {
+        completionKeyHandler?.dismissCompletion()
+        super.mouseDown(with: event)
     }
 
     // MARK: Plain-text paste & drop
