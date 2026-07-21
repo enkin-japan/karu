@@ -1,0 +1,23 @@
+#!/bin/bash
+# tinyedit — open files in TinyEditor from the terminal (T8.5, `cot`-style).
+#
+# Usage:
+#   tinyedit              # bring TinyEditor forward (new untitled window if none)
+#   tinyedit FILE...      # open files; nonexistent paths are created empty first
+#
+# Install: this script ships inside the app bundle. Symlink it onto your PATH:
+#   ln -s /Applications/TinyEditor.app/Contents/Resources/tinyedit /usr/local/bin/tinyedit
+set -euo pipefail
+
+if [ $# -eq 0 ]; then
+    open -a TinyEditor
+    exit 0
+fi
+
+for f in "$@"; do
+    # `open` refuses paths that don't exist yet; create them so
+    # `tinyedit notes.md` starts a new file like `cot` does.
+    [ -e "$f" ] || : > "$f"
+done
+
+open -a TinyEditor -- "$@"

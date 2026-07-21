@@ -79,7 +79,7 @@ ARCHITECTURE.md 预算红线；明确不引入 tree-sitter / SwiftUI / NSDocumen
 | T8.2 | 编码手动重解释：File ▸ Reopen with Encoding（9 种编码，非 lossy 强制解码，脏文档先确认，untitled 禁用；保存仍一律 UTF-8） | App/DocumentController.swift, App/TextEncoding.swift（新）, MainMenu, EditorWindowController, L10n | implementer | 选错编码可换编码重开且不丢文件 | ✅ 与 T8.3 合并实施 |
 | T8.3 | 换行符：LineEnding 纯函数检测/转换（新文件）+ 状态栏显示 + Format ▸ Convert Line Endings（走 undo 通道，当前值打勾）。已知限制：CRLF 文档中打回车仍插 \n（混合换行），后续可在 insertNewline 拦截 | Core/TextModel/LineEnding.swift（新）, Editor/StatusBarView.swift, EditorWindowController, MainMenu, L10n | implementer | 状态栏正确显示；转换可 undo | ✅ 23 新测试，325 全绿；视觉冒烟 OK；主会话修正转换被拒时状态栏误显 |
 | T8.4 | 大纲/符号导航：Cmd+Shift+O 弹窗，声明正则重构为共享模式表 + 一次性带位置扫描（scanSymbolLocations），过滤/回车跳转/Esc；关闭即全量释放（瞬时不常驻） | Core/Completion/WordIndex.swift, Editor/SymbolNavigator.swift（新）, EditorWindowController, MainMenu, L10n | implementer | 符号列表可跳转；常驻增量 ≈ 0 | ✅ 7 新测试，302 全绿；三语文案齐；视觉冒烟 OK |
-| T8.5 | `tinyedit` 命令行辅助工具（CotEditor `cot` 式，从终端打开文件） | scripts/, 新辅助入口 | 待讨论 | 终端 `tinyedit file` 可唤起 app 打开文件 | ⬜ |
+| T8.5 | `tinyedit` 命令行工具：shell 脚本随 bundle 分发（Resources/tinyedit，用户 symlink 到 PATH），不存在的路径先建空文件再打开 | scripts/tinyedit（新）, scripts/bundle-macos.sh（红线，main） | main | 终端 `tinyedit file` 可唤起 app 打开文件 | ✅ 实测新建+打开 OK；bundle 1.4 MB |
 
 用户实测背景（T8.1 依据）：同窗口同 200 行 md，两 app 静态均 ~80 MB（窗口 backing
 store 主导，符合预期）；CotEditor 快速滑动内存翻倍但停止即回落、滑动更顺；

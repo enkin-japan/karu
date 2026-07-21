@@ -12,6 +12,8 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp .build/release/TinyEditorApp "$APP_DIR/Contents/MacOS/TinyEditor"
 cp assets/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
+# 终端辅助工具（T8.5）：用户可从 bundle 内 symlink 到 PATH 使用
+install -m 0755 scripts/tinyedit "$APP_DIR/Contents/Resources/tinyedit"
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -68,9 +70,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.0</string>
+	<string>0.4.0</string>
 	<key>CFBundleVersion</key>
-	<string>5</string>
+	<string>6</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
