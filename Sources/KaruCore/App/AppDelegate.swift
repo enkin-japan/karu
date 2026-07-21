@@ -52,9 +52,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // Deterministic rendering for the pixel checks in visual-smoke.sh:
             // force light appearance so the bright/dark thresholds hold no matter
             // the system theme (auto dark mode at night broke the smoke test).
-            NSApp.appearance = NSAppearance(named: .aqua)
+            // KARU_SNAPSHOT_APPEARANCE=dark opts a diagnostic run into dark mode.
+            let env = ProcessInfo.processInfo.environment
+            NSApp.appearance = NSAppearance(
+                named: env["KARU_SNAPSHOT_APPEARANCE"] == "dark" ? .darkAqua : .aqua)
+            // KARU_SNAPSHOT_SCROLLEND=1 scrolls to the document end before the
+            // capture — needed to reproduce scrolled-state bugs (titlebar
+            // underlap, scroll-edge effects) that never show at offset zero.
+            if env["KARU_SNAPSHOT_SCROLLEND"] == "1" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                    if let tv = NSApp.windows.first(where: { $0.isVisible })?
+                        .contentView?.firstSubview(ofType: NSTextView.self) {
+                        tv.scrollToEndOfDocument(nil)
+                    }
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                if let view = NSApp.windows.first(where: { $0.isVisible })?.contentView,
+                // Render the theme frame (contentView's superview) when available
+                // so the capture includes the titlebar/toolbar — needed to catch
+                // titlebar-transparency / content-underlap bugs.
+                if let contentView = NSApp.windows.first(where: { $0.isVisible })?.contentView,
+                   let view = contentView.superview ?? contentView as NSView?,
                    let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                     view.cacheDisplay(in: view.bounds, to: rep)
                     try? rep.representation(using: .png, properties: [:])?
@@ -150,5 +168,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         windowControllers.append(controller)
         return controller
+    }
+}
+
+private extension NSView {
+    /// Depth-first search for the first descendant of the given type — used by
+    /// the snapshot diagnostics hook to find the editor text view.
+    func firstSubview<T: NSView>(ofType type: T.Type) -> T? {
+        for sub in subviews {
+            if let hit = sub as? T { return hit }
+            if let hit = sub.firstSubview(ofType: type) { return hit }
+        }
+        return nil
     }
 }

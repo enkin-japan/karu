@@ -68,6 +68,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         )
         window.center()
         window.setFrameAutosaveName("EditorWindow")
+        // Explicitly opaque titlebar with a separator line: on macOS 26
+        // (Liquid Glass) glassy titlebars can show scrolled document text
+        // through, overlapping the window title (user bug report). Combined
+        // with pinning the content stack to contentLayoutGuide below.
+        window.titlebarAppearsTransparent = false
+        window.titlebarSeparatorStyle = .line
         self.init(window: window)
         window.delegate = self
 
@@ -134,8 +140,24 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
-        window.contentView = stack
+
+        // Pin the stack to the window's contentLayoutGuide, NOT the content
+        // view's edges: on macOS 26 (Liquid Glass) the content view extends
+        // under the glassy titlebar/toolbar, and a scroll view AppKit can't
+        // identify (ours sits inside a stack) gets no scroll-edge blur — so
+        // scrolled text showed straight through the titlebar, overlapping the
+        // window title. The layout guide excludes the titlebar area.
+        let container = NSView()
+        window.contentView = container
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+        let topAnchor = (window.contentLayoutGuide as? NSLayoutGuide)?.topAnchor
+            ?? container.topAnchor
         NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             findBar.barView.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusBar.widthAnchor.constraint(equalTo: stack.widthAnchor),

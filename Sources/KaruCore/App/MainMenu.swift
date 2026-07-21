@@ -97,7 +97,9 @@ enum MainMenu {
         let formatDoc = formatMenu.addItem(withTitle: L10n.t(.menuFormatDocument),
                                            action: #selector(EditorWindowController.formatDocument(_:)),
                                            keyEquivalent: "f")
-        formatDoc.keyEquivalentModifierMask = [.control, .shift]
+        // VS Code's Format Document chord (⌥⇧F) — zero adaptation cost for
+        // users coming from there (user request, M10).
+        formatDoc.keyEquivalentModifierMask = [.option, .shift]
 
         // Convert Line Endings: LF / CRLF / CR, the current file's style checked.
         // Each item carries its `LineEnding.rawValue` on `representedObject`;
