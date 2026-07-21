@@ -76,6 +76,12 @@ T4.1/T4.2 仅依赖 T1.1；T4.3 依赖 T2.2；T1.2 随时可做；T5.* 最后。
 
 ## 变更记录
 
+- 2026-07-21 v0.2.2（用户反馈第三轮）："打不开文档"真根因不是编码而是 **Finder→app 通道缺失**：
+  Info.plist 无 CFBundleDocumentTypes + AppDelegate 无 application(_:open:)，文件从未到达 app。
+  已补声明与入口（含纯净未命名窗口复用），用 `open -a` + 截图钩子实测验证（此前所有验证只走
+  CLI 参数路径，为测试盲区）。补全词库补齐 8 语言内置函数（print/console 等）。259 测试全绿，
+  公证出包 944 KB。
+
 - 2026-07-21 v0.2.1 紧急修复（main 直接处理，含根因分析）：①空白窗口回归——StatusBarView 的
   draw 覆写在 macOS 26 beta 合成管线下使整窗渲染路径切换，NSTextView/NSRulerView 不上屏；
   git bisect 定位到 T6.3，自截图钩子逐项排除后锁定；已加 visual-smoke.sh 防复发。②打开非
