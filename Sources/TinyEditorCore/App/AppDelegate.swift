@@ -107,6 +107,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Finder / LaunchServices entry point (double-click, Open With, drag onto
+    /// Dock icon). Without this — and CFBundleDocumentTypes in Info.plist —
+    /// files could only be opened from inside the app, which shipped as the
+    /// "saved a file but can't reopen it" bug.
+    public func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            // Reuse a single pristine untitled window (fresh launch case)
+            // instead of leaving it orphaned next to the opened document.
+            if windowControllers.count == 1,
+               let only = windowControllers.first,
+               only.isPristineUntitled {
+                only.load(url: url)
+                only.showWindow(nil)
+                continue
+            }
+            let controller = makeController()
+            controller.load(url: url)
+            controller.showWindow(nil)
+        }
+    }
+
     @objc public func showPreferences(_ sender: Any?) {
         preferencesController.showWindow(nil)
         preferencesController.window?.makeKeyAndOrderFront(nil)

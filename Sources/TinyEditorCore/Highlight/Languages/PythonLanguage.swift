@@ -25,6 +25,21 @@ public enum PythonLanguage {
             "False", "async", "await", "match", "case",
         ]
         let kw = keywords.joined(separator: "|")
+        let builtins = [
+            "print", "len", "range", "str", "int", "float", "bool", "list",
+            "dict", "set", "tuple", "open", "input", "type", "isinstance",
+            "issubclass", "enumerate", "zip", "map", "filter", "sorted",
+            "reversed", "sum", "min", "max", "abs", "round", "repr", "hash",
+            "id", "super", "property", "staticmethod", "classmethod",
+            "getattr", "setattr", "hasattr", "delattr", "callable", "iter",
+            "next", "vars", "dir", "format", "any", "all", "divmod", "pow",
+            "chr", "ord", "hex", "oct", "bin", "bytes", "bytearray",
+            "frozenset", "complex", "slice", "object", "Exception",
+            "ValueError", "TypeError", "KeyError", "IndexError",
+            "AttributeError", "RuntimeError", "StopIteration",
+            "FileNotFoundError", "NotImplementedError", "self", "__init__",
+            "__name__", "__main__",
+        ]
 
         return LanguageDefinition(
             identifier: "python",
@@ -53,7 +68,8 @@ public enum PythonLanguage {
                     kind: .number
                 ),
             ],
-            keywords: keywords
+            keywords: keywords,
+            builtins: builtins
         )
     }
 }

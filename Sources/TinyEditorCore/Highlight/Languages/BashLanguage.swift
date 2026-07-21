@@ -26,6 +26,15 @@ public enum BashLanguage {
         "unset", "shift", "trap",
     ]
 
+    static let builtins: [String] = [
+        "echo", "printf", "read", "cd", "ls", "cp", "mv", "rm", "mkdir",
+        "rmdir", "touch", "cat", "grep", "sed", "awk", "cut", "sort",
+        "uniq", "head", "tail", "wc", "find", "xargs", "chmod", "chown",
+        "curl", "wget", "tar", "gzip", "date", "sleep", "kill", "ps",
+        "env", "dirname", "basename", "pwd", "which", "test", "true",
+        "false",
+    ]
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
@@ -47,7 +56,8 @@ public enum BashLanguage {
                 // Numbers.
                 LanguageRule(pattern: #"(?<![\w.])\d+(?:\.\d+)?"#, kind: .number),
             ],
-            keywords: keywords
+            keywords: keywords,
+            builtins: builtins
         )
     }
 }

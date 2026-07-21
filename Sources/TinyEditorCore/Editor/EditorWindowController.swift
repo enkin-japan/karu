@@ -196,6 +196,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     // MARK: - Loading
 
+    /// True for a freshly created window: untitled, empty, never edited.
+    /// Used by the app delegate to reuse (rather than orphan) the initial
+    /// window when a file arrives from Finder right after launch.
+    var isPristineUntitled: Bool {
+        documentController.fileURL == nil && !documentController.isDirty && textView.string.isEmpty
+    }
+
     /// Loads `url` into this window (used when opening a file in a new window).
     public func load(url: URL) {
         do {

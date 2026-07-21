@@ -165,6 +165,32 @@ private func isolatedDefaults() -> UserDefaults {
     #expect(hits.contains("symDocument") == false)
 }
 
+// MARK: - Built-in identifiers (LanguageDefinition.builtins)
+
+@Test func pythonBuiltinsIncludePrint() {
+    let def = LanguageRegistry.definition(forIdentifier: "python")
+    #expect(def?.builtins.contains("print") == true)
+}
+
+@Test func javascriptBuiltinsIncludeConsole() {
+    let def = LanguageRegistry.definition(forIdentifier: "javascript")
+    #expect(def?.builtins.contains("console") == true)
+}
+
+@Test func suggestionsForPythonPrefixIncludePrintBuiltin() {
+    // Mirrors how `CompletionController` merges keywords + builtins before
+    // querying the index (see `setLanguage`).
+    guard let def = LanguageRegistry.definition(forIdentifier: "python") else {
+        Issue.record("expected a python language definition")
+        return
+    }
+    let index = WordIndex(text: "")
+    let hits = index.suggestions(prefix: "pri",
+                                 language: def.keywords + def.builtins,
+                                 symbols: [])
+    #expect(hits.contains("print"))
+}
+
 // MARK: - Module gating / released state
 
 @MainActor

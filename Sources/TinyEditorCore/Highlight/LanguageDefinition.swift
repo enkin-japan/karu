@@ -61,14 +61,24 @@ public struct LanguageDefinition {
     /// keyword set (Markdown, HTML, CSS, XML) leave this empty.
     public let keywords: [String]
 
+    /// Built-in / standard-library identifiers (functions, types, common
+    /// globals) offered to the completion module alongside `keywords`. These
+    /// are *not* part of the tokenizer's `rules` and do not participate in
+    /// syntax highlighting — they exist purely to widen the completion
+    /// vocabulary beyond reserved words (e.g. Python's `print`, JS's
+    /// `console`). Languages with no fixed built-in set leave this empty.
+    public let builtins: [String]
+
     public init(identifier: String,
                 fileExtensions: [String],
                 rules: [LanguageRule],
-                keywords: [String] = []) {
+                keywords: [String] = [],
+                builtins: [String] = []) {
         self.identifier = identifier
         self.fileExtensions = fileExtensions
         self.rules = rules
         self.keywords = keywords
+        self.builtins = builtins
     }
 
     /// Tokenizes a single line into a list of `(range, kind)` spans.

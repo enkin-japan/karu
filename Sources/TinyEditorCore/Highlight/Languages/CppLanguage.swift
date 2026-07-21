@@ -30,6 +30,17 @@ public enum CppLanguage {
         "requires",
     ]
 
+    /// C++-only standard-library identifiers, added to `CLanguage.builtins`.
+    static let extraBuiltins: [String] = [
+        "std", "cout", "cin", "cerr", "endl", "string", "vector", "map",
+        "set", "unordered_map", "unordered_set", "array", "deque", "queue",
+        "stack", "pair", "tuple", "make_pair", "make_tuple", "shared_ptr",
+        "unique_ptr", "weak_ptr", "make_shared", "make_unique", "move",
+        "forward", "swap", "sort", "find", "begin", "end", "size",
+        "push_back", "emplace_back", "insert", "erase", "clear", "nullopt",
+        "optional", "variant", "function",
+    ]
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         let keywords = CLanguage.keywords + extraKeywords
@@ -60,7 +71,8 @@ public enum CppLanguage {
                     kind: .number
                 ),
             ],
-            keywords: keywords
+            keywords: keywords,
+            builtins: CLanguage.builtins + extraBuiltins
         )
     }
 }

@@ -111,7 +111,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             return
         }
         languageIdentifier = def.identifier
-        languageKeywords = def.keywords
+        languageKeywords = def.keywords + def.builtins
     }
 
     /// Points the controller at the language whose stable `identifier` is `id`
@@ -128,7 +128,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             return
         }
         languageIdentifier = def.identifier
-        languageKeywords = def.keywords
+        languageKeywords = def.keywords + def.builtins
     }
 
     // MARK: - Indexing

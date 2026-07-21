@@ -26,6 +26,18 @@ public enum JavaLanguage {
         "var", "record", "sealed", "permits", "yield",
     ]
 
+    static let builtins: [String] = [
+        "System", "out", "err", "println", "print", "printf", "String",
+        "Integer", "Long", "Double", "Float", "Boolean", "Character", "Byte",
+        "Short", "Object", "Math", "List", "ArrayList", "LinkedList", "Map",
+        "HashMap", "TreeMap", "Set", "HashSet", "TreeSet", "Queue", "Deque",
+        "Optional", "Stream", "Collectors", "Arrays", "Collections",
+        "Objects", "StringBuilder", "Exception", "RuntimeException",
+        "IllegalArgumentException", "NullPointerException", "Override",
+        "Deprecated", "SuppressWarnings", "length", "equals", "hashCode",
+        "toString", "valueOf", "parseInt",
+    ]
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
@@ -51,7 +63,8 @@ public enum JavaLanguage {
                     kind: .number
                 ),
             ],
-            keywords: keywords
+            keywords: keywords,
+            builtins: builtins
         )
     }
 }

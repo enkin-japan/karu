@@ -29,6 +29,19 @@ public enum JavaScriptLanguage {
         "throw", "void", "static", "get", "set",
     ]
 
+    /// JavaScript / Node built-in globals and standard-library identifiers.
+    /// Exposed so `TypeScript` can extend this set rather than duplicate it.
+    public static let builtins: [String] = [
+        "console", "Math", "JSON", "Object", "Array", "String", "Number",
+        "Boolean", "Symbol", "Promise", "Set", "Map", "WeakMap", "WeakSet",
+        "Date", "RegExp", "Error", "TypeError", "RangeError", "parseInt",
+        "parseFloat", "isNaN", "isFinite", "encodeURIComponent",
+        "decodeURIComponent", "fetch", "window", "document", "setTimeout",
+        "setInterval", "clearTimeout", "clearInterval",
+        "requestAnimationFrame", "require", "module", "exports", "process",
+        "globalThis", "structuredClone", "queueMicrotask",
+    ]
+
     /// Comment, string and number rules shared with TypeScript.
     static func baseRules() -> [LanguageRule] {
         [
@@ -62,7 +75,8 @@ public enum JavaScriptLanguage {
             identifier: "javascript",
             fileExtensions: ["js", "mjs", "cjs"],
             rules: baseRules() + [wordRule(keywords, kind: .keyword)],
-            keywords: keywords
+            keywords: keywords,
+            builtins: builtins
         )
     }
 }

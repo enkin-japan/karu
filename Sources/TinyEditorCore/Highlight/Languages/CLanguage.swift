@@ -28,6 +28,18 @@ public enum CLanguage {
         "goto", "sizeof", "inline", "restrict",
     ]
 
+    /// C standard-library functions / macros / common typedefs. Exposed so
+    /// `CppLanguage` can extend this set rather than duplicate it.
+    public static let builtins: [String] = [
+        "printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf",
+        "sscanf", "malloc", "calloc", "realloc", "free", "memcpy", "memmove",
+        "memset", "strlen", "strcpy", "strncpy", "strcmp", "strncmp",
+        "strcat", "fopen", "fclose", "fread", "fwrite", "fseek", "ftell",
+        "fflush", "fgets", "fputs", "putchar", "getchar", "puts", "exit",
+        "abort", "assert", "NULL", "FILE", "size_t", "stdin", "stdout",
+        "stderr", "EOF",
+    ]
+
     /// Builds a `\b(word1|word2|…)\b` rule producing `kind`.
     static func wordRule(_ words: [String], kind: TokenKind) -> LanguageRule {
         LanguageRule(pattern: "\\b(?:\(words.joined(separator: "|")))\\b", kind: kind)
@@ -64,7 +76,8 @@ public enum CLanguage {
             identifier: "c",
             fileExtensions: ["c", "h"],
             rules: baseRules() + [wordRule(keywords, kind: .keyword)],
-            keywords: keywords
+            keywords: keywords,
+            builtins: builtins
         )
     }
 }

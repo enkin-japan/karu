@@ -28,6 +28,13 @@ public enum TypeScriptLanguage {
         "object",
     ]
 
+    /// TypeScript-only utility types, added to JS's built-in set.
+    static let extraBuiltins: [String] = [
+        "Partial", "Required", "Readonly", "Record", "Pick", "Omit",
+        "Exclude", "Extract", "NonNullable", "ReturnType", "Parameters",
+        "Awaited",
+    ]
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         let keywords = JavaScriptLanguage.keywords + extraKeywords
@@ -40,7 +47,8 @@ public enum TypeScriptLanguage {
                 JavaScriptLanguage.wordRule(typeNames, kind: .type),
                 JavaScriptLanguage.wordRule(keywords, kind: .keyword),
             ],
-            keywords: keywords + typeNames
+            keywords: keywords + typeNames,
+            builtins: JavaScriptLanguage.builtins + extraBuiltins
         )
     }
 }

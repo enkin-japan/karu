@@ -26,6 +26,43 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<string>TinyEditor</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Text Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.text</string>
+				<string>public.plain-text</string>
+				<string>public.source-code</string>
+				<string>public.json</string>
+				<string>public.xml</string>
+				<string>net.daringfireball.markdown</string>
+				<string>public.data</string>
+			</array>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>txt</string><string>md</string><string>markdown</string>
+				<string>json</string><string>jsonl</string><string>ndjson</string>
+				<string>py</string><string>pyw</string><string>js</string>
+				<string>mjs</string><string>cjs</string><string>ts</string>
+				<string>html</string><string>htm</string><string>css</string>
+				<string>c</string><string>h</string><string>cpp</string>
+				<string>cc</string><string>cxx</string><string>hpp</string>
+				<string>hh</string><string>cs</string><string>java</string>
+				<string>sh</string><string>bash</string><string>zsh</string>
+				<string>sql</string><string>xml</string><string>plist</string>
+				<string>svg</string><string>log</string><string>cfg</string>
+				<string>ini</string><string>yaml</string><string>yml</string>
+				<string>toml</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleIdentifier</key>
 	<string>dev.enkin.TinyEditor</string>
 	<key>CFBundlePackageType</key>

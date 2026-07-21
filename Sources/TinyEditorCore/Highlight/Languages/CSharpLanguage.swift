@@ -33,6 +33,17 @@ public enum CSharpLanguage {
         "select", "from",
     ]
 
+    static let builtins: [String] = [
+        "Console", "WriteLine", "Write", "ReadLine", "String", "Int32",
+        "Int64", "Double", "Decimal", "Boolean", "Object", "Math", "List",
+        "Dictionary", "HashSet", "Queue", "Stack", "IEnumerable", "IList",
+        "IDictionary", "Task", "ValueTask", "Action", "Func", "Predicate",
+        "Exception", "ArgumentException", "InvalidOperationException",
+        "NullReferenceException", "Length", "Count", "ToString", "Equals",
+        "GetHashCode", "nameof", "typeof", "Guid", "DateTime", "TimeSpan",
+        "Linq", "Select", "Where", "FirstOrDefault", "ToList", "ToArray",
+    ]
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
@@ -63,7 +74,8 @@ public enum CSharpLanguage {
                     kind: .number
                 ),
             ],
-            keywords: keywords
+            keywords: keywords,
+            builtins: builtins
         )
     }
 }
