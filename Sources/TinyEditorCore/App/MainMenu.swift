@@ -44,6 +44,24 @@ enum MainMenu {
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
+        // Find submenu, nested under Edit, targeting the first responder
+        // (EditorWindowController) via the responder chain.
+        editMenu.addItem(.separator())
+        let findMenuItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        editMenu.addItem(findMenuItem)
+        let findMenu = NSMenu(title: "Find")
+        findMenuItem.submenu = findMenu
+        findMenu.addItem(withTitle: "Find…",
+                         action: #selector(EditorWindowController.showFindBar(_:)), keyEquivalent: "f")
+        findMenu.addItem(withTitle: "Find Next",
+                         action: #selector(EditorWindowController.findNext(_:)), keyEquivalent: "g")
+        let findPrev = findMenu.addItem(withTitle: "Find Previous",
+                                        action: #selector(EditorWindowController.findPrevious(_:)),
+                                        keyEquivalent: "g")
+        findPrev.keyEquivalentModifierMask = [.command, .shift]
+        findMenu.addItem(withTitle: "Use Selection for Find",
+                         action: #selector(EditorWindowController.useSelectionForFind(_:)), keyEquivalent: "e")
+
         return mainMenu
     }
 }

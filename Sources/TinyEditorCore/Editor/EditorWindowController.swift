@@ -7,9 +7,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private var textView: NSTextView!
 
     /// Shared newline index: one instance per window, injected into the gutter
-    /// and (later) reused by search / folding.
+    /// and reused by the find bar (and later by folding).
     let lineIndex = LineIndex(text: "")
     private var gutterView: GutterView!
+    private var findBar: FindBarController!
 
     public convenience init() {
         let window = NSWindow(
@@ -25,7 +26,6 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
 
         let (scrollView, textView) = Self.makeEditorView()
         self.textView = textView
-        window.contentView = scrollView
 
         // Attach the line-number gutter as the scroll view's vertical ruler.
         let gutter = GutterView(scrollView: scrollView, textView: textView, lineIndex: lineIndex)
@@ -33,6 +33,22 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
         self.gutterView = gutter
+
+        // Find bar shares the window's LineIndex; it sits above the editor in a
+        // vertical stack and collapses out of layout when hidden.
+        let findBar = FindBarController(textView: textView, lineIndex: lineIndex)
+        self.findBar = findBar
+
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        let stack = NSStackView(views: [findBar.barView, scrollView])
+        stack.orientation = .vertical
+        stack.spacing = 0
+        stack.distribution = .fill
+        window.contentView = stack
+        NSLayoutConstraint.activate([
+            findBar.barView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
 
         NotificationCenter.default.addObserver(
             self,
@@ -100,6 +116,26 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         window?.title = documentController.displayName
         window?.representedURL = documentController.fileURL
         window?.isDocumentEdited = documentController.isDirty
+    }
+
+    // MARK: - Find actions (first-responder targets)
+
+    @objc public func showFindBar(_ sender: Any?) {
+        findBar.show()
+    }
+
+    @objc public func findNext(_ sender: Any?) {
+        if !findBar.isShown { findBar.show() }
+        findBar.findNext()
+    }
+
+    @objc public func findPrevious(_ sender: Any?) {
+        if !findBar.isShown { findBar.show() }
+        findBar.findPrevious()
+    }
+
+    @objc public func useSelectionForFind(_ sender: Any?) {
+        findBar.useSelectionForFind()
     }
 
     // MARK: - Save actions (first-responder targets)
