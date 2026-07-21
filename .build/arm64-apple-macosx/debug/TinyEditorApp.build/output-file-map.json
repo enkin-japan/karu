@@ -1,0 +1,11 @@
+{
+  "": {
+    "swift-dependencies": "/Volumes/enkin/project/TinyEditor/.build/arm64-apple-macosx/debug/TinyEditorApp.build/master.swiftdeps"
+  },
+  "/Volumes/enkin/project/TinyEditor/Sources/TinyEditorApp/main.swift": {
+    "dependencies": "/Volumes/enkin/project/TinyEditor/.build/arm64-apple-macosx/debug/TinyEditorApp.build/main.d",
+    "object": "/Volumes/enkin/project/TinyEditor/.build/arm64-apple-macosx/debug/TinyEditorApp.build/main.swift.o",
+    "swiftmodule": "/Volumes/enkin/project/TinyEditor/.build/arm64-apple-macosx/debug/TinyEditorApp.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Volumes/enkin/project/TinyEditor/.build/arm64-apple-macosx/debug/TinyEditorApp.build/main.swiftdeps"
+  }
+}

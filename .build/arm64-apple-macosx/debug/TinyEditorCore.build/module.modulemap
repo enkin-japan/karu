@@ -1,0 +1,4 @@
+module TinyEditorCore {
+    header "/Volumes/enkin/project/TinyEditor/.build/arm64-apple-macosx/debug/TinyEditorCore.build/TinyEditorCore-Swift.h"
+    requires objc
+}

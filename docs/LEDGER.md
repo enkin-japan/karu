@@ -9,7 +9,7 @@
 
 | ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
 |---|---|---|---|---|---|
-| T1.1 | SPM 工程骨架：Core 库 + App 可执行分离，AppDelegate、最小菜单、空编辑窗口（NSTextView） | Package.swift, Sources/TinyEditorApp/, Sources/TinyEditorCore/App/, Editor/ | main | `swift build` 与 `swift test` 通过；启动出现可输入窗口 | ⬜ |
+| T1.1 | SPM 工程骨架：Core 库 + App 可执行分离，AppDelegate、最小菜单、空编辑窗口（NSTextView） | Package.swift, Sources/TinyEditorApp/, Sources/TinyEditorCore/App/, Editor/ | main | `swift build` 与 `swift test` 通过；启动出现可输入窗口 | ✅ 启动时 phys_footprint 2.5 MB |
 | T1.2 | bundle-macos.sh：release 产物打包成 TinyEditor.app（红线：.p8/.env* 不得入 bundle） | scripts/bundle-macos.sh | main（红线，禁止委派） | 脚本产出可双击启动的 .app；bundle 内无密钥文件 | ⬜ |
 
 ## M2 编辑核心
@@ -51,6 +51,13 @@
 T1.1 → T2.1 → T2.2/T2.3/T2.4（可并行）→ T3.1 → T3.2/T3.3（可并行）→ T3.4/T3.5
 T4.1/T4.2 仅依赖 T1.1；T4.3 依赖 T2.2；T1.2 随时可做；T5.* 最后。
 
+## 环境约束（委派时必须告知子代理）
+
+- 本机仅有 Command Line Tools，无完整 Xcode：**没有 XCTest**，单元测试一律用 Swift Testing
+  （`import Testing`、`@Test`、`#expect`）；构建/测试命令为 `swift build` / `swift test`。
+- 涉及 AppKit 的测试代码需标注 `@MainActor`。
+
 ## 变更记录
 
 - 2026-07-21 账本建立。
+- 2026-07-21 T1.1 完成（main）：骨架构建/测试通过，启动冒烟 OK。发现环境无 XCTest，测试框架定为 Swift Testing。
