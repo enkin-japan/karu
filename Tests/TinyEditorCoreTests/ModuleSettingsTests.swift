@@ -26,14 +26,17 @@ private func isolatedDefaults() -> UserDefaults {
 }
 
 @Test func changeNotificationCarriesModuleName() {
-    let settings = ModuleSettings(defaults: isolatedDefaults())
+    // Use a private center so concurrently-running tests posting to
+    // `NotificationCenter.default` cannot leak into this exact-match assertion.
+    let center = NotificationCenter()
+    let settings = ModuleSettings(defaults: isolatedDefaults(), center: center)
     var received: [String] = []
-    let observer = NotificationCenter.default.addObserver(
+    let observer = center.addObserver(
         forName: ModuleSettings.didChangeNotification, object: nil, queue: nil
     ) { note in
         if let name = note.object as? String { received.append(name) }
     }
-    defer { NotificationCenter.default.removeObserver(observer) }
+    defer { center.removeObserver(observer) }
 
     settings.setEnabled(false, for: .format)
     settings.setEnabled(false, for: .format) // no-op, must not re-post

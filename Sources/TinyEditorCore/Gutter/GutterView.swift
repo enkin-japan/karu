@@ -10,9 +10,12 @@ import AppKit
 /// - One index, reused: the same `LineIndex` instance is injected here and
 ///   (later) shared with search / folding.
 ///
-/// The view doubles as the text storage delegate so it can drive incremental
-/// `LineIndex` updates with an accurate edited range + length delta.
-public final class GutterView: NSRulerView, NSTextStorageDelegate {
+/// The view drives incremental `LineIndex` updates from the storage layer so it
+/// has an accurate edited range + length delta. Because `NSTextStorage` has a
+/// single delegate slot (also wanted by the highlight engine), it registers as
+/// a `TextStorageObserving` observer on the shared `TextStorageObserverHub`
+/// rather than being the delegate directly.
+public final class GutterView: NSRulerView, TextStorageObserving {
     /// Shared newline index (owned by the window controller).
     private let lineIndex: LineIndex
 
@@ -22,14 +25,18 @@ public final class GutterView: NSRulerView, NSTextStorageDelegate {
     /// Horizontal padding inside the ruler.
     private let horizontalPadding: CGFloat = 6
 
-    public init(scrollView: NSScrollView, textView: NSTextView, lineIndex: LineIndex) {
+    public init(scrollView: NSScrollView,
+                textView: NSTextView,
+                lineIndex: LineIndex,
+                observerHub: TextStorageObserverHub) {
         self.lineIndex = lineIndex
         super.init(scrollView: scrollView, orientation: .verticalRuler)
         clientView = textView
         ruleThickness = 40
         reservedThicknessForMarkers = 0
 
-        textView.textStorage?.delegate = self
+        // Share the single storage-delegate slot via the multiplexer.
+        observerHub.add(self)
 
         // Redraw on scroll.
         if let contentView = scrollView.contentView as NSClipView? {
@@ -79,13 +86,13 @@ public final class GutterView: NSRulerView, NSTextStorageDelegate {
         needsDisplay = true
     }
 
-    /// Incremental `LineIndex` update, driven from the storage layer so we have
-    /// the precise edited range and length delta. Attribute-only edits (e.g.
-    /// future syntax highlighting) are ignored.
-    public func textStorage(_ textStorage: NSTextStorage,
-                            didProcessEditing editedMask: NSTextStorageEditActions,
-                            range editedRange: NSRange,
-                            changeInLength delta: Int) {
+    /// Incremental `LineIndex` update, driven from the storage layer (via the
+    /// observer hub) so we have the precise edited range and length delta.
+    /// Attribute-only edits (e.g. syntax highlighting) are ignored.
+    public func textStorageDidProcessEditing(editedMask: NSTextStorageEditActions,
+                                             editedRange: NSRange,
+                                             changeInLength delta: Int,
+                                             textStorage: NSTextStorage) {
         guard editedMask.contains(.editedCharacters) else { return }
         lineIndex.update(text: textStorage.string,
                          editedRange: editedRange,

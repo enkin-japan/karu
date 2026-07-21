@@ -12,6 +12,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     private var gutterView: GutterView!
     private var findBar: FindBarController!
 
+    /// Multiplexes the single `textStorage.delegate` slot to the gutter (line
+    /// index) and the highlight engine. Retained here because the storage holds
+    /// its delegate weakly.
+    private let observerHub = TextStorageObserverHub()
+    private var highlightEngine: HighlightEngine!
+
     public convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -27,12 +33,24 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let (scrollView, textView) = Self.makeEditorView()
         self.textView = textView
 
+        // The observer hub owns the storage delegate slot; the gutter and the
+        // highlight engine register with it.
+        textView.textStorage?.delegate = observerHub
+
         // Attach the line-number gutter as the scroll view's vertical ruler.
-        let gutter = GutterView(scrollView: scrollView, textView: textView, lineIndex: lineIndex)
+        let gutter = GutterView(scrollView: scrollView,
+                                textView: textView,
+                                lineIndex: lineIndex,
+                                observerHub: observerHub)
         scrollView.verticalRulerView = gutter
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
         self.gutterView = gutter
+
+        // Syntax highlighter: viewport-only, module-gated, foreground-only.
+        let engine = HighlightEngine(textView: textView, scrollView: scrollView)
+        observerHub.add(engine)
+        self.highlightEngine = engine
 
         // Find bar shares the window's LineIndex; it sits above the editor in a
         // vertical stack and collapses out of layout when hidden.
@@ -93,6 +111,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         do {
             let text = try documentController.load(from: url)
             textView.string = text
+
+            // Detect the language by file extension: drive both the indent
+            // width (via languageIdentifier) and the highlight engine.
+            let ext = url.pathExtension
+            let identifier = LanguageRegistry.definition(forExtension: ext)?.identifier
+            (textView as? EditorTextView)?.languageIdentifier = identifier ?? ext.lowercased()
+            highlightEngine.setLanguage(fileExtension: ext)
+
             // Loading fresh content should not go through the undo stack, and
             // the didChange notification only fires for user edits, so we
             // simply refresh window chrome here.

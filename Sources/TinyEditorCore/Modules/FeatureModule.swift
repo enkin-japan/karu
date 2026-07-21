@@ -31,9 +31,12 @@ public struct ModuleSettings {
     public static let didChangeNotification = Notification.Name("ModuleSettingsDidChange")
 
     private let defaults: UserDefaults
+    private let center: NotificationCenter
 
-    public init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard,
+                center: NotificationCenter = .default) {
         self.defaults = defaults
+        self.center = center
     }
 
     public func isEnabled(_ module: FeatureModule) -> Bool {
@@ -46,7 +49,7 @@ public struct ModuleSettings {
     public func setEnabled(_ enabled: Bool, for module: FeatureModule) {
         guard isEnabled(module) != enabled else { return }
         defaults.set(enabled, forKey: module.defaultsKey)
-        NotificationCenter.default.post(name: Self.didChangeNotification,
-                                        object: module.rawValue)
+        center.post(name: Self.didChangeNotification,
+                    object: module.rawValue)
     }
 }
