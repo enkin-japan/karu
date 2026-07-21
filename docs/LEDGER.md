@@ -54,7 +54,7 @@
 | T6.1 | 缩进彩虹辨识度：高区分度色环 + alpha 0.15-0.18 + 缩进单位分隔线 | Core/Gutter/IndentRainbow.swift, Editor/EditorTextView.swift | chore-worker | 202 测试不破坏；肉眼可辨格数 | ✅ |
 | T6.2 | 语言自动识别：内容嗅探（shebang/JSON/XML 特征）补充扩展名检测；Language 菜单手动覆盖 | Core/Highlight/LanguageSniffer.swift（新）, EditorWindowController, MainMenu | implementer | 单测：嗅探特征用例；无扩展名文档粘贴 JSON 后自动高亮 | ✅ 26 新测试；主会话补 ES-module import 消歧 |
 | T6.3 | 主窗口工具栏（语言选择/缩进宽度/Format/模块开关）+ UI 打磨（查找栏样式、状态栏行列号） | Editor/, App/ | implementer | 手测；既有测试不破坏 | ✅ 11 新测试，239 全绿；空文档基线 29 MB（工具栏代价 +5 MB，限内） |
-| T6.4 | 中/日/英三语切换：轻量 L10n 表 + UserDefaults + 实时切换（不引入 .lproj，保体积红线） | Core/L10n/（新）+ 全部 UI 字符串改造 | implementer | 三语言下菜单/查找栏/偏好/警告框文案正确；切换即时生效 | ⬜ |
+| T6.4 | 中/日/英三语切换：轻量 L10n 表 + UserDefaults + 实时切换（不引入 .lproj，保体积红线） | Core/L10n/（新）+ 全部 UI 字符串改造 | implementer | 三语言下菜单/查找栏/偏好/警告框文案正确；切换即时生效 | ✅ 12 新测试，251 全绿 |
 | T6.5 | App 图标：CoreGraphics 逐尺寸绘制 → .icns；bundle 接线主会话做（红线） | scripts/generate-icon.swift, assets/ | implementer + main | .icns 生成；打包后 Dock/Finder 显示图标 | ✅ bundle 1.0 MB |
 
 依赖：T6.1、T6.5 并行先行；T6.2 → T6.3 → T6.4 串行（同文件冲突）；T6.5 完成后主会话接线 bundle-macos.sh 并重跑发布流水线。
@@ -71,6 +71,8 @@ T4.1/T4.2 仅依赖 T1.1；T4.3 依赖 T2.2；T1.2 随时可做；T5.* 最后。
 - 涉及 AppKit 的测试代码需标注 `@MainActor`。
 
 ## 变更记录
+
+- 2026-07-21 M6 用户反馈迭代收官（v0.2.0）：缩进彩虹辨识度、语言自动嗅探+手动覆盖、工具栏+状态栏+查找栏打磨、中日英三语实时切换、App 图标。251 测试全绿。v0.2.0 已签名公证（Accepted）出 DMG 932 KB。
 
 - 2026-07-21 发布流水线（main，红线任务）：Bundle ID 定为 dev.enkin.TinyEditor；Developer ID +
   hardened runtime 签名；公证 Accepted（凭据存钥匙串 profile "tinyeditor-notary"，需 --keychain
