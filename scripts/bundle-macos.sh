@@ -24,7 +24,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleExecutable</key>
 	<string>TinyEditor</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.tinyeditor</string>
+	<string>dev.enkin.TinyEditor</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -47,8 +47,16 @@ if find "$APP_DIR" \( -name '*.p8' -o -name '.env' -o -name '.env.*' -o -name '.
     exit 1
 fi
 
-# ad-hoc 签名（arm64 必需）
-codesign --force --deep --sign - "$APP_DIR"
+# 签名：默认 Developer ID + hardened runtime（公证要求）；
+# SIGN_IDENTITY=- 可切回 ad-hoc 本地开发签名。
+SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    codesign --force --deep --sign - "$APP_DIR"
+else
+    codesign --force --deep --options runtime --timestamp \
+        --sign "$SIGN_IDENTITY" "$APP_DIR"
+fi
+codesign --verify --strict "$APP_DIR"
 
 echo "OK: $APP_DIR"
 du -sh "$APP_DIR"

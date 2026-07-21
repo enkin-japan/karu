@@ -20,3 +20,9 @@ xcuserdata/
 .env.*
 *.p8
 .secrets.env
+
+# 编译器/LSP 中间产物（曾出现在仓库根目录）
+*.o
+*.d
+*.swiftdeps
+*.swiftdeps~
