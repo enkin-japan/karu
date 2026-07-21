@@ -41,16 +41,10 @@ LSP/语言服务器、tree-sitter、Electron/web view、重型格式化工具、
 
 ## 安装
 
-**Homebrew**（自动安装 `karu` 命令行工具）：
+从 [Releases](https://github.com/enkin-japan/karu/releases) 下载已公证的 DMG，
+拖入 Applications 文件夹。
 
-```sh
-brew tap enkin-japan/tap
-brew trust enkin-japan/tap   # 新版 Homebrew 要求信任第三方 tap
-brew install --cask karu
-```
-
-**手动安装**：从 [Releases](https://github.com/enkin-japan/karu/releases)
-下载已公证的 DMG，拖入 Applications 文件夹。命令行工具（可选）：
+命令行工具（可选）：
 
 ```sh
 ln -s /Applications/Karu.app/Contents/Resources/karu /usr/local/bin/karu

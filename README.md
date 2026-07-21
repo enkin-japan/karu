@@ -44,16 +44,9 @@ plugin systems.
 
 ## Install
 
-**Homebrew** (installs the `karu` CLI automatically):
-
-```sh
-brew tap enkin-japan/tap
-brew trust enkin-japan/tap   # newer Homebrew requires trusting third-party taps
-brew install --cask karu
-```
-
-**Manual**: download the notarized DMG from
+Download the notarized DMG from
 [Releases](https://github.com/enkin-japan/karu/releases), drag to Applications.
+
 CLI helper (optional):
 
 ```sh
