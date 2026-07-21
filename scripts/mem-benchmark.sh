@@ -214,18 +214,18 @@ else
     printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 medium.json" "$ROUND2_MB" "30-45" "50" "$ROUND2_RESULT"
 fi
 
-# 轮次 3：打开大文件（同样按全功能空闲常驻预算对照，量级参考）
+# 轮次 3：打开大文件（~10 MB），预算：目标 50-60 MB，上限 65 MB（ARCHITECTURE.md §1）
 if [[ "$ROUND3_STATUS" == "SKIPPED" ]]; then
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "N/A" "30-45" "50" "SKIPPED"
+    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "N/A" "50-60" "65" "SKIPPED"
 else
     ROUND3_MB="$(kb_to_mb_str "$ROUND3_KB")"
     ROUND3_RESULT="FAIL"
-    if [[ -n "$ROUND3_KB" ]] && awk -v mb="$ROUND3_MB" 'BEGIN{exit !(mb <= 50)}'; then
+    if [[ -n "$ROUND3_KB" ]] && awk -v mb="$ROUND3_MB" 'BEGIN{exit !(mb <= 65)}'; then
         ROUND3_RESULT="PASS"
     else
         OVERALL_FAIL=1
     fi
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "$ROUND3_MB" "30-45" "50" "$ROUND3_RESULT"
+    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "$ROUND3_MB" "50-60" "65" "$ROUND3_RESULT"
 fi
 
 echo ""

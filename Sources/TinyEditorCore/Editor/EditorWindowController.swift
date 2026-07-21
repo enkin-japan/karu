@@ -114,6 +114,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         scrollView.autohidesScrollers = true
 
         let textView = EditorTextView()
+        // Noncontiguous layout keeps TextKit from generating glyphs/line
+        // fragments for the whole document on open — without it, opening a
+        // 10 MB file laid out everything eagerly and blew the memory budget
+        // (97 MB measured vs the 50 MB ceiling; see mem-benchmark).
+        textView.layoutManager?.allowsNonContiguousLayout = true
         textView.isRichText = false
         textView.allowsUndo = true
         textView.font = .monospacedSystemFont(ofSize: EditorFontSettings().fontSize, weight: .regular)
