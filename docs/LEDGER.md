@@ -64,9 +64,9 @@
 | ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
 |---|---|---|---|---|---|
 | T7.1 | Finder 打开多开空窗口：didFinishLaunching 加已开窗口守卫 | App/AppDelegate.swift | main | open -a 后 windows=1 | ✅ |
-| T7.2 | VS Code 式缩进检测：按文档内容自动推断缩进单位（detectIndentation），驱动彩虹与 Tab | Core/Editor/IndentDetector.swift（新）等 | implementer | 单测：2/4/8 格与 tab 文档的推断；md 4 格缩进单色带 | ⬜ |
-| T7.3 | 折叠视觉：放大箭头、折叠头行背景色 + 行数提示 | Core/Gutter/, Editor/ | implementer | 视觉冒烟对比 | ⬜ |
-| T7.4 | 文档符号高亮：函数/类/变量名（进程内符号扫描接入高亮引擎） | Core/Highlight/, Completion/WordIndex.swift | implementer | 单测：符号分类；视觉验证 | ⬜ |
+| T7.2 | VS Code 式缩进检测：按文档内容自动推断缩进单位（detectIndentation），驱动彩虹与 Tab | Core/Editor/IndentDetector.swift（新）等 | implementer | 单测：2/4/8 格与 tab 文档的推断；md 4 格缩进单色带 | ✅ 11 新测试 |
+| T7.3 | 折叠视觉：放大箭头、折叠头行背景色 + 行数提示 | Core/Gutter/, Editor/ | implementer | 视觉冒烟对比 | ✅ 4 新测试 + 视觉冒烟 |
+| T7.4 | 文档符号高亮：函数/类/变量名（进程内符号扫描接入高亮引擎） | Core/Highlight/, Completion/WordIndex.swift | implementer | 单测：符号分类；视觉验证 | ✅ 7 新测试 |
 
 ## 依赖关系
 
@@ -84,6 +84,10 @@ T4.1/T4.2 仅依赖 T1.1；T4.3 依赖 T2.2；T1.2 随时可做；T5.* 最后。
   （无需录屏权限）；`scripts/visual-smoke.sh` 为防"空白窗口"类回归的守门脚本，UI 改动后必跑。
 
 ## 变更记录
+
+- 2026-07-21 v0.3.0（M7 第四轮反馈收官）：Finder 打开不再多开空窗；VS Code 式缩进检测；
+  折叠箭头加大+折叠头行高亮+行数提示；文档符号高亮（函数/类/变量三色）。281 测试全绿，
+  内存基准三轮 PASS（27/46/61 MB），公证出包 968 KB。
 
 - 2026-07-21 v0.2.2（用户反馈第三轮）："打不开文档"真根因不是编码而是 **Finder→app 通道缺失**：
   Info.plist 无 CFBundleDocumentTypes + AppDelegate 无 application(_:open:)，文件从未到达 app。
