@@ -6,6 +6,7 @@ monaco-editor/
 
 # Xcode / Swift
 build/
+.build/
 DerivedData/
 *.xcuserstate
 xcuserdata/

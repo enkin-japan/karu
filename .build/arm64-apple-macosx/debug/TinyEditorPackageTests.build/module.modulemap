@@ -1,4 +1,0 @@
-module TinyEditorPackageTests {
-    header "/Volumes/enkin/project/TinyEditor/.build/arm64-apple-macosx/debug/TinyEditorPackageTests.build/TinyEditorPackageTests-Swift.h"
-    requires objc
-}
