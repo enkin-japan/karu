@@ -39,6 +39,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// `LineIndex` — and thus line numbers / highlighting — stay correct.
     private var foldingController: FoldingController!
 
+    /// Transient "Jump to Symbol" navigator (T8.4). Held only while its panel is
+    /// on screen — created on demand by `jumpToSymbol(_:)` and dropped the moment
+    /// it closes, so it keeps no resident symbol index (ARCHITECTURE.md §3.4).
+    private var symbolNavigator: SymbolNavigator?
+
     /// True once the user has manually picked a language from the Language menu.
     /// Suppresses all automatic detection until they choose Auto again.
     private var userOverrodeLanguage = false
@@ -380,6 +385,23 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     @objc public func useSelectionForFind(_ sender: Any?) {
         findBar.useSelectionForFind()
+    }
+
+    // MARK: - Jump to Symbol (first-responder target)
+
+    /// Opens the transient symbol navigator (Cmd+Shift+O). Scans the current
+    /// document once for the active language's declarations and lets the user
+    /// filter / jump. The navigator is released when its panel closes, so no
+    /// symbol index survives the operation (ARCHITECTURE.md §3.4).
+    @objc public func jumpToSymbol(_ sender: Any?) {
+        // Already open: a second invocation is a no-op (avoid stacking panels).
+        guard symbolNavigator == nil else { return }
+        let navigator = SymbolNavigator(textView: textView)
+        symbolNavigator = navigator
+        let identifier = highlightEngine.currentLanguageIdentifier ?? currentLanguageIdentifierValue
+        navigator.present(languageIdentifier: identifier) { [weak self] in
+            self?.symbolNavigator = nil
+        }
     }
 
     // MARK: - Format action (first-responder target)

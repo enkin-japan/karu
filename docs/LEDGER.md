@@ -78,7 +78,7 @@ ARCHITECTURE.md 预算红线；明确不引入 tree-sitter / SwiftUI / NSDocumen
 | T8.1 | 滑动流畅度：高亮 overscan（±1.5 屏预染）+ 已染色带内滚动零工作（paintedRange 短路）+ 小文件（<512 KiB）自适应关闭 noncontiguous layout（LayoutModeController，编辑跨阈值自动切换；大文件保持懒布局）。注：滚动路径本就无去抖，主因是惰性布局滞后 | Core/Highlight/HighlightEngine.swift, Editor/LayoutMode.swift（新）, Editor/EditorWindowController.swift | implementer | 快速滑动无 pop-in；mem-benchmark 三轮 PASS | ✅ 14 新测试，295 全绿；基准 27/46/61 MB 全 PASS；视觉冒烟 OK |
 | T8.2 | 编码手动重解释菜单（"以 XX 编码重新打开"，自动检测错误时的用户兜底） | App/DocumentController.swift, MainMenu.swift | 待讨论 | 选错编码可换编码重开且不丢文件 | ⬜ |
 | T8.3 | 换行符（LF/CRLF/CR）状态栏显示 + 一键转换 | Editor/StatusBarView.swift, App/DocumentController.swift | 待讨论 | 状态栏正确显示；转换后保存符合预期 | ⬜ |
-| T8.4 | 大纲/符号导航：复用补全的符号扫描索引，弹窗跳转函数/类定义 | Core/Completion/WordIndex.swift, Editor/ | 待讨论 | 符号列表可跳转；内存增量 ≈ 0（复用现有索引） | ⬜ |
+| T8.4 | 大纲/符号导航：Cmd+Shift+O 弹窗，声明正则重构为共享模式表 + 一次性带位置扫描（scanSymbolLocations），过滤/回车跳转/Esc；关闭即全量释放（瞬时不常驻） | Core/Completion/WordIndex.swift, Editor/SymbolNavigator.swift（新）, EditorWindowController, MainMenu, L10n | implementer | 符号列表可跳转；常驻增量 ≈ 0 | ✅ 7 新测试，302 全绿；三语文案齐；视觉冒烟 OK |
 | T8.5 | `tinyedit` 命令行辅助工具（CotEditor `cot` 式，从终端打开文件） | scripts/, 新辅助入口 | 待讨论 | 终端 `tinyedit file` 可唤起 app 打开文件 | ⬜ |
 
 用户实测背景（T8.1 依据）：同窗口同 200 行 md，两 app 静态均 ~80 MB（窗口 backing

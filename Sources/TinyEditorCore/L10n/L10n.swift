@@ -30,6 +30,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuEdit, menuUndo, menuRedo, menuCut, menuCopy, menuPaste, menuSelectAll
     // Find submenu.
     case menuFind, menuFindEllipsis, menuFindNext, menuFindPrevious, menuUseSelectionForFind
+    // Jump-to-symbol navigator.
+    case menuJumpToSymbol, symbolFilterPlaceholder, symbolNone
     // Format menu.
     case menuFormat, menuFormatDocument
     // Language menu.

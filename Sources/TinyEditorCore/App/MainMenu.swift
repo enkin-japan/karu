@@ -65,6 +65,13 @@ enum MainMenu {
         findMenu.addItem(withTitle: L10n.t(.menuUseSelectionForFind),
                          action: #selector(EditorWindowController.useSelectionForFind(_:)), keyEquivalent: "e")
 
+        // Jump to Symbol (Cmd+Shift+O): sits at the end of the Edit menu, after
+        // the Find submenu. Targets the first responder (EditorWindowController).
+        let jumpToSymbol = editMenu.addItem(withTitle: L10n.t(.menuJumpToSymbol),
+                                            action: #selector(EditorWindowController.jumpToSymbol(_:)),
+                                            keyEquivalent: "o")
+        jumpToSymbol.keyEquivalentModifierMask = [.command, .shift]
+
         // Format menu: targets the first responder (EditorWindowController),
         // which gates the item on the `format` module + supported language via
         // validateMenuItem.

@@ -37,6 +37,10 @@ extension L10n {
         .menuFindPrevious: "Find Previous",
         .menuUseSelectionForFind: "Use Selection for Find",
 
+        .menuJumpToSymbol: "Jump to Symbol…",
+        .symbolFilterPlaceholder: "Filter symbols",
+        .symbolNone: "No symbols",
+
         .menuFormat: "Format",
         .menuFormatDocument: "Format Document",
 
@@ -119,6 +123,10 @@ extension L10n {
         .menuFindPrevious: "查找上一个",
         .menuUseSelectionForFind: "用所选内容查找",
 
+        .menuJumpToSymbol: "跳转到符号…",
+        .symbolFilterPlaceholder: "过滤符号",
+        .symbolNone: "无符号",
+
         .menuFormat: "格式",
         .menuFormatDocument: "格式化文档",
 
@@ -200,6 +208,10 @@ extension L10n {
         .menuFindNext: "次を検索",
         .menuFindPrevious: "前を検索",
         .menuUseSelectionForFind: "選択部分を検索に使用",
+
+        .menuJumpToSymbol: "シンボルへジャンプ…",
+        .symbolFilterPlaceholder: "シンボルを絞り込む",
+        .symbolNone: "シンボルなし",
 
         .menuFormat: "フォーマット",
         .menuFormatDocument: "ドキュメントをフォーマット",
