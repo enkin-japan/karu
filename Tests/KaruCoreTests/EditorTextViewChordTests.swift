@@ -55,3 +55,67 @@ import Testing
         modifiers: [.option, .shift, .capsLock],
         charactersIgnoringModifiers: "F") == true)
 }
+
+// MARK: - Line-operation chord predicate (T12.4)
+
+private let upArrow = String(UnicodeScalar(NSUpArrowFunctionKey)!)
+private let downArrow = String(UnicodeScalar(NSDownArrowFunctionKey)!)
+
+@MainActor
+@Test func lineChordOptionUpIsMoveUp() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.option], charactersIgnoringModifiers: upArrow)
+        == #selector(EditorWindowController.moveLinesUp(_:)))
+}
+
+@MainActor
+@Test func lineChordOptionDownIsMoveDown() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.option], charactersIgnoringModifiers: downArrow)
+        == #selector(EditorWindowController.moveLinesDown(_:)))
+}
+
+@MainActor
+@Test func lineChordOptionShiftUpIsCopyUp() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.option, .shift], charactersIgnoringModifiers: upArrow)
+        == #selector(EditorWindowController.copyLinesUp(_:)))
+}
+
+@MainActor
+@Test func lineChordOptionShiftDownIsCopyDown() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.option, .shift], charactersIgnoringModifiers: downArrow)
+        == #selector(EditorWindowController.copyLinesDown(_:)))
+}
+
+@MainActor
+@Test func lineChordRejectsWhenCommandPresent() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.option, .command], charactersIgnoringModifiers: upArrow) == nil)
+}
+
+@MainActor
+@Test func lineChordRejectsWhenControlPresent() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.option, .control], charactersIgnoringModifiers: downArrow) == nil)
+}
+
+@MainActor
+@Test func lineChordRejectsWithoutOption() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.shift], charactersIgnoringModifiers: upArrow) == nil)
+}
+
+@MainActor
+@Test func lineChordRejectsNonArrowKey() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.option], charactersIgnoringModifiers: "x") == nil)
+}
+
+@MainActor
+@Test func lineChordIgnoresExtraneousDeviceFlags() {
+    #expect(EditorTextView.lineOperationChord(
+        modifiers: [.option, .capsLock], charactersIgnoringModifiers: upArrow)
+        == #selector(EditorWindowController.moveLinesUp(_:)))
+}

@@ -75,6 +75,14 @@ public final class PreferencesWindowController: NSWindowController {
             name: L10n.didChangeNotification,
             object: nil
         )
+        // A View ▸ Zoom command changes the font size behind this window's back;
+        // refresh the stepper / label so the panel never shows a stale value.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(fontSizeDidChangeExternally),
+            name: EditorFontSettings.didChangeNotification,
+            object: nil
+        )
     }
 
     deinit {
@@ -317,14 +325,19 @@ public final class PreferencesWindowController: NSWindowController {
     }
 
     @objc private func fontSizeChanged(_ sender: NSStepper) {
-        let size = CGFloat(sender.doubleValue)
-        EditorFontSettings().setFontSize(size)
+        // `setFontSize` broadcasts `EditorFontSettings.didChangeNotification`, which
+        // every open editor window observes to re-apply the size live (new windows
+        // read the value at creation time). This panel updates its own label here.
+        EditorFontSettings().setFontSize(CGFloat(sender.doubleValue))
         updateFontLabel()
-        // Live-apply to open windows (cheap, so we do it rather than requiring a
-        // reopen; new windows also read the value at creation time).
-        Self.forEachEditorTextView {
-            $0.font = .monospacedSystemFont(ofSize: size, weight: .regular)
-        }
+    }
+
+    /// Re-reads the shared font size into the stepper / label after a zoom command
+    /// changed it outside this window.
+    @objc private func fontSizeDidChangeExternally() {
+        let size = EditorFontSettings().fontSize
+        fontStepper.doubleValue = Double(size)
+        updateFontLabel()
     }
 
     // MARK: - Live application helpers

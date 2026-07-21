@@ -206,6 +206,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             name: L10n.didChangeNotification,
             object: nil
         )
+        // Font size changes (preferences stepper or View ▸ Zoom) are broadcast so
+        // this window re-applies the size live, keeping every window in sync.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(fontSizeDidChange),
+            name: EditorFontSettings.didChangeNotification,
+            object: nil
+        )
 
         updateWindowState()
         refreshStatusBar()
@@ -219,6 +227,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         refreshStatusBar()
         toolbarController?.reloadStrings()
         findBar.reloadStrings()
+    }
+
+    /// Re-applies the shared editor font size after a change broadcast.
+    @objc private func fontSizeDidChange() {
+        textView.font = .monospacedSystemFont(ofSize: EditorFontSettings().fontSize, weight: .regular)
     }
 
     deinit {
@@ -637,6 +650,68 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
                 alert.runModal()
             }
         }
+    }
+
+    // MARK: - Comment toggle (first-responder target)
+
+    /// Toggles line/block comments over the selected lines (⌘/, VS Code
+    /// semantics). Beeps for languages with no comment syntax (JSON / plain).
+    @objc public func toggleComment(_ sender: Any?) {
+        let language = (textView as? EditorTextView)?.languageIdentifier ?? ""
+        guard let result = CommentToggle.toggle(text: textView.string,
+                                                selection: textView.selectedRange(),
+                                                languageIdentifier: language) else {
+            NSSound.beep()
+            return
+        }
+        applyTextEdit(replacement: result.replacement,
+                      range: result.range,
+                      newSelection: result.newSelection)
+    }
+
+    // MARK: - Line operations (first-responder targets)
+
+    @objc public func moveLinesUp(_ sender: Any?) {
+        applyLineOperation(LineOperations.moveLinesUp)
+    }
+
+    @objc public func moveLinesDown(_ sender: Any?) {
+        applyLineOperation(LineOperations.moveLinesDown)
+    }
+
+    @objc public func copyLinesUp(_ sender: Any?) {
+        applyLineOperation(LineOperations.copyLinesUp)
+    }
+
+    @objc public func copyLinesDown(_ sender: Any?) {
+        applyLineOperation(LineOperations.copyLinesDown)
+    }
+
+    @objc public func deleteLines(_ sender: Any?) {
+        applyLineOperation(LineOperations.deleteLines)
+    }
+
+    /// Runs a pure line operation over the current text/selection and applies the
+    /// result through the undo channel. A `nil` result (document boundary) is a
+    /// silent no-op, matching VS Code.
+    private func applyLineOperation(
+        _ operation: (_ text: String, _ selection: NSRange)
+            -> (replacement: String, range: NSRange, newSelection: NSRange)?
+    ) {
+        guard let result = operation(textView.string, textView.selectedRange()) else { return }
+        applyTextEdit(replacement: result.replacement,
+                      range: result.range,
+                      newSelection: result.newSelection)
+    }
+
+    /// Applies a single replacement through the text view's undo-aware channel
+    /// (`shouldChangeText` → `replaceCharacters` → `didChangeText`), then installs
+    /// the new selection. Mirrors the `formatDocument` mutation path.
+    private func applyTextEdit(replacement: String, range: NSRange, newSelection: NSRange) {
+        guard textView.shouldChangeText(in: range, replacementString: replacement) else { return }
+        textView.textStorage?.replaceCharacters(in: range, with: replacement)
+        textView.didChangeText()
+        textView.setSelectedRange(newSelection)
     }
 
     // MARK: - Reopen with Encoding (first-responder target)

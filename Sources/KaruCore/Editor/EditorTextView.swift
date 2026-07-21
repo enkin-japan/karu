@@ -392,6 +392,42 @@ public final class EditorTextView: NSTextView {
         return charactersIgnoringModifiers?.lowercased() == "f"
     }
 
+    // MARK: Line-operation chords
+
+    /// Pure predicate mapping an Option-bearing arrow chord to the matching line
+    /// operation, or `nil` when it is not one. Like the Format Document chord,
+    /// Option-without-Command equivalents are unreliable through AppKit's menu
+    /// matching (T12.1), so these are intercepted in `keyDown` instead — the menu
+    /// items exist only for discoverability.
+    ///
+    /// `⌥↑` / `⌥↓` move lines; `⌥⇧↑` / `⌥⇧↓` copy lines. Any chord carrying
+    /// Command or Control returns `nil` (⌘⇧K, Delete Line, is a reliable menu
+    /// equivalent and needs no interception). Arrow keys arrive with the
+    /// function-key scalars U+F700 (up) / U+F701 (down) in
+    /// `charactersIgnoringModifiers`.
+    static func lineOperationChord(
+        modifiers: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers chars: String?
+    ) -> Selector? {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.option),
+              !flags.contains(.command), !flags.contains(.control) else {
+            return nil
+        }
+        guard let scalar = chars?.unicodeScalars.first else { return nil }
+        let shift = flags.contains(.shift)
+        switch scalar {
+        case UnicodeScalar(NSUpArrowFunctionKey)!:
+            return shift ? #selector(EditorWindowController.copyLinesUp(_:))
+                         : #selector(EditorWindowController.moveLinesUp(_:))
+        case UnicodeScalar(NSDownArrowFunctionKey)!:
+            return shift ? #selector(EditorWindowController.copyLinesDown(_:))
+                         : #selector(EditorWindowController.moveLinesDown(_:))
+        default:
+            return nil
+        }
+    }
+
     // MARK: Completion key routing
 
     /// Give an active completion popup first refusal on navigation keys, then
@@ -408,6 +444,16 @@ public final class EditorTextView: NSTextView {
         if let handler = completionKeyHandler,
            handler.isCompletionActive,
            handler.handleCompletionKeyDown(event) {
+            return
+        }
+        // Line-operation chords (⌥↑ / ⌥↓ / ⌥⇧↑ / ⌥⇧↓). Skipped while a completion
+        // popup is open so the keystroke dismisses the popup (via super.keyDown)
+        // rather than moving lines underneath it.
+        if completionKeyHandler?.isCompletionActive != true,
+           let selector = Self.lineOperationChord(
+               modifiers: event.modifierFlags,
+               charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
+            NSApp.sendAction(selector, to: nil, from: self)
             return
         }
         super.keyDown(with: event)

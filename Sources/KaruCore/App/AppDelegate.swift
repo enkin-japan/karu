@@ -217,6 +217,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - View ▸ Zoom (global editor font size)
+
+    /// The editor font size is a global setting, so zoom lives here: each command
+    /// updates the shared `EditorFontSettings` key, which broadcasts the change to
+    /// every open window and the preferences panel.
+    @objc public func zoomIn(_ sender: Any?) { applyZoom(.increase) }
+
+    @objc public func zoomOut(_ sender: Any?) { applyZoom(.decrease) }
+
+    /// Restores the default editor font size (⌘0).
+    @objc public func actualSize(_ sender: Any?) {
+        EditorFontSettings().setFontSize(FontZoom.defaultSize)
+    }
+
+    private func applyZoom(_ direction: FontZoom.Direction) {
+        let current = EditorFontSettings().fontSize
+        EditorFontSettings().setFontSize(FontZoom.step(current: current, direction: direction))
+    }
+
     @objc public func showPreferences(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
         preferencesController.showWindow(nil)

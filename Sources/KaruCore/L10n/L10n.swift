@@ -40,10 +40,15 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuGoToLine, goToLinePlaceholder
     // Title-bar rename (filename capsule) errors.
     case renameErrorTitle, renameErrorEmpty, renameErrorInvalid, renameErrorExists, renameErrorGeneric
+    // Edit menu — comment toggle + line operations.
+    case menuToggleComment
+    case menuMoveLineUp, menuMoveLineDown, menuCopyLineUp, menuCopyLineDown, menuDeleteLine
     // Format menu.
     case menuFormat, menuFormatDocument
     // Convert-line-endings submenu.
     case menuConvertLineEndings
+    // View menu — font zoom.
+    case menuView, viewZoomIn, viewZoomOut, viewActualSize
     // Language menu.
     case menuLanguage, languageAuto
     // Toolbar labels / tooltips.

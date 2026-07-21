@@ -98,6 +98,42 @@ enum MainMenu {
                                         keyEquivalent: "g")
         goToLine.keyEquivalentModifierMask = [.control]
 
+        // Toggle Comment (⌘/, VS Code parity). Contains ⌘, so the menu equivalent
+        // is reliable and no keyDown interception is needed.
+        editMenu.addItem(.separator())
+        let toggleComment = editMenu.addItem(withTitle: L10n.t(.menuToggleComment),
+                                             action: #selector(EditorWindowController.toggleComment(_:)),
+                                             keyEquivalent: "/")
+        toggleComment.keyEquivalentModifierMask = [.command]
+
+        // Line operations. ⌥↑ / ⌥↓ / ⌥⇧↑ / ⌥⇧↓ have no ⌘ so their menu equivalents
+        // are unreliable (T12.1) — the items exist for discoverability, but the
+        // real trigger is EditorTextView.keyDown → lineOperationChord. Delete Line
+        // (⌘⇧K) does carry ⌘, so its menu equivalent works directly.
+        editMenu.addItem(.separator())
+        let up = UnicodeScalar(NSUpArrowFunctionKey)!
+        let down = UnicodeScalar(NSDownArrowFunctionKey)!
+        let moveUp = editMenu.addItem(withTitle: L10n.t(.menuMoveLineUp),
+                                      action: #selector(EditorWindowController.moveLinesUp(_:)),
+                                      keyEquivalent: String(up))
+        moveUp.keyEquivalentModifierMask = [.option]
+        let moveDown = editMenu.addItem(withTitle: L10n.t(.menuMoveLineDown),
+                                        action: #selector(EditorWindowController.moveLinesDown(_:)),
+                                        keyEquivalent: String(down))
+        moveDown.keyEquivalentModifierMask = [.option]
+        let copyUp = editMenu.addItem(withTitle: L10n.t(.menuCopyLineUp),
+                                      action: #selector(EditorWindowController.copyLinesUp(_:)),
+                                      keyEquivalent: String(up))
+        copyUp.keyEquivalentModifierMask = [.option, .shift]
+        let copyDown = editMenu.addItem(withTitle: L10n.t(.menuCopyLineDown),
+                                        action: #selector(EditorWindowController.copyLinesDown(_:)),
+                                        keyEquivalent: String(down))
+        copyDown.keyEquivalentModifierMask = [.option, .shift]
+        let deleteLine = editMenu.addItem(withTitle: L10n.t(.menuDeleteLine),
+                                          action: #selector(EditorWindowController.deleteLines(_:)),
+                                          keyEquivalent: "k")
+        deleteLine.keyEquivalentModifierMask = [.command, .shift]
+
         // Format menu: targets the first responder (EditorWindowController),
         // which gates the item on the `format` module + supported language via
         // validateMenuItem.
@@ -126,6 +162,31 @@ enum MainMenu {
                                               keyEquivalent: "")
             item.representedObject = ending.rawValue
         }
+
+        // View menu: editor font zoom (global setting; actions on AppDelegate).
+        let viewMenuItem = NSMenuItem()
+        mainMenu.addItem(viewMenuItem)
+        let viewMenu = NSMenu(title: L10n.t(.menuView))
+        viewMenuItem.submenu = viewMenu
+        // Zoom In (⌘+). A hidden alternate on ⌘= handles the common US-keyboard
+        // habit of pressing ⌘= to mean ⌘+ (same action, same mask).
+        let zoomIn = viewMenu.addItem(withTitle: L10n.t(.viewZoomIn),
+                                      action: #selector(AppDelegate.zoomIn(_:)),
+                                      keyEquivalent: "+")
+        zoomIn.keyEquivalentModifierMask = [.command]
+        let zoomInAlt = viewMenu.addItem(withTitle: L10n.t(.viewZoomIn),
+                                         action: #selector(AppDelegate.zoomIn(_:)),
+                                         keyEquivalent: "=")
+        zoomInAlt.keyEquivalentModifierMask = [.command]
+        zoomInAlt.isAlternate = true
+        let zoomOut = viewMenu.addItem(withTitle: L10n.t(.viewZoomOut),
+                                       action: #selector(AppDelegate.zoomOut(_:)),
+                                       keyEquivalent: "-")
+        zoomOut.keyEquivalentModifierMask = [.command]
+        let actualSize = viewMenu.addItem(withTitle: L10n.t(.viewActualSize),
+                                          action: #selector(AppDelegate.actualSize(_:)),
+                                          keyEquivalent: "0")
+        actualSize.keyEquivalentModifierMask = [.command]
 
         // Language menu: Auto (content/extension detection) plus a manual
         // override for each supported language. Targets the first responder

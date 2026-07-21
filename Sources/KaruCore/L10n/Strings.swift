@@ -58,9 +58,21 @@ extension L10n {
         .renameErrorExists: "A file with that name already exists.",
         .renameErrorGeneric: "The file could not be renamed.",
 
+        .menuToggleComment: "Toggle Comment",
+        .menuMoveLineUp: "Move Line Up",
+        .menuMoveLineDown: "Move Line Down",
+        .menuCopyLineUp: "Copy Line Up",
+        .menuCopyLineDown: "Copy Line Down",
+        .menuDeleteLine: "Delete Line",
+
         .menuFormat: "Format",
         .menuFormatDocument: "Format Document",
         .menuConvertLineEndings: "Convert Line Endings",
+
+        .menuView: "View",
+        .viewZoomIn: "Zoom In",
+        .viewZoomOut: "Zoom Out",
+        .viewActualSize: "Actual Size",
 
         .menuLanguage: "Language",
         .languageAuto: "Auto",
@@ -166,9 +178,21 @@ extension L10n {
         .renameErrorExists: "已存在同名文件。",
         .renameErrorGeneric: "无法重命名该文件。",
 
+        .menuToggleComment: "切换注释",
+        .menuMoveLineUp: "上移一行",
+        .menuMoveLineDown: "下移一行",
+        .menuCopyLineUp: "向上复制一行",
+        .menuCopyLineDown: "向下复制一行",
+        .menuDeleteLine: "删除行",
+
         .menuFormat: "格式",
         .menuFormatDocument: "格式化文档",
         .menuConvertLineEndings: "转换换行符",
+
+        .menuView: "显示",
+        .viewZoomIn: "放大",
+        .viewZoomOut: "缩小",
+        .viewActualSize: "实际大小",
 
         .menuLanguage: "语言",
         .languageAuto: "自动",
@@ -274,9 +298,21 @@ extension L10n {
         .renameErrorExists: "同じ名前のファイルがすでに存在します。",
         .renameErrorGeneric: "ファイル名を変更できませんでした。",
 
+        .menuToggleComment: "コメントを切り替え",
+        .menuMoveLineUp: "行を上に移動",
+        .menuMoveLineDown: "行を下に移動",
+        .menuCopyLineUp: "行を上にコピー",
+        .menuCopyLineDown: "行を下にコピー",
+        .menuDeleteLine: "行を削除",
+
         .menuFormat: "フォーマット",
         .menuFormatDocument: "ドキュメントをフォーマット",
         .menuConvertLineEndings: "改行コードを変換",
+
+        .menuView: "表示",
+        .viewZoomIn: "拡大",
+        .viewZoomOut: "縮小",
+        .viewActualSize: "実際のサイズ",
 
         .menuLanguage: "言語",
         .languageAuto: "自動",
