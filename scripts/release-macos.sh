@@ -1,5 +1,5 @@
 #!/bin/bash
-# TinyEditor 发布流水线：打包 → 签名 → 公证 → 装订 → DMG。
+# Karu 发布流水线：打包 → 签名 → 公证 → 装订 → DMG。
 # 红线：任何密钥（.p8 / .env* / .secrets.env）绝不进入产物；公证凭据只经
 # 钥匙串 profile（tinyeditor-notary）引用，本脚本不含任何机密。
 set -euo pipefail
@@ -7,9 +7,9 @@ cd "$(dirname "$0")/.."
 
 NOTARY_PROFILE="${NOTARY_PROFILE:-tinyeditor-notary}"
 NOTARY_KEYCHAIN="${NOTARY_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
-APP_DIR="build/TinyEditor.app"
-ZIP_PATH="build/TinyEditor.zip"
-DMG_PATH="build/TinyEditor.dmg"
+APP_DIR="build/Karu.app"
+ZIP_PATH="build/Karu.zip"
+DMG_PATH="build/Karu.dmg"
 VERSION="$(sed -n 's/.*CFBundleShortVersionString.*/v/p' scripts/bundle-macos.sh >/dev/null; \
            grep -A1 CFBundleShortVersionString scripts/bundle-macos.sh | tail -1 | sed 's/[^0-9.]//g')"
 
@@ -34,7 +34,7 @@ STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 cp -R "$APP_DIR" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
-hdiutil create -quiet -volname "TinyEditor ${VERSION}" \
+hdiutil create -quiet -volname "Karu ${VERSION}" \
     -srcfolder "$STAGING" -ov -format UDZO "$DMG_PATH"
 codesign --force --timestamp --sign "Developer ID Application" "$DMG_PATH"
 

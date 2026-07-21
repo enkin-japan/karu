@@ -1,0 +1,23 @@
+#!/bin/bash
+# karu — open files in Karu from the terminal (T8.5, `cot`-style).
+#
+# Usage:
+#   karu              # bring Karu forward (new untitled window if none)
+#   karu FILE...      # open files; nonexistent paths are created empty first
+#
+# Install: this script ships inside the app bundle. Symlink it onto your PATH:
+#   ln -s /Applications/Karu.app/Contents/Resources/karu /usr/local/bin/karu
+set -euo pipefail
+
+if [ $# -eq 0 ]; then
+    open -a Karu
+    exit 0
+fi
+
+for f in "$@"; do
+    # `open` refuses paths that don't exist yet; create them so
+    # `karu notes.md` starts a new file like `cot` does.
+    [ -e "$f" ] || : > "$f"
+done
+
+open -a Karu -- "$@"

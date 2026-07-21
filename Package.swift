@@ -2,19 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "TinyEditor",
+    name: "Karu",
     platforms: [.macOS(.v13)],
     targets: [
-        .target(name: "TinyEditorCore", path: "Sources/TinyEditorCore"),
+        .target(name: "KaruCore", path: "Sources/KaruCore"),
         .executableTarget(
-            name: "TinyEditorApp",
-            dependencies: ["TinyEditorCore"],
-            path: "Sources/TinyEditorApp"
+            name: "KaruApp",
+            dependencies: ["KaruCore"],
+            path: "Sources/KaruApp"
         ),
         .testTarget(
-            name: "TinyEditorCoreTests",
-            dependencies: ["TinyEditorCore"],
-            path: "Tests/TinyEditorCoreTests"
+            name: "KaruCoreTests",
+            dependencies: ["KaruCore"],
+            path: "Tests/KaruCoreTests"
         )
     ]
 )

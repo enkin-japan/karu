@@ -1,11 +1,11 @@
 #!/bin/bash
-# TinyEditor 内存基准脚本（T5.1）
-# 对照 docs/ARCHITECTURE.md §1 硬性预算表，采样 .build/release/TinyEditorApp
+# Karu 内存基准脚本（T5.1）
+# 对照 docs/ARCHITECTURE.md §1 硬性预算表，采样 .build/release/KaruApp
 # 在若干场景下的 phys_footprint 常驻内存，并输出对照报告。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_BIN=".build/release/TinyEditorApp"
+APP_BIN=".build/release/KaruApp"
 
 echo "== [1/4] swift build -c release =="
 swift build -c release
@@ -51,7 +51,7 @@ fi
 # large.py：约 10 MB 的重复 Python 函数文本，用 yes 生成
 py_block=$(cat <<'PYEOF'
 def sample_function(a, b, c):
-    """Auto-generated function for TinyEditor memory benchmark."""
+    """Auto-generated function for Karu memory benchmark."""
     result = a + b + c
     for i in range(10):
         result += i
@@ -72,13 +72,13 @@ echo "large.py   : $(wc -c < "$LARGE_FILE") bytes"
 
 echo ""
 echo "== [3/4] 检查 CLI 打开文件能力 =="
-# 已确认 Sources/TinyEditorApp/main.swift 和
-# Sources/TinyEditorCore/Editor/EditorWindowController.swift 均无 CommandLine
+# 已确认 Sources/KaruApp/main.swift 和
+# Sources/KaruCore/Editor/EditorWindowController.swift 均无 CommandLine
 # 参数解析或 application(_:openFile:) / application(_:open:) 处理路径，
 # 因此该 app 不支持通过命令行参数打开文件。带文件的两轮采样标记为 SKIPPED。
 CLI_OPEN_SUPPORTED=0
-if grep -rq "CommandLine" Sources/TinyEditorApp Sources/TinyEditorCore 2>/dev/null \
-    || grep -rq "openFile\|application(_ application: NSApplication, open" Sources/TinyEditorCore 2>/dev/null; then
+if grep -rq "CommandLine" Sources/KaruApp Sources/KaruCore 2>/dev/null \
+    || grep -rq "openFile\|application(_ application: NSApplication, open" Sources/KaruCore 2>/dev/null; then
     CLI_OPEN_SUPPORTED=1
 fi
 
@@ -230,8 +230,8 @@ fi
 
 echo ""
 if [[ "$CLI_OPEN_SUPPORTED" -eq 0 ]]; then
-    echo "说明：TinyEditorApp 当前无命令行参数打开文件的路径"
-    echo "（Sources/TinyEditorApp/main.swift、Sources/TinyEditorCore/Editor/EditorWindowController.swift"
+    echo "说明：KaruApp 当前无命令行参数打开文件的路径"
+    echo "（Sources/KaruApp/main.swift、Sources/KaruCore/Editor/EditorWindowController.swift"
     echo " 均未检测到 CommandLine 参数解析或 application(_:open:) 处理），"
     echo "因此“打开 medium.json”“打开 large.py”两轮标记为 SKIPPED，仅完成空文档启动基线一轮实测。"
 fi

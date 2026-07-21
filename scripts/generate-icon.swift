@@ -1,6 +1,6 @@
 #!/usr/bin/env swift
 //
-// generate-icon.swift — TinyEditor App 图标生成器 (T6.5)
+// generate-icon.swift — Karu App 图标生成器 (T6.5)
 //
 // 逐尺寸离屏绘制 App 图标并写出完整 iconset。运行方式：
 //     swift scripts/generate-icon.swift

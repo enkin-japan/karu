@@ -1,4 +1,4 @@
-# TinyEditor 核心架构思想
+# Karu 核心架构思想
 
 > 定位：在满足功能需求的基础上，追求极致轻量化的 macOS 专用编辑器。
 > 本文档记录不可随意推翻的架构决策。修改任何一条须先更新本文档并说明理由。
@@ -20,6 +20,10 @@
 > 随窗口像素面积线性增长（4K/Retina 最大化窗口约 +40–55 MB），这是所有原生 app
 > 共同支付的窗口服务器图形内存，不计入本表预算（实测：200 行 md，800×600 窗口
 > 43 MB，2056×1300 窗口 81 MB，缩小窗口即回落；24 秒空闲无增长）。
+>
+> 环境漂移：同一 commit 同机不同时段实测有 ±5 MB 系统级漂移（27/46/61 与
+> 32/51/59，与深浅色模式无关）。预算判定应以**同环境对照跑**为准：怀疑回归时先在
+> 当前环境重测已知良好 commit（git worktree），差值才是代码的责任。
 
 ## 2. 技术选型及理由
 
@@ -65,8 +69,8 @@
 
 ```
 Sources/
-  TinyEditorApp/        可执行入口（main.swift，尽量薄）
-  TinyEditorCore/       全部逻辑（库 target，可被单元测试链接）
+  KaruApp/        可执行入口（main.swift，尽量薄）
+  KaruCore/       全部逻辑（库 target，可被单元测试链接）
     App/                AppDelegate、主菜单、DocumentController（窗口/文件生命周期）
     Editor/             EditorTextView（粘贴拦截、Tab/自动缩进）、EditorWindowController
     Gutter/             行号 + 折叠箭头 + 缩进彩虹绘制（RulerView）
@@ -77,9 +81,9 @@ Sources/
     Settings/           偏好（每语言缩进宽度等，UserDefaults）+ 偏好窗口
     TextModel/          LineIndex（换行偏移索引）等共享数据结构
 Tests/
-  TinyEditorCoreTests/  单元测试（LineIndex、tokenizer、formatter、缩进逻辑为主）
+  KaruCoreTests/  单元测试（LineIndex、tokenizer、formatter、缩进逻辑为主）
 scripts/
-  bundle-macos.sh       SPM 产物 → TinyEditor.app 打包（红线文件，仅主会话可改）
+  bundle-macos.sh       SPM 产物 → Karu.app 打包（红线文件，仅主会话可改）
 ```
 
 支持语言（15 种）：Markdown, JSON, JSONL, Python, HTML, CSS, JavaScript/Node, TypeScript,

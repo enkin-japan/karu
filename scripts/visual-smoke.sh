@@ -1,5 +1,5 @@
 #!/bin/bash
-# 视觉冒烟：启动 app 自渲染快照（TINYEDITOR_SNAPSHOT 钩子，无需录屏权限），
+# 视觉冒烟：启动 app 自渲染快照（KARU_SNAPSHOT 钩子，无需录屏权限），
 # 校验编辑区真的画出来了——防止 v0.2.0 "空白窗口" 一类的合成回归。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,7 +11,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 printf '# Heading\n\ndef hello():\n    return 42\n' > "$TMP/sample.md"
 
-TINYEDITOR_SNAPSHOT="$TMP/snap.png" ".build/$CONFIG/TinyEditorApp" "$TMP/sample.md"
+KARU_SNAPSHOT="$TMP/snap.png" ".build/$CONFIG/KaruApp" "$TMP/sample.md"
 
 # 校验快照：必须同时存在大面积亮色（纸面）与少量深色（文字/行号）。
 cat > "$TMP/check.swift" <<'EOF'

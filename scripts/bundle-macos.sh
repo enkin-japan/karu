@@ -1,19 +1,19 @@
 #!/bin/bash
-# TinyEditor 打包脚本：SPM release 产物 → TinyEditor.app
+# Karu 打包脚本：SPM release 产物 → Karu.app
 # 红线：.p8 / .env* / .secrets.env 绝不允许进入 bundle（脚本末尾强制检查）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 swift build -c release
 
-APP_DIR="build/TinyEditor.app"
+APP_DIR="build/Karu.app"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-cp .build/release/TinyEditorApp "$APP_DIR/Contents/MacOS/TinyEditor"
+cp .build/release/KaruApp "$APP_DIR/Contents/MacOS/Karu"
 cp assets/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 # 终端辅助工具（T8.5）：用户可从 bundle 内 symlink 到 PATH 使用
-install -m 0755 scripts/tinyedit "$APP_DIR/Contents/Resources/tinyedit"
+install -m 0755 scripts/karu "$APP_DIR/Contents/Resources/karu"
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -21,11 +21,11 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>TinyEditor</string>
+	<string>Karu</string>
 	<key>CFBundleDisplayName</key>
-	<string>TinyEditor</string>
+	<string>Karu</string>
 	<key>CFBundleExecutable</key>
-	<string>TinyEditor</string>
+	<string>Karu</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleDocumentTypes</key>
@@ -70,9 +70,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4.0</string>
+	<string>0.5.0</string>
 	<key>CFBundleVersion</key>
-	<string>6</string>
+	<string>7</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>

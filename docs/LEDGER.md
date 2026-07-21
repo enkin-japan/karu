@@ -1,4 +1,4 @@
-# TinyEditor 工程步骤账本
+# Karu 工程步骤账本
 
 > 开工前读 `ARCHITECTURE.md`。每完成一项：更新状态、记录负责方与验收结果。
 > 负责方按 CLAUDE.md 路由规则：main = 主会话直接做；implementer / chore-worker = 委派。
@@ -9,8 +9,8 @@
 
 | ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
 |---|---|---|---|---|---|
-| T1.1 | SPM 工程骨架：Core 库 + App 可执行分离，AppDelegate、最小菜单、空编辑窗口（NSTextView） | Package.swift, Sources/TinyEditorApp/, Sources/TinyEditorCore/App/, Editor/ | main | `swift build` 与 `swift test` 通过；启动出现可输入窗口 | ✅ 启动时 phys_footprint 2.5 MB |
-| T1.2 | bundle-macos.sh：release 产物打包成 TinyEditor.app（红线：.p8/.env* 不得入 bundle） | scripts/bundle-macos.sh | main（红线，禁止委派） | 脚本产出可双击启动的 .app；bundle 内无密钥文件 | ✅ bundle 96 KB，ad-hoc 签名，密钥检查内置 |
+| T1.1 | SPM 工程骨架：Core 库 + App 可执行分离，AppDelegate、最小菜单、空编辑窗口（NSTextView） | Package.swift, Sources/KaruApp/, Sources/KaruCore/App/, Editor/ | main | `swift build` 与 `swift test` 通过；启动出现可输入窗口 | ✅ 启动时 phys_footprint 2.5 MB |
+| T1.2 | bundle-macos.sh：release 产物打包成 Karu.app（红线：.p8/.env* 不得入 bundle） | scripts/bundle-macos.sh | main（红线，禁止委派） | 脚本产出可双击启动的 .app；bundle 内无密钥文件 | ✅ bundle 96 KB，ad-hoc 签名，密钥检查内置 |
 
 ## M2 编辑核心
 
@@ -79,11 +79,19 @@ ARCHITECTURE.md 预算红线；明确不引入 tree-sitter / SwiftUI / NSDocumen
 | T8.2 | 编码手动重解释：File ▸ Reopen with Encoding（9 种编码，非 lossy 强制解码，脏文档先确认，untitled 禁用；保存仍一律 UTF-8） | App/DocumentController.swift, App/TextEncoding.swift（新）, MainMenu, EditorWindowController, L10n | implementer | 选错编码可换编码重开且不丢文件 | ✅ 与 T8.3 合并实施 |
 | T8.3 | 换行符：LineEnding 纯函数检测/转换（新文件）+ 状态栏显示 + Format ▸ Convert Line Endings（走 undo 通道，当前值打勾）。已知限制：CRLF 文档中打回车仍插 \n（混合换行），后续可在 insertNewline 拦截 | Core/TextModel/LineEnding.swift（新）, Editor/StatusBarView.swift, EditorWindowController, MainMenu, L10n | implementer | 状态栏正确显示；转换可 undo | ✅ 23 新测试，325 全绿；视觉冒烟 OK；主会话修正转换被拒时状态栏误显 |
 | T8.4 | 大纲/符号导航：Cmd+Shift+O 弹窗，声明正则重构为共享模式表 + 一次性带位置扫描（scanSymbolLocations），过滤/回车跳转/Esc；关闭即全量释放（瞬时不常驻） | Core/Completion/WordIndex.swift, Editor/SymbolNavigator.swift（新）, EditorWindowController, MainMenu, L10n | implementer | 符号列表可跳转；常驻增量 ≈ 0 | ✅ 7 新测试，302 全绿；三语文案齐；视觉冒烟 OK |
-| T8.5 | `tinyedit` 命令行工具：shell 脚本随 bundle 分发（Resources/tinyedit，用户 symlink 到 PATH），不存在的路径先建空文件再打开 | scripts/tinyedit（新）, scripts/bundle-macos.sh（红线，main） | main | 终端 `tinyedit file` 可唤起 app 打开文件 | ✅ 实测新建+打开 OK；bundle 1.4 MB |
+| T8.5 | `karu` 命令行工具：shell 脚本随 bundle 分发（Resources/karu，用户 symlink 到 PATH），不存在的路径先建空文件再打开 | scripts/karu（新）, scripts/bundle-macos.sh（红线，main） | main | 终端 `karu file` 可唤起 app 打开文件 | ✅ 实测新建+打开 OK；bundle 1.4 MB |
 
 用户实测背景（T8.1 依据）：同窗口同 200 行 md，两 app 静态均 ~80 MB（窗口 backing
 store 主导，符合预期）；CotEditor 快速滑动内存翻倍但停止即回落、滑动更顺；
-TinyEditor 因 viewport 动态加载，快滑有可见的加载等待痕迹。
+Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
+
+## M9 开源准备（2026-07-21）
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T9.1 | 产品改名 TinyEditor → **Karu**（避开 OpenTiny TinyEditor 撞名；bundle ID `dev.enkin.TinyEditor` 为 APNs 红线**保留不改**，keychain 公证 profile `tinyeditor-notary` 保留）；SPM target/CLI/文档/快照环境变量（KARU_SNAPSHOT）全量更名 | 全仓库（红线脚本主会话改） | main | 全量重建 + 325 测试全绿 + 冒烟 + 基准 | ✅ v0.5.0/build 7 |
+| T9.2 | 修复 T8.3 引入的大文件内存回归：LineEnding.detect 的 `Array(text.unicodeScalars)` 物化整文档（10 MB 文件 +40 MB 常驻，基准 99 MB 爆表）→ 改流式单遍扫描 O(1) 内存 | Core/TextModel/LineEnding.swift | main | 基准 large.py 回到 ≤65 | ✅ 99→59 MB；worktree 二分定位 |
+| T9.3 | 视觉冒烟深色模式误报：夜间系统自动深色使"亮色纸面>50%"阈值失效 → 快照钩子强制 aqua 外观，像素判定确定化 | App/AppDelegate.swift | main | 深色系统下 VISUAL OK | ✅ |
 
 ## 依赖关系
 
@@ -97,7 +105,7 @@ T4.1/T4.2 仅依赖 T1.1；T4.3 依赖 T2.2；T1.2 随时可做；T5.* 最后。
 - 涉及 AppKit 的测试代码需标注 `@MainActor`。
 - **SPM 增量编译偶发陈旧**（本会话已两次遇到）：逻辑正确的改动测试却失败时，先
   `rm -rf .build` 全量重建再判定，不要空转排查。
-- 视觉验证：`TINYEDITOR_SNAPSHOT=<png> .build/<cfg>/TinyEditorApp [file]` 让 app 自渲染快照
+- 视觉验证：`KARU_SNAPSHOT=<png> .build/<cfg>/KaruApp [file]` 让 app 自渲染快照
   （无需录屏权限）；`scripts/visual-smoke.sh` 为防"空白窗口"类回归的守门脚本，UI 改动后必跑。
 
 ## 变更记录
