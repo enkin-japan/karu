@@ -41,7 +41,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        let textView = NSTextView()
+        let textView = EditorTextView()
         textView.isRichText = false
         textView.allowsUndo = true
         textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
