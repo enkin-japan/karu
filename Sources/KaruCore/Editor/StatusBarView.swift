@@ -54,6 +54,16 @@ public final class StatusBarView: NSView {
     /// count label without the caller having to re-supply it.
     private var lastCharacterCount = 0
 
+    /// The position label's normal caret caption, kept so a transient
+    /// `flashMessage(_:)` can restore it after the flash expires (the caret may
+    /// have moved meanwhile — this always holds the latest).
+    private var lastPositionText = ""
+
+    /// Live while a `flashMessage(_:)` note occupies the position label; fires
+    /// once to restore the caret caption, then clears. Transient by design — no
+    /// standing timer survives the 3-second note.
+    private var flashTimer: Timer?
+
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         build()
@@ -127,7 +137,34 @@ public final class StatusBarView: NSView {
     // MARK: - Updates
 
     public func updateCaret(line: Int, column: Int) {
-        positionLabel.stringValue = StatusBarMetrics.caretDescription(line: line, column: column)
+        let text = StatusBarMetrics.caretDescription(line: line, column: column)
+        lastPositionText = text
+        // Don't stomp an in-flight flash note; it restores `lastPositionText`
+        // (kept current above) when it expires.
+        if flashTimer == nil {
+            positionLabel.stringValue = text
+        }
+    }
+
+    /// Briefly replaces the caret caption with `text` (e.g. a silent auto-save
+    /// failure), restoring the caret caption after 3 seconds. Used for
+    /// non-modal, transient feedback that must never interrupt the user.
+    public func flashMessage(_ text: String) {
+        positionLabel.stringValue = text
+        flashTimer?.invalidate()
+        // Timer callbacks are nonisolated; the timer is scheduled on the main
+        // run loop, so hopping back onto the main actor is a formality that
+        // keeps this valid under Swift 6 isolation checking.
+        flashTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.endFlash()
+            }
+        }
+    }
+
+    private func endFlash() {
+        flashTimer = nil
+        positionLabel.stringValue = lastPositionText
     }
 
     public func updateLanguage(_ identifier: String) {

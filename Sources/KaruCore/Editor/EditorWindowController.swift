@@ -249,6 +249,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             name: EditorFontSettings.didChangeNotification,
             object: nil
         )
+        // Focus-loss auto-save (T12.14): scoped to *this* window's resign-key so a
+        // sibling window losing focus never triggers a save here.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(autoSaveOnResignKey(_:)),
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
 
         updateWindowState()
         refreshStatusBar()
@@ -1057,6 +1065,30 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             return true
         }
         return true
+    }
+
+    // MARK: - Focus-loss auto-save (T12.14)
+
+    /// Silently writes the document to its existing file when the window loses
+    /// key focus, if the feature is enabled. Deliberately non-modal:
+    ///
+    /// - Untitled documents (no file URL) are skipped by `AutoSavePolicy` — we
+    ///   never pop a storage panel on focus loss.
+    /// - On write failure we do **not** show an `NSAlert` (a modal sheet the
+    ///   instant focus leaves is exactly the disruption to avoid). The document
+    ///   stays dirty and a transient note flashes in the status bar instead.
+    @objc private func autoSaveOnResignKey(_ note: Notification) {
+        guard AutoSavePolicy.shouldSave(enabled: AutoSavePolicy.defaultEnabled,
+                                        isDirty: documentController.isDirty,
+                                        hasFileURL: documentController.fileURL != nil) else { return }
+        do {
+            try documentController.save(text: textView.string)
+            updateWindowState()
+            refreshStatusBar()
+        } catch {
+            // Silent degrade: keep the dirty state, surface a transient hint only.
+            statusBar.flashMessage(L10n.t(.autosaveFailed))
+        }
     }
 
     // MARK: - Save actions (first-responder targets)

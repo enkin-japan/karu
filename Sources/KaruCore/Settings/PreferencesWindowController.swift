@@ -24,6 +24,7 @@ public final class PreferencesWindowController: NSWindowController {
     private let usesSpacesButton = NSButton()
     private let rainbowButton = NSButton()
     private let autoCloseButton = NSButton()
+    private let autoSaveButton = NSButton()
     private let fontStepper = NSStepper()
     private let fontValueLabel = NSTextField(labelWithString: "")
 
@@ -167,6 +168,11 @@ public final class PreferencesWindowController: NSWindowController {
         autoCloseButton.target = self
         autoCloseButton.action = #selector(autoCloseToggled(_:))
 
+        autoSaveButton.setButtonType(.switch)
+        autoSaveButton.title = L10n.t(.prefAutoSaveOnFocusLoss)
+        autoSaveButton.target = self
+        autoSaveButton.action = #selector(autoSaveToggled(_:))
+
         // Font size row.
         fontStepper.minValue = Double(EditorFontSettings.minFontSize)
         fontStepper.maxValue = Double(EditorFontSettings.maxFontSize)
@@ -192,7 +198,7 @@ public final class PreferencesWindowController: NSWindowController {
             separator(),
             modulesHeader, moduleStack,
             separator(),
-            editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, fontRow,
+            editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, autoSaveButton, fontRow,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -230,6 +236,7 @@ public final class PreferencesWindowController: NSWindowController {
         usesSpacesButton.state = indent.usesSpaces ? .on : .off
         rainbowButton.state = IndentRainbow.defaultEnabled ? .on : .off
         autoCloseButton.state = AutoClosePairs.defaultEnabled ? .on : .off
+        autoSaveButton.state = AutoSavePolicy.defaultEnabled ? .on : .off
 
         languagePopup.selectItem(at: 0)
         reloadIndentWidth()
@@ -303,6 +310,7 @@ public final class PreferencesWindowController: NSWindowController {
         usesSpacesButton.title = L10n.t(.prefInsertSpaces)
         rainbowButton.title = L10n.t(.prefIndentRainbow)
         autoCloseButton.title = L10n.t(.prefAutoClosePairs)
+        autoSaveButton.title = L10n.t(.prefAutoSaveOnFocusLoss)
         for (i, module) in FeatureModule.allCases.enumerated() {
             moduleButtons[i].title = module.displayName
         }
@@ -337,6 +345,12 @@ public final class PreferencesWindowController: NSWindowController {
         UserDefaults.standard.set(enabled, forKey: AutoClosePairs.enabledKey)
         // Push to open editors so the toggle takes effect without reopening.
         Self.forEachEditorTextView { $0.autoClosePairsEnabled = enabled }
+    }
+
+    @objc private func autoSaveToggled(_ sender: NSButton) {
+        // Read live from UserDefaults by each window's focus-loss handler, so no
+        // per-editor push is needed — just persist the flag.
+        UserDefaults.standard.set(sender.state == .on, forKey: AutoSavePolicy.enabledKey)
     }
 
     @objc private func fontSizeChanged(_ sender: NSStepper) {

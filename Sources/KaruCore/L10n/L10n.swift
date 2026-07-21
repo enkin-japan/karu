@@ -77,7 +77,10 @@ public enum L10nKey: String, CaseIterable, Sendable {
     // Preferences.
     case prefTitle, prefModules, prefEditor
     case prefIndentWidthLabel, prefInsertSpaces, prefIndentRainbow, prefAutoClosePairs, prefFontSizeLabel
+    case prefAutoSaveOnFocusLoss
     case prefLanguageLabel, prefLanguageSystem
+    // Transient status-bar note when a focus-loss auto-save fails (T12.14).
+    case autosaveFailed
     // Feature-module display names.
     case moduleHighlight, moduleCompletion, moduleFormat
     // Status bar.

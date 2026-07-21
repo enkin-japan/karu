@@ -126,9 +126,12 @@ extension L10n {
         .prefInsertSpaces: "Insert spaces for Tab",
         .prefIndentRainbow: "Indent rainbow",
         .prefAutoClosePairs: "Auto-close brackets and quotes",
+        .prefAutoSaveOnFocusLoss: "Auto-save when focus is lost",
         .prefFontSizeLabel: "Font size:",
         .prefLanguageLabel: "Language:",
         .prefLanguageSystem: "System",
+
+        .autosaveFailed: "Auto-save failed",
 
         .moduleHighlight: "Syntax Highlighting",
         .moduleCompletion: "Completion",
@@ -257,9 +260,12 @@ extension L10n {
         .prefInsertSpaces: "用空格代替 Tab",
         .prefIndentRainbow: "缩进彩虹",
         .prefAutoClosePairs: "自动闭合括号和引号",
+        .prefAutoSaveOnFocusLoss: "失去焦点时自动保存",
         .prefFontSizeLabel: "字体大小：",
         .prefLanguageLabel: "语言：",
         .prefLanguageSystem: "跟随系统",
+
+        .autosaveFailed: "自动保存失败",
 
         .moduleHighlight: "语法高亮",
         .moduleCompletion: "代码补全",
@@ -388,9 +394,12 @@ extension L10n {
         .prefInsertSpaces: "タブをスペースに変換",
         .prefIndentRainbow: "インデントレインボー",
         .prefAutoClosePairs: "括弧と引用符を自動で閉じる",
+        .prefAutoSaveOnFocusLoss: "フォーカスを失ったときに自動保存",
         .prefFontSizeLabel: "フォントサイズ：",
         .prefLanguageLabel: "言語：",
         .prefLanguageSystem: "システムに従う",
+
+        .autosaveFailed: "自動保存に失敗しました",
 
         .moduleHighlight: "シンタックスハイライト",
         .moduleCompletion: "コード補完",

@@ -251,6 +251,8 @@ public final class EditorTextView: NSTextView {
         // Invisible / dangerous-character warning boxes: always on, storage-free,
         // viewport-only (drawn every frame from a fresh scan).
         drawUnicodeAlerts(in: rect)
+        // CSS colour swatches: storage-free, viewport-only, CSS-only.
+        drawColorSwatches(in: rect)
         guard indentRainbowEnabled,
               let layoutManager,
               let container = textContainer else { return }
@@ -419,6 +421,46 @@ public final class EditorTextView: NSTextView {
             guard framed.width > 0, framed.height > 0 else { continue }
             let path = NSBezierPath(roundedRect: framed, xRadius: 2, yRadius: 2)
             path.lineWidth = 1
+            path.stroke()
+        }
+    }
+
+    // MARK: CSS colour swatches (T12.15)
+
+    /// Paints an 8×8pt rounded swatch just before every CSS colour literal in the
+    /// dirty rect, but only while the CSS language is active. Viewport-only and
+    /// storage-free: the visible character range is scanned fresh
+    /// (`ColorDecorator.colorMatches`) each draw and each swatch is positioned
+    /// from the layout manager; nothing is retained. A 0.5pt separator stroke
+    /// keeps white / transparent swatches legible over the page.
+    private func drawColorSwatches(in rect: NSRect) {
+        guard languageIdentifier == "css",
+              let layoutManager, let container = textContainer else { return }
+        let ns = string as NSString
+        guard ns.length > 0 else { return }
+
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        let matches = ColorDecorator.colorMatches(in: string, range: charRange)
+        guard !matches.isEmpty else { return }
+
+        let origin = textContainerOrigin
+        let size: CGFloat = 8
+        for match in matches {
+            let gRange = layoutManager.glyphRange(forCharacterRange: match.range, actualCharacterRange: nil)
+            var box = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
+            box.origin.x += origin.x
+            box.origin.y += origin.y
+            let swatch = NSRect(x: box.minX - size - 2,
+                                y: box.midY - size / 2,
+                                width: size, height: size)
+            guard swatch.width > 0, swatch.height > 0 else { continue }
+            let path = NSBezierPath(roundedRect: swatch, xRadius: 2, yRadius: 2)
+            NSColor(srgbRed: match.color.r, green: match.color.g,
+                    blue: match.color.b, alpha: match.color.a).setFill()
+            path.fill()
+            NSColor.separatorColor.setStroke()
+            path.lineWidth = 0.5
             path.stroke()
         }
     }
