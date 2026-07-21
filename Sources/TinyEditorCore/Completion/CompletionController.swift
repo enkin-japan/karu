@@ -189,6 +189,13 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     public func handleCompletionKeyDown(_ event: NSEvent) -> Bool {
         guard isCompletionActive else { return false }
+        // Modified arrows (Cmd+↑/↓ jump to document start/end, Option+↑/↓ move
+        // by paragraph) belong to the text view: dismiss and let them through.
+        if [125, 126].contains(event.keyCode),
+           !event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
+            dismiss()
+            return false
+        }
         switch event.keyCode {
         case 126: moveSelection(-1); return true   // up
         case 125: moveSelection(1);  return true   // down
