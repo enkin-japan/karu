@@ -1,0 +1,21 @@
+# Reference project (not part of TinyEditor)
+monaco-editor/
+
+# macOS
+.DS_Store
+
+# Xcode / Swift
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+
+# Secrets
+.env
+.env.*
+*.p8
+.secrets.env
