@@ -69,8 +69,18 @@ T4.1/T4.2 仅依赖 T1.1；T4.3 依赖 T2.2；T1.2 随时可做；T5.* 最后。
 - 本机仅有 Command Line Tools，无完整 Xcode：**没有 XCTest**，单元测试一律用 Swift Testing
   （`import Testing`、`@Test`、`#expect`）；构建/测试命令为 `swift build` / `swift test`。
 - 涉及 AppKit 的测试代码需标注 `@MainActor`。
+- **SPM 增量编译偶发陈旧**（本会话已两次遇到）：逻辑正确的改动测试却失败时，先
+  `rm -rf .build` 全量重建再判定，不要空转排查。
+- 视觉验证：`TINYEDITOR_SNAPSHOT=<png> .build/<cfg>/TinyEditorApp [file]` 让 app 自渲染快照
+  （无需录屏权限）；`scripts/visual-smoke.sh` 为防"空白窗口"类回归的守门脚本，UI 改动后必跑。
 
 ## 变更记录
+
+- 2026-07-21 v0.2.1 紧急修复（main 直接处理，含根因分析）：①空白窗口回归——StatusBarView 的
+  draw 覆写在 macOS 26 beta 合成管线下使整窗渲染路径切换，NSTextView/NSRulerView 不上屏；
+  git bisect 定位到 T6.3，自截图钩子逐项排除后锁定；已加 visual-smoke.sh 防复发。②打开非
+  UTF-8 文件（UTF-16/Shift-JIS/GB18030）报错——编码链改为 BOM 检测（仅信任 Unicode 系）+
+  NSString 统计检测。③空未命名文档关闭不再弹确认。256 测试全绿；公证出包 940 KB。
 
 - 2026-07-21 M6 用户反馈迭代收官（v0.2.0）：缩进彩虹辨识度、语言自动嗅探+手动覆盖、工具栏+状态栏+查找栏打磨、中日英三语实时切换、App 图标。251 测试全绿。v0.2.0 已签名公证（Accepted）出 DMG 932 KB。
 
