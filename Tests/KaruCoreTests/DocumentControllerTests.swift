@@ -154,3 +154,90 @@ private func makeTempURL(ext: String = "txt") -> URL {
     try doc.save(text: "混合 テキスト mixed", to: url)
     #expect(try String(contentsOf: url, encoding: .utf8) == "混合 テキスト mixed")
 }
+
+// MARK: - Rename (T11.4)
+
+@Test func renameMovesFileAndAdoptsNewURL() throws {
+    let dir = FileManager.default.temporaryDirectory
+    let url = dir.appendingPathComponent("KaruRename-\(UUID().uuidString).txt")
+    let newName = "KaruRenamed-\(UUID().uuidString).md"
+    let expected = dir.appendingPathComponent(newName)
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: expected)
+    }
+    try Data("payload".utf8).write(to: url)
+
+    let doc = DocumentController()
+    try doc.load(from: url)
+    let newURL = try doc.rename(to: newName)
+
+    #expect(newURL == expected)
+    #expect(doc.fileURL == expected)
+    #expect(FileManager.default.fileExists(atPath: expected.path))
+    #expect(!FileManager.default.fileExists(atPath: url.path))
+    #expect(try String(contentsOf: expected, encoding: .utf8) == "payload")
+}
+
+@Test func renameToSameNameIsANoOpSuccess() throws {
+    let url = makeTempURL(ext: "txt")
+    defer { try? FileManager.default.removeItem(at: url) }
+    try Data("x".utf8).write(to: url)
+
+    let doc = DocumentController()
+    try doc.load(from: url)
+    let result = try doc.rename(to: url.lastPathComponent)
+    #expect(result == url)
+    #expect(doc.fileURL == url)
+    #expect(FileManager.default.fileExists(atPath: url.path))
+}
+
+@Test func renameRejectsEmptyName() throws {
+    let url = makeTempURL(ext: "txt")
+    defer { try? FileManager.default.removeItem(at: url) }
+    try Data("x".utf8).write(to: url)
+    let doc = DocumentController()
+    try doc.load(from: url)
+    #expect(throws: DocumentController.RenameError.emptyName) {
+        try doc.rename(to: "   ")
+    }
+}
+
+@Test func renameRejectsPathSeparator() throws {
+    let url = makeTempURL(ext: "txt")
+    defer { try? FileManager.default.removeItem(at: url) }
+    try Data("x".utf8).write(to: url)
+    let doc = DocumentController()
+    try doc.load(from: url)
+    #expect(throws: DocumentController.RenameError.invalidName) {
+        try doc.rename(to: "sub/evil.txt")
+    }
+}
+
+@Test func renameRejectsExistingTarget() throws {
+    let dir = FileManager.default.temporaryDirectory
+    let url = dir.appendingPathComponent("KaruRename-\(UUID().uuidString).txt")
+    let occupied = dir.appendingPathComponent("KaruOccupied-\(UUID().uuidString).txt")
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: occupied)
+    }
+    try Data("a".utf8).write(to: url)
+    try Data("b".utf8).write(to: occupied)
+
+    let doc = DocumentController()
+    try doc.load(from: url)
+    #expect(throws: DocumentController.RenameError.targetExists) {
+        try doc.rename(to: occupied.lastPathComponent)
+    }
+    // The original file is untouched after a rejected rename.
+    #expect(doc.fileURL == url)
+    #expect(FileManager.default.fileExists(atPath: url.path))
+}
+
+@Test func renameWithoutURLThrows() {
+    let doc = DocumentController()
+    #expect(throws: DocumentController.RenameError.noFileURL) {
+        try doc.rename(to: "whatever.txt")
+    }
+}

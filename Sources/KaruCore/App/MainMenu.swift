@@ -12,6 +12,10 @@ enum MainMenu {
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
+        // Sparkle one-click update (M11); no-ops with a beep in unbundled runs.
+        appMenu.addItem(withTitle: L10n.t(.appCheckForUpdates),
+                        action: #selector(AppDelegate.checkForUpdates(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L10n.t(.appSettings),
                         action: #selector(AppDelegate.showPreferences(_:)), keyEquivalent: ",")
         appMenu.addItem(.separator())
@@ -86,6 +90,13 @@ enum MainMenu {
                                             action: #selector(EditorWindowController.jumpToSymbol(_:)),
                                             keyEquivalent: "o")
         jumpToSymbol.keyEquivalentModifierMask = [.command, .shift]
+
+        // Go to Line (Ctrl+G): aligns with VS Code's macOS key binding. Targets
+        // the first responder (EditorWindowController).
+        let goToLine = editMenu.addItem(withTitle: L10n.t(.menuGoToLine),
+                                        action: #selector(EditorWindowController.goToLine(_:)),
+                                        keyEquivalent: "g")
+        goToLine.keyEquivalentModifierMask = [.control]
 
         // Format menu: targets the first responder (EditorWindowController),
         // which gates the item on the `format` module + supported language via

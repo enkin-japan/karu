@@ -7,7 +7,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// brought forward on subsequent opens.
     private lazy var preferencesController = PreferencesWindowController()
 
+    /// Sparkle updater (M11). Created in `applicationDidFinishLaunching` only
+    /// when running from a bundled .app — the bare test/benchmark binary has no
+    /// feed URL or signing key and must not start an updater.
+    private var updateController: UpdateController?
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        if UpdateController.isSupported {
+            updateController = UpdateController()
+        }
         NSApp.mainMenu = MainMenu.build()
 
         // Rebuild the main menu in the new language on a live switch; open
@@ -200,9 +208,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             status: values.ubiquitousItemDownloadingStatus)
     }
 
+    /// Menu target for "Check for Updates…". No-ops (beep) in unbundled runs
+    /// where the updater cannot exist.
+    @objc public func checkForUpdates(_ sender: Any?) {
+        MainActor.assumeIsolated {
+            guard let updateController else { NSSound.beep(); return }
+            updateController.checkForUpdates(sender)
+        }
+    }
+
     @objc public func showPreferences(_ sender: Any?) {
+        NSApp.activate(ignoringOtherApps: true)
         preferencesController.showWindow(nil)
-        preferencesController.window?.makeKeyAndOrderFront(nil)
+        if let window = preferencesController.window {
+            // The panel must land in front of the editor no matter what: follow
+            // the user to the active Space (it may have been left open on
+            // another one) and force it above the key editor window — plain
+            // makeKeyAndOrderFront alone left it stacked behind (user bug).
+            window.collectionBehavior.insert(.moveToActiveSpace)
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
     }
 
     private func makeController() -> EditorWindowController {

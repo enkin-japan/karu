@@ -18,6 +18,10 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     private let modulePopup = NSPopUpButton(frame: .zero, pullsDown: true)
     private let settingsButton = NSButton()
 
+    /// Centre-of-titlebar filename capsule (T11.4). Owned here so it can be a
+    /// toolbar item; its rename requests are forwarded to the window controller.
+    let titleControl = TitleRenameControl()
+
     /// Sentinel tag marking the "Auto" language item (identifiers are strings on
     /// `representedObject`, so a tag keeps Auto unambiguous).
     private static let autoLanguageTag = -1
@@ -25,6 +29,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     private static let language = NSToolbarItem.Identifier("dev.enkin.toolbar.language")
     private static let indent = NSToolbarItem.Identifier("dev.enkin.toolbar.indent")
     private static let format = NSToolbarItem.Identifier("dev.enkin.toolbar.format")
+    private static let title = NSToolbarItem.Identifier("dev.enkin.toolbar.title")
     private static let modules = NSToolbarItem.Identifier("dev.enkin.toolbar.modules")
     private static let settings = NSToolbarItem.Identifier("dev.enkin.toolbar.settings")
 
@@ -115,6 +120,17 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         settingsButton.target = self
         settingsButton.action = #selector(settingsTapped)
         settingsButton.toolTip = L10n.t(.appSettings)
+
+        // Filename capsule: rename requests flow back to the window controller,
+        // the single place the document's URL actually changes.
+        titleControl.onCommit = { [weak self] newName in
+            self?.windowController?.renameFile(to: newName)
+        }
+    }
+
+    /// Refreshes the centre title capsule (name / dirty marker / visibility).
+    func updateTitle(fileName: String, hasFile: Bool, isDirty: Bool) {
+        titleControl.configure(fileName: fileName, hasFile: hasFile, isDirty: isDirty)
     }
 
     /// Re-pulls tooltips, the Format button title, the module pull-down title, and
@@ -256,6 +272,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         case Self.language: return viewItem(itemIdentifier, label: L10n.t(.menuLanguage), view: languagePopup)
         case Self.indent:   return viewItem(itemIdentifier, label: L10n.t(.toolbarIndentLabel), view: indentPopup)
         case Self.format:   return viewItem(itemIdentifier, label: L10n.t(.formatAction), view: formatButton)
+        case Self.title:    return viewItem(itemIdentifier, label: "", view: titleControl)
         case Self.modules:  return viewItem(itemIdentifier, label: L10n.t(.prefModules), view: modulePopup)
         case Self.settings: return viewItem(itemIdentifier, label: L10n.t(.toolbarSettingsLabel), view: settingsButton)
         default: return nil
@@ -263,8 +280,11 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        // The filename capsule is centred between two flexible spaces so it sits
+        // roughly at the middle of the titlebar, VS Code style.
         [Self.language, Self.indent, Self.format,
-         .flexibleSpace, Self.modules, Self.settings]
+         .flexibleSpace, Self.title, .flexibleSpace,
+         Self.modules, Self.settings]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {

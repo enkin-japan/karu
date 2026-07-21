@@ -44,6 +44,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// it closes, so it keeps no resident symbol index (ARCHITECTURE.md §3.4).
     private var symbolNavigator: SymbolNavigator?
 
+    /// Transient "Go to Line" panel (T11.5). Like the symbol navigator, held only
+    /// while its panel is on screen and dropped the moment it closes, so it keeps
+    /// no resident state (ARCHITECTURE.md §3.4).
+    private var goToLineController: GoToLineController?
+
     /// True once the user has manually picked a language from the Language menu.
     /// Suppresses all automatic detection until they choose Auto again.
     private var userOverrodeLanguage = false
@@ -481,9 +486,53 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     }
 
     private func updateWindowState() {
+        let hasFile = documentController.fileURL != nil
         window?.title = displayName
         window?.representedURL = documentController.fileURL
         window?.isDocumentEdited = documentController.isDirty
+        // Hide the native title only when a file capsule can replace it; an
+        // untitled window keeps its native "Untitled" title (the capsule hides).
+        window?.titleVisibility = hasFile ? .hidden : .visible
+        toolbarController?.updateTitle(fileName: documentController.displayName,
+                                       hasFile: hasFile,
+                                       isDirty: documentController.isDirty)
+    }
+
+    // MARK: - Rename (titlebar capsule → DocumentController)
+
+    /// Renames the current file in place from the titlebar capsule (T11.4).
+    /// Delegates the filesystem work and validation to `DocumentController`,
+    /// then re-syncs the window chrome (title / proxy icon / capsule). Validation
+    /// failures are surfaced as a localized alert.
+    func renameFile(to newName: String) {
+        do {
+            let newURL = try documentController.rename(to: newName)
+            window?.representedURL = newURL
+            updateWindowState()
+        } catch let error as DocumentController.RenameError {
+            presentRenameError(error)
+        } catch {
+            presentRenameError(.moveFailed(error.localizedDescription))
+        }
+    }
+
+    private func presentRenameError(_ error: DocumentController.RenameError) {
+        let message: String
+        switch error {
+        case .emptyName:    message = L10n.t(.renameErrorEmpty)
+        case .invalidName:  message = L10n.t(.renameErrorInvalid)
+        case .targetExists: message = L10n.t(.renameErrorExists)
+        case .noFileURL, .moveFailed: message = L10n.t(.renameErrorGeneric)
+        }
+        let alert = NSAlert()
+        alert.messageText = L10n.t(.renameErrorTitle)
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: nil)
+        } else {
+            alert.runModal()
+        }
     }
 
     // MARK: - Find actions (first-responder targets)
@@ -520,6 +569,20 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let identifier = highlightEngine.currentLanguageIdentifier ?? currentLanguageIdentifierValue
         navigator.present(languageIdentifier: identifier) { [weak self] in
             self?.symbolNavigator = nil
+        }
+    }
+
+    // MARK: - Go to Line (first-responder target)
+
+    /// Opens the transient "Go to Line" panel (Ctrl+G). Reuses the window's
+    /// shared `LineIndex` to jump; the controller is released when its panel
+    /// closes, so nothing survives the operation (ARCHITECTURE.md §3.4).
+    @objc public func goToLine(_ sender: Any?) {
+        guard goToLineController == nil else { return }
+        let controller = GoToLineController(textView: textView, lineIndex: lineIndex)
+        goToLineController = controller
+        controller.present { [weak self] in
+            self?.goToLineController = nil
         }
     }
 

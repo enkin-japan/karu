@@ -15,6 +15,16 @@ cp assets/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 # 终端辅助工具（T8.5）：用户可从 bundle 内 symlink 到 PATH 使用
 install -m 0755 scripts/karu "$APP_DIR/Contents/Resources/karu"
 
+# Sparkle 一键更新框架（M11）：SPM binary artifact → Contents/Frameworks。
+# 可执行文件带 @executable_path/../Frameworks rpath（见 Package.swift）。
+SPARKLE_FW=$(ls -d .build/artifacts/*/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework 2>/dev/null | head -1)
+if [[ -z "$SPARKLE_FW" ]]; then
+    echo "ERROR: Sparkle.framework artifact not found (run swift build first)" >&2
+    exit 1
+fi
+mkdir -p "$APP_DIR/Contents/Frameworks"
+cp -R "$SPARKLE_FW" "$APP_DIR/Contents/Frameworks/"
+
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -70,9 +80,15 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.6.0</string>
+	<string>0.7.0</string>
 	<key>CFBundleVersion</key>
-	<string>8</string>
+	<string>9</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/enkin-japan/karu/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>rO8YyJT++AQ8w9YIhWVaY2YTlLvdSZIXCZrPeR1A2jI=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
@@ -91,13 +107,25 @@ fi
 
 # 签名：默认 Developer ID + hardened runtime（公证要求）；
 # SIGN_IDENTITY=- 可切回 ad-hoc 本地开发签名。
+# Sparkle 组件必须由内向外显式签名（Apple 不建议 --deep）：
+# XPC 服务 → Autoupdate → Updater.app → 框架本体 → app。
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
-if [[ "$SIGN_IDENTITY" == "-" ]]; then
-    codesign --force --deep --sign - "$APP_DIR"
-else
-    codesign --force --deep --options runtime --timestamp \
-        --sign "$SIGN_IDENTITY" "$APP_DIR"
-fi
+FW="$APP_DIR/Contents/Frameworks/Sparkle.framework"
+sign_component() {
+    local path=$1
+    if [[ "$SIGN_IDENTITY" == "-" ]]; then
+        codesign --force --sign - --preserve-metadata=entitlements "$path"
+    else
+        codesign --force --options runtime --timestamp \
+            --preserve-metadata=entitlements --sign "$SIGN_IDENTITY" "$path"
+    fi
+}
+sign_component "$FW/Versions/B/XPCServices/Downloader.xpc"
+sign_component "$FW/Versions/B/XPCServices/Installer.xpc"
+sign_component "$FW/Versions/B/Autoupdate"
+sign_component "$FW/Versions/B/Updater.app"
+sign_component "$FW"
+sign_component "$APP_DIR"
 codesign --verify --strict "$APP_DIR"
 
 echo "OK: $APP_DIR"

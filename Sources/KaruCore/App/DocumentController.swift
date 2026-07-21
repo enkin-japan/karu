@@ -31,6 +31,23 @@ public final class DocumentController {
         case decodingFailed
     }
 
+    /// Failure modes of `rename(to:)`. Kept a distinct type so the UI layer can
+    /// map each case onto its own localized alert (T11.4). `Equatable` so tests
+    /// can assert the exact branch taken.
+    public enum RenameError: Error, Equatable {
+        /// The document has never been saved, so there is nothing on disk to move.
+        case noFileURL
+        /// The proposed name was empty (or all whitespace).
+        case emptyName
+        /// The proposed name contained a path separator ("/").
+        case invalidName
+        /// A different file already occupies the target name in the same folder.
+        case targetExists
+        /// The move itself failed (permissions, I/O, …); carries the underlying
+        /// error's description for the alert.
+        case moveFailed(String)
+    }
+
     // MARK: - Dirty state machine
 
     /// Called by the editor whenever the text changes.
@@ -131,5 +148,47 @@ public final class DocumentController {
 
     private func write(_ text: String, to url: URL) throws {
         try Data(text.utf8).write(to: url, options: .atomic)
+    }
+
+    // MARK: - Rename
+
+    /// Renames the current file, in its existing folder, to `newName` (which
+    /// includes the extension) and adopts the new URL. Returns the new URL.
+    ///
+    /// Validation (all surfaced as `RenameError` so the UI can localize them):
+    /// - the document must have a URL (`noFileURL`);
+    /// - the trimmed name must be non-empty (`emptyName`);
+    /// - the name must not contain a path separator (`invalidName`);
+    /// - a *different* existing file must not already occupy the target
+    ///   (`targetExists`).
+    ///
+    /// Renaming to the current name is a no-op that succeeds (returns the
+    /// unchanged URL). The dirty flag is untouched — a rename neither loses nor
+    /// commits pending edits.
+    @discardableResult
+    public func rename(to newName: String) throws -> URL {
+        guard let current = fileURL else { throw RenameError.noFileURL }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw RenameError.emptyName }
+        guard !trimmed.contains("/") else { throw RenameError.invalidName }
+
+        let target = current.deletingLastPathComponent().appendingPathComponent(trimmed)
+
+        // No change (same name) → succeed without touching the filesystem.
+        if target.standardizedFileURL == current.standardizedFileURL {
+            return current
+        }
+
+        if FileManager.default.fileExists(atPath: target.path) {
+            throw RenameError.targetExists
+        }
+
+        do {
+            try FileManager.default.moveItem(at: current, to: target)
+        } catch {
+            throw RenameError.moveFailed(error.localizedDescription)
+        }
+        fileURL = target
+        return target
     }
 }

@@ -12,6 +12,7 @@ extension L10n {
 
     static let enTable: [L10nKey: String] = [
         .appAbout: "About %@",
+        .appCheckForUpdates: "Check for Updates…",
         .appSettings: "Settings…",
         .appHide: "Hide %@",
         .appQuit: "Quit %@",
@@ -47,6 +48,15 @@ extension L10n {
         .menuJumpToSymbol: "Jump to Symbol…",
         .symbolFilterPlaceholder: "Filter symbols",
         .symbolNone: "No symbols",
+
+        .menuGoToLine: "Go to Line…",
+        .goToLinePlaceholder: "Line number",
+
+        .renameErrorTitle: "Cannot rename file",
+        .renameErrorEmpty: "The file name cannot be empty.",
+        .renameErrorInvalid: "The file name cannot contain “/”.",
+        .renameErrorExists: "A file with that name already exists.",
+        .renameErrorGeneric: "The file could not be renamed.",
 
         .menuFormat: "Format",
         .menuFormatDocument: "Format Document",
@@ -110,6 +120,7 @@ extension L10n {
 
     static let zhHansTable: [L10nKey: String] = [
         .appAbout: "关于 %@",
+        .appCheckForUpdates: "检查更新…",
         .appSettings: "设置…",
         .appHide: "隐藏 %@",
         .appQuit: "退出 %@",
@@ -145,6 +156,15 @@ extension L10n {
         .menuJumpToSymbol: "跳转到符号…",
         .symbolFilterPlaceholder: "过滤符号",
         .symbolNone: "无符号",
+
+        .menuGoToLine: "跳转到行…",
+        .goToLinePlaceholder: "行号",
+
+        .renameErrorTitle: "无法重命名文件",
+        .renameErrorEmpty: "文件名不能为空。",
+        .renameErrorInvalid: "文件名不能包含“/”。",
+        .renameErrorExists: "已存在同名文件。",
+        .renameErrorGeneric: "无法重命名该文件。",
 
         .menuFormat: "格式",
         .menuFormatDocument: "格式化文档",
@@ -208,6 +228,7 @@ extension L10n {
 
     static let jaTable: [L10nKey: String] = [
         .appAbout: "%@ について",
+        .appCheckForUpdates: "アップデートを確認…",
         .appSettings: "設定…",
         .appHide: "%@ を隠す",
         .appQuit: "%@ を終了",
@@ -243,6 +264,15 @@ extension L10n {
         .menuJumpToSymbol: "シンボルへジャンプ…",
         .symbolFilterPlaceholder: "シンボルを絞り込む",
         .symbolNone: "シンボルなし",
+
+        .menuGoToLine: "行へ移動…",
+        .goToLinePlaceholder: "行番号",
+
+        .renameErrorTitle: "ファイル名を変更できません",
+        .renameErrorEmpty: "ファイル名を空にすることはできません。",
+        .renameErrorInvalid: "ファイル名に「/」を含めることはできません。",
+        .renameErrorExists: "同じ名前のファイルがすでに存在します。",
+        .renameErrorGeneric: "ファイル名を変更できませんでした。",
 
         .menuFormat: "フォーマット",
         .menuFormatDocument: "ドキュメントをフォーマット",

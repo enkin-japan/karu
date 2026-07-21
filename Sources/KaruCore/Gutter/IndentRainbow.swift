@@ -85,6 +85,38 @@ public enum IndentRainbow {
         return result
     }
 
+    // MARK: - Indent space dots (VS Code style)
+
+    /// Diameter, in points, of the small dot drawn at the centre of each leading
+    /// space so the space count is countable at a glance.
+    public static let dotDiameter: CGFloat = 2.5
+
+    /// Column offsets (relative to the line start) of every leading *space*
+    /// character. Tabs are deliberately excluded — they carry no dot — and the
+    /// scan stops at the first non-whitespace character, so the returned columns
+    /// never fall on the line's content. Pure and storage-free: recomputed for
+    /// visible lines at draw time (ARCHITECTURE.md §3.2).
+    public static func leadingSpaceColumns(forLine line: String) -> [Int] {
+        let ns = line as NSString
+        var columns: [Int] = []
+        var col = 0
+        loop: while col < ns.length {
+            switch ns.character(at: col) {
+            case 0x20: columns.append(col) // space → dot
+            case 0x09: break               // tab → no dot, keep scanning
+            default: break loop            // content → stop
+            }
+            col += 1
+        }
+        return columns
+    }
+
+    /// Colour of the indent space dots: a low-contrast label colour that stays
+    /// legible — but unobtrusive — in both light and dark appearances.
+    public static func dotColor() -> NSColor {
+        NSColor.secondaryLabelColor.withAlphaComponent(0.45)
+    }
+
     /// Base alpha used for the fill of each indent block.
     private static let fillAlpha: CGFloat = 0.16
 

@@ -103,6 +103,16 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T10.4 | iCloud 未下载文件：双击触发下载但不打开、再次双击开双窗 → 下载中窗口 + 轮询完成自动载入 + 同 URL 去重 | App/AppDelegate.swift, Editor/ | implementer | 去重/占位名换算单测；双击两次 windows=1 | ✅ 18 新测试；无 iCloud 测试环境，真机行为待用户确认 |
 | T10.5 | 开源准备：MIT LICENSE、git remote（github.com/enkin-japan/karu）、README、首个 Release | LICENSE, README.md | main | push 成功、Release 挂 DMG | ✅ v0.6.0 |
 
+## M11 一键更新 + 用户反馈第七轮（2026-07-21）
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T11.1 | Sparkle 2 一键更新：SPM 依赖 + rpath、框架嵌入与由内向外签名（红线脚本）、EdDSA 密钥（私钥 keychain）、Info.plist 三键、发布脚本产 Karu.zip 签名 + appcast.xml；体积预算修订 5→10 MB（内存不动，实测集成后 32 MB 持平） | Package.swift, App/UpdateController.swift（新）, AppDelegate, MainMenu+L10n（待）, scripts/bundle-macos.sh, scripts/release-macos.sh, docs/ARCHITECTURE.md | main（红线） | 更新弹窗可用；mem-benchmark 不涨 | ✅ 菜单接线完成；集成后启动 32 MB 持平；v0.7.0 首发自动更新 |
+| T11.2 | 设置窗口被主窗口压住：activate + moveToActiveSpace + orderFrontRegardless | App/AppDelegate.swift | main | 任何状态下点设置必到最前 | ✅ |
+| T11.3 | 缩进空格灰色圆点（VS Code 风格，绘制期现场算，随 rainbow 开关） | Editor/EditorTextView.swift, Gutter/IndentRainbow.swift | implementer | 深浅色快照可见 | ✅ 快照确认 |
+| T11.4 | 标题栏文件名胶囊点击改名（方框+背景色差暗示；DocumentController.rename 可单测；untitled 不启用） | Editor/TitleRenameControl（新）等 | implementer | rename 校验单测；快照确认胶囊 | ✅ 6 rename 测试 |
+| T11.5 | Ctrl+G 直达某行（预算评估：瞬时面板+复用 LineIndex，常驻 ≈ 0，绿灯）；键位对齐 VS Code | Editor/GoToLineController（新）, MainMenu, L10n | implementer | parseLineInput 单测；跳转选中滚动正确 | ✅ 370 全绿 |
+
 ## 依赖关系
 
 T1.1 → T2.1 → T2.2/T2.3/T2.4（可并行）→ T3.1 → T3.2/T3.3（可并行）→ T3.4/T3.5

@@ -23,7 +23,7 @@ public enum AppLanguage: String, CaseIterable, Sendable {
 /// test that guards against a missing translation in any of the three tables.
 public enum L10nKey: String, CaseIterable, Sendable {
     // App menu (carry the app name per macOS convention).
-    case appAbout, appSettings, appHide, appQuit
+    case appAbout, appCheckForUpdates, appSettings, appHide, appQuit
     // File menu.
     case menuFile, menuNew, menuOpen, menuClose, menuSave, menuSaveAs
     // Reopen-with-encoding submenu + its alerts.
@@ -36,6 +36,10 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuFind, menuFindEllipsis, menuFindNext, menuFindPrevious, menuUseSelectionForFind
     // Jump-to-symbol navigator.
     case menuJumpToSymbol, symbolFilterPlaceholder, symbolNone
+    // Go-to-line panel.
+    case menuGoToLine, goToLinePlaceholder
+    // Title-bar rename (filename capsule) errors.
+    case renameErrorTitle, renameErrorEmpty, renameErrorInvalid, renameErrorExists, renameErrorGeneric
     // Format menu.
     case menuFormat, menuFormatDocument
     // Convert-line-endings submenu.

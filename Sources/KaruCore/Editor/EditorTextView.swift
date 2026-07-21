@@ -287,6 +287,29 @@ public final class EditorTextView: NSTextView {
                     separatorRect.fill()
                 }
             }
+
+            // VS Code-style indent dots: a small dot at the centre of each
+            // leading space so the number of spaces is countable at a glance.
+            // Tabs get none. Painted live over the rainbow fill for visible
+            // lines only — nothing is stored per line.
+            let spaceColumns = IndentRainbow.leadingSpaceColumns(forLine: lineString)
+            if !spaceColumns.isEmpty {
+                let diameter = IndentRainbow.dotDiameter
+                IndentRainbow.dotColor().setFill()
+                for column in spaceColumns {
+                    let charRange = NSRange(location: loc + column, length: 1)
+                    let gRange = layoutManager.glyphRange(forCharacterRange: charRange,
+                                                          actualCharacterRange: nil)
+                    var charRect = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
+                    charRect.origin.x += origin.x
+                    charRect.origin.y += origin.y
+                    let dotRect = NSRect(x: charRect.midX - diameter / 2,
+                                         y: charRect.midY - diameter / 2,
+                                         width: diameter, height: diameter)
+                    NSBezierPath(ovalIn: dotRect).fill()
+                }
+            }
+
             let next = lineRange.location + lineRange.length
             if next <= loc { break } // guard against zero-length final line
             loc = next
