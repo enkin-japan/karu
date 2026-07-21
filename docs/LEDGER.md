@@ -60,6 +60,11 @@ T4.1/T4.2 仅依赖 T1.1；T4.3 依赖 T2.2；T1.2 随时可做；T5.* 最后。
 
 ## 变更记录
 
+- 2026-07-21 发布流水线（main，红线任务）：Bundle ID 定为 dev.enkin.TinyEditor；Developer ID +
+  hardened runtime 签名；公证 Accepted（凭据存钥匙串 profile "tinyeditor-notary"，需 --keychain
+  显式指定 login keychain）；票据装订；DMG 552 KB。Gatekeeper 验证 "Notarized Developer ID"。
+  更新分发暂缓（用户决定）。清理了 LSP 掉在仓库根目录并被误提交的 *.o/*.d 中间产物。
+
 - 2026-07-21 T5.2 最终验收（main）：202 测试全绿。内存基准（release 构建）：空文档 23 MB（上限 35）、
   1.3 MB 文件 42 MB（上限 50）、10 MB 文件 58 MB（上限 65）——全部 PASS。修复关键问题：启用
   allowsNonContiguousLayout（此前打开 10 MB 文件全量布局冲到 97 MB）。补充架构预算表"大文件"行
