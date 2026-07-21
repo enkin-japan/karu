@@ -6,6 +6,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
     let documentController = DocumentController()
     private var textView: NSTextView!
 
+    /// Shared newline index: one instance per window, injected into the gutter
+    /// and (later) reused by search / folding.
+    let lineIndex = LineIndex(text: "")
+    private var gutterView: GutterView!
+
     public convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -21,6 +26,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate 
         let (scrollView, textView) = Self.makeEditorView()
         self.textView = textView
         window.contentView = scrollView
+
+        // Attach the line-number gutter as the scroll view's vertical ruler.
+        let gutter = GutterView(scrollView: scrollView, textView: textView, lineIndex: lineIndex)
+        scrollView.verticalRulerView = gutter
+        scrollView.hasVerticalRuler = true
+        scrollView.rulersVisible = true
+        self.gutterView = gutter
 
         NotificationCenter.default.addObserver(
             self,

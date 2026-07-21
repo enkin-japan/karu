@@ -185,6 +185,58 @@ public final class EditorTextView: NSTextView {
     /// Language identifier used to look up the indent width (e.g. "html").
     public var languageIdentifier: String = ""
 
+    /// Whether indent-rainbow blocks are drawn. Defaults from UserDefaults key
+    /// `editor.indentRainbow` (on when unset). Toggling triggers a redraw.
+    public var indentRainbowEnabled: Bool = IndentRainbow.defaultEnabled {
+        didSet {
+            guard oldValue != indentRainbowEnabled else { return }
+            needsDisplay = true
+        }
+    }
+
+    // MARK: Indent rainbow drawing
+
+    /// Draws indent-rainbow blocks behind the visible text. Viewport-only: only
+    /// the lines intersecting `rect` are recomputed and painted (nothing is
+    /// stored per line).
+    public override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard indentRainbowEnabled,
+              let layoutManager,
+              let container = textContainer else { return }
+
+        let ns = string as NSString
+        guard ns.length > 0 else { return }
+
+        let width = indentSettings.width(for: languageIdentifier)
+        let origin = textContainerOrigin
+
+        // Character range covering the dirty rect, expanded to whole lines.
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        let endChar = min(charRange.location + charRange.length, ns.length)
+
+        var loc = ns.lineRange(for: NSRange(location: min(charRange.location, ns.length - 1), length: 0)).location
+        while loc <= endChar {
+            let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
+            let lineString = ns.substring(with: lineRange)
+            let blocks = IndentRainbow.blocks(forLine: lineString, indentWidth: width)
+            for block in blocks {
+                let absolute = NSRange(location: loc + block.columnRange.lowerBound,
+                                       length: block.columnRange.count)
+                let gRange = layoutManager.glyphRange(forCharacterRange: absolute, actualCharacterRange: nil)
+                var blockRect = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
+                blockRect.origin.x += origin.x
+                blockRect.origin.y += origin.y
+                IndentRainbow.color(forLevel: block.level).setFill()
+                blockRect.fill()
+            }
+            let next = lineRange.location + lineRange.length
+            if next <= loc { break } // guard against zero-length final line
+            loc = next
+        }
+    }
+
     // MARK: Plain-text paste & drop
 
     /// Always coerce pasted content to plain text, discarding rich attributes.
