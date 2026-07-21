@@ -68,6 +68,23 @@
 | T7.3 | 折叠视觉：放大箭头、折叠头行背景色 + 行数提示 | Core/Gutter/, Editor/ | implementer | 视觉冒烟对比 | ✅ 4 新测试 + 视觉冒烟 |
 | T7.4 | 文档符号高亮：函数/类/变量名（进程内符号扫描接入高亮引擎） | Core/Highlight/, Completion/WordIndex.swift | implementer | 单测：符号分类；视觉验证 | ✅ 7 新测试 |
 
+## M8 候选任务（2026-07-21 CotEditor 对比得出，讨论定案后开工）
+
+来源：与 CotEditor（main 分支）源码对比 + 用户实测反馈。全部候选均须守住
+ARCHITECTURE.md 预算红线；明确不引入 tree-sitter / SwiftUI / NSDocument。
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T8.1 | 滑动流畅度：高亮 overscan（可视区外预染 ±1–2 屏）+ 滚动路径去掉去抖（仅编辑保留去抖）+ 小文件自适应关闭 noncontiguous layout（阈值待定，大文件保持懒布局） | Core/Highlight/HighlightEngine.swift, Editor/EditorWindowController.swift | 待讨论 | 快速滑动无高亮 pop-in；mem-benchmark 三轮仍 PASS | ⬜ |
+| T8.2 | 编码手动重解释菜单（"以 XX 编码重新打开"，自动检测错误时的用户兜底） | App/DocumentController.swift, MainMenu.swift | 待讨论 | 选错编码可换编码重开且不丢文件 | ⬜ |
+| T8.3 | 换行符（LF/CRLF/CR）状态栏显示 + 一键转换 | Editor/StatusBarView.swift, App/DocumentController.swift | 待讨论 | 状态栏正确显示；转换后保存符合预期 | ⬜ |
+| T8.4 | 大纲/符号导航：复用补全的符号扫描索引，弹窗跳转函数/类定义 | Core/Completion/WordIndex.swift, Editor/ | 待讨论 | 符号列表可跳转；内存增量 ≈ 0（复用现有索引） | ⬜ |
+| T8.5 | `tinyedit` 命令行辅助工具（CotEditor `cot` 式，从终端打开文件） | scripts/, 新辅助入口 | 待讨论 | 终端 `tinyedit file` 可唤起 app 打开文件 | ⬜ |
+
+用户实测背景（T8.1 依据）：同窗口同 200 行 md，两 app 静态均 ~80 MB（窗口 backing
+store 主导，符合预期）；CotEditor 快速滑动内存翻倍但停止即回落、滑动更顺；
+TinyEditor 因 viewport 动态加载，快滑有可见的加载等待痕迹。
+
 ## 依赖关系
 
 T1.1 → T2.1 → T2.2/T2.3/T2.4（可并行）→ T3.1 → T3.2/T3.3（可并行）→ T3.4/T3.5
