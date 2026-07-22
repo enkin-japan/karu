@@ -140,6 +140,9 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 
 | T12.20 | 排查：空文档打字 30→110 MB——结论**非泄漏非回归不计预算**（证据链六条见 ARCHITECTURE.md §1 测量口径：v0.7.0 同数值、图形内存主导、持续输入平台线不涨、遮挡可回收、工具栏×首次重绘×beta 合成器触发、静态打开不触发）。正式版 macOS 后复测 | docs/ARCHITECTURE.md | main | 同环境对照 + 归因拆分 | ✅ |
 
+| T12.21 | 恶性 bug：粘贴完全失效——macOS 26 beta(26A5388g) 上 pasteAsPlainText × readablePasteboardTypes=[.string] 组合静默 no-op（最小子类二分锁定）。paste 改显式实现：读剪贴板（.string→attributed 回退）→ typingAttributes 属性化插入走 undo 通道，脱离系统私有管线 | Editor/EditorTextView.swift | main（紧急） | 粘贴/替换选区/剥富文本/可 undo 四回归测试 | ✅ 4 测试 |
+| T12.22 | 恶性 bug：打字中崩溃（用户崩溃报告）——FoldScanner 无界信任 LineIndex 偏移读字符串，beta display-link 合成时序下与编辑事务交错失同步 → characterAtIndex 越界。三层修复：①扫描器长度守卫（失同步跳过本帧，装饰系统无崩溃权）②折叠编辑内/绘制内的布局失效推迟到事务外 ③IndentRainbow 等其余绘制期消费者审计（均已有界内检查） | TextModel/FoldRegion.swift, Editor/FoldingController.swift | main（紧急） | 失同步对不崩测试；打字/undo/IME 全程 LineIndex 同步压力测试 | ✅ 3 测试，586 全绿 |
+
 （B1 多光标维持独立里程碑不混排；C 组除 C8 外按决议不做。）
 v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产上线，latest appcast
 实测解析 0.8.1/build 11；sign_update 钥匙串 ACL 已获"始终允许"，后续发布可无人值守。

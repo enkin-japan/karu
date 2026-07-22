@@ -662,7 +662,24 @@ public final class EditorTextView: NSTextView {
 
     /// Always coerce pasted content to plain text, discarding rich attributes.
     public override func paste(_ sender: Any?) {
-        pasteAsPlainText(sender)
+        // Explicit plain-text paste. Delegating to `pasteAsPlainText` broke on
+        // macOS 26 beta (26A5388g): combined with our `readablePasteboardTypes`
+        // restriction its internal type negotiation resolves to nothing and the
+        // paste silently no-ops (user bug, 2026-07-22). Reading the pasteboard
+        // ourselves and inserting through the undo channel removes the
+        // dependency on that private pipeline entirely — and "plain text is the
+        // only truth" is enforced by construction.
+        let pb = NSPasteboard.general
+        let plain = pb.string(forType: .string)
+            ?? (pb.readObjects(forClasses: [NSAttributedString.self], options: nil)?
+                    .first as? NSAttributedString)?.string
+        guard let plain, !plain.isEmpty else { NSSound.beep(); return }
+        let target = selectedRange()
+        guard shouldChangeText(in: target, replacementString: plain) else { return }
+        textStorage?.replaceCharacters(
+            in: target, with: NSAttributedString(string: plain, attributes: typingAttributes))
+        didChangeText()
+        setSelectedRange(NSRange(location: target.location + (plain as NSString).length, length: 0))
     }
 
     /// Restrict paste *and* drag-and-drop reads to plain strings so rich text

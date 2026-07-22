@@ -56,6 +56,13 @@ public enum FoldScanner {
     /// recount newlines.
     public static func regions(text: String, lineIndex: LineIndex) -> [FoldRegion] {
         let ns = text as NSString
+        // Consistency guard: the scanner trusts `lineIndex` offsets when reading
+        // `ns`, and the two can transiently disagree (a gutter draw interleaved
+        // with an edit transaction crashed exactly here on macOS 26 beta —
+        // `characterAtIndex:` out of range, user crash report 2026-07-22).
+        // Folding is cosmetic: skipping one scan and letting the next pass see
+        // the re-synced pair is always safe; crashing never is.
+        guard lineIndex.length == ns.length else { return [] }
         let lineCount = lineIndex.lineCount
 
         var result = bracketRegions(ns: ns, lineIndex: lineIndex, lineCount: lineCount)

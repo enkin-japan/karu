@@ -110,10 +110,12 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
     }
 
     /// Drops any active fold that no longer corresponds to a scanned region
-    /// (same header line *and* end line), invalidating just the discarded
-    /// ranges. Runs during a rescan, which can happen inside a gutter draw, so it
-    /// deliberately avoids forcing synchronous layout (`ensureLayout: false`) —
-    /// `needsDisplay` schedules the repaint for the next cycle instead.
+    /// (same header line *and* end line). Runs during a rescan, which can
+    /// happen inside a gutter draw — so state is corrected immediately, but the
+    /// layout invalidation is pushed to the next runloop turn (mutating the
+    /// layout manager mid-draw is the same hazard class as doing it inside
+    /// processEditing; see the crash-hardening note in
+    /// `textStorageDidProcessEditing`).
     private func validateActiveFolds(against scanned: [FoldRegion]) {
         guard !activeFolds.isEmpty else { return }
         let valid = Set(scanned.map { [$0.startLine, $0.endLine] })
@@ -124,7 +126,10 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
         }
         guard !dirty.isEmpty else { return }
         recomputeDerived()
-        applyInvalidation(dirty, ensureLayout: false)
+        let ranges = dirty
+        DispatchQueue.main.async { [weak self] in
+            self?.applyInvalidation(ranges, ensureLayout: false)
+        }
     }
 
     /// Invalidates both region caches. Called on every character edit (the
@@ -424,7 +429,20 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
 
         activeFolds = newActive
         recomputeDerived() // re-snaps hidden ranges to whole lines via post-edit LineIndex
-        applyInvalidation(dirty, ensureLayout: !dirty.isEmpty)
+        // This callback runs *inside* the storage's processEditing pass.
+        // Invalidating layout synchronously here can interleave a ruler/content
+        // redraw with the half-settled edit transaction (TextKit hygiene; the
+        // macOS 26 beta display-link flush made that interleaving real). Update
+        // our state now, but push the visual invalidation to the next runloop
+        // turn, after the edit transaction has fully settled.
+        if !dirty.isEmpty {
+            let ranges = dirty
+            DispatchQueue.main.async { [weak self] in
+                self?.applyInvalidation(ranges, ensureLayout: true)
+            }
+        } else {
+            applyInvalidation([], ensureLayout: false)
+        }
     }
 
     /// Rebuilds a `FoldRegion` from a post-edit hidden character range using the
