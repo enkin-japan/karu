@@ -27,3 +27,4 @@ xcuserdata/
 *.d
 *.swiftdeps
 *.swiftdeps~
+/debug/

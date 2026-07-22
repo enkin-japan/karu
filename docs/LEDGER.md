@@ -138,6 +138,8 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T12.18 | bug：空文档开头输入 `[]` 等闭合符后整篇字体变小——自动闭合 insertPair/wrap 用裸字符串写 textStorage，位置 0 无前文属性可继承，跌落到默认小字体。改为携带 typingAttributes 的 NSAttributedString 插入 | Editor/EditorTextView.swift | main | 空文档 insertPair/wrap 后 .font 属性 = 编辑器字体 | ✅ 2 回归测试 |
 | T12.19 | ⌘⏎ 无视光标位置在下方开新行（VS Code Insert Line Below；保留当前行缩进；键路径和弦拦截，无菜单项） | Editor/LineOperations.swift, EditorTextView, EditorWindowController | main | 纯函数单测（中间/末行无换行/空文档/缩进保持/选区取末行）；579 全绿 | ✅ 9 测试 |
 
+| T12.20 | 排查：空文档打字 30→110 MB——结论**非泄漏非回归不计预算**（证据链六条见 ARCHITECTURE.md §1 测量口径：v0.7.0 同数值、图形内存主导、持续输入平台线不涨、遮挡可回收、工具栏×首次重绘×beta 合成器触发、静态打开不触发）。正式版 macOS 后复测 | docs/ARCHITECTURE.md | main | 同环境对照 + 归因拆分 | ✅ |
+
 （B1 多光标维持独立里程碑不混排；C 组除 C8 外按决议不做。）
 
 ## 依赖关系
