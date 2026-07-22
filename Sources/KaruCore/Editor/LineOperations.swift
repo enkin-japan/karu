@@ -199,6 +199,33 @@ public enum LineOperations {
         return (line, "")
     }
 
+    /// Inserts a fresh empty line below the caret's line no matter where the
+    /// caret sits on it (⌘⏎, VS Code's "Insert Line Below"). The new line takes
+    /// the current line's leading whitespace so typing continues at the same
+    /// indent, and the caret lands at its end. Always succeeds.
+    public static func insertLineBelow(
+        text: String,
+        selection: NSRange
+    ) -> (replacement: String, range: NSRange, newSelection: NSRange)? {
+        let ns = text as NSString
+        // The line the caret (or the selection's end) sits on.
+        let caret = NSRange(location: selection.location + selection.length, length: 0)
+        let line = ns.lineRange(for: caret)
+        let lineStr = ns.substring(with: line)
+        let content = lineContent(lineStr)
+        let contentEnd = line.location + (content as NSString).length
+
+        var indent = ""
+        for ch in content {
+            if ch == " " || ch == "\t" { indent.append(ch) } else { break }
+        }
+
+        let inserted = "\n" + indent
+        return (inserted,
+                NSRange(location: contentEnd, length: 0),
+                NSRange(location: contentEnd + (inserted as NSString).length, length: 0))
+    }
+
     private static func lineContent(_ line: String) -> String {
         splitTerminator(line).content
     }

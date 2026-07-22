@@ -523,6 +523,22 @@ public final class EditorTextView: NSTextView {
         }
     }
 
+    /// ⌘⏎ (VS Code "Insert Line Below"): plain Command + Return with none of
+    /// Option / Control / Shift, regardless of where the caret sits on the line.
+    /// Return arrives as "\r" in `charactersIgnoringModifiers`; the keypad Enter
+    /// key sends U+0003 and is accepted as the same gesture.
+    static func isInsertLineBelowChord(
+        modifiers: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers chars: String?
+    ) -> Bool {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.option), !flags.contains(.control), !flags.contains(.shift) else {
+            return false
+        }
+        return chars == "\r" || chars == "\u{3}"
+    }
+
     // MARK: Fold chord (⌘K prefix, VS Code style)
 
     /// One decision of the ⌘K fold-chord state machine.
@@ -623,6 +639,15 @@ public final class EditorTextView: NSTextView {
             NSApp.sendAction(selector, to: nil, from: self)
             return
         }
+        // ⌘⏎ inserts a fresh line below regardless of caret column (VS Code
+        // parity). Same completion guard as the line-operation chords.
+        if completionKeyHandler?.isCompletionActive != true,
+           Self.isInsertLineBelowChord(
+               modifiers: event.modifierFlags,
+               charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
+            NSApp.sendAction(#selector(EditorWindowController.insertLineBelow(_:)), to: nil, from: self)
+            return
+        }
         super.keyDown(with: event)
         completionKeyHandler?.textViewDidInsertKey(event)
     }
@@ -692,7 +717,13 @@ public final class EditorTextView: NSTextView {
 
         case .insertPair(let text, let caretOffset):
             guard shouldChangeText(in: target, replacementString: text) else { return }
-            textStorage?.replaceCharacters(in: target, with: text)
+            // Insert *attributed* text carrying typingAttributes: a plain-string
+            // replaceCharacters inherits attributes from the preceding character,
+            // and at the start of an empty document there is nothing to inherit —
+            // the pair (and everything typed after it) fell back to the layout
+            // manager's tiny default font (user bug: "[]" at document start).
+            textStorage?.replaceCharacters(
+                in: target, with: NSAttributedString(string: text, attributes: typingAttributes))
             didChangeText()
             setSelectedRange(NSRange(location: target.location + caretOffset, length: 0))
 
@@ -700,7 +731,8 @@ public final class EditorTextView: NSTextView {
             let selected = ns.substring(with: target)
             let replacement = prefix + selected + suffix
             guard shouldChangeText(in: target, replacementString: replacement) else { return }
-            textStorage?.replaceCharacters(in: target, with: replacement)
+            textStorage?.replaceCharacters(
+                in: target, with: NSAttributedString(string: replacement, attributes: typingAttributes))
             didChangeText()
             // Keep the original text selected, now sitting inside the delimiters.
             let inner = NSRange(location: target.location + (prefix as NSString).length,

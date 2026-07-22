@@ -195,3 +195,29 @@ private let escape = "\u{1B}"
     #expect(EditorTextView.chordStep(
         prefixActive: true, modifiers: [.command, .shift], charactersIgnoringModifiers: "0") == .cancelAndHandle)
 }
+
+// MARK: - ⌘⏎ insert-line-below chord
+
+@Test func insertLineBelowChordMatchesCommandReturn() {
+    #expect(EditorTextView.isInsertLineBelowChord(
+        modifiers: [.command], charactersIgnoringModifiers: "\r"))
+}
+
+@Test func insertLineBelowChordMatchesKeypadEnter() {
+    #expect(EditorTextView.isInsertLineBelowChord(
+        modifiers: [.command], charactersIgnoringModifiers: "\u{3}"))
+}
+
+@Test func insertLineBelowChordRejectsExtraModifiers() {
+    #expect(!EditorTextView.isInsertLineBelowChord(
+        modifiers: [.command, .shift], charactersIgnoringModifiers: "\r"))
+    #expect(!EditorTextView.isInsertLineBelowChord(
+        modifiers: [.command, .option], charactersIgnoringModifiers: "\r"))
+    #expect(!EditorTextView.isInsertLineBelowChord(
+        modifiers: [], charactersIgnoringModifiers: "\r"))
+}
+
+@Test func insertLineBelowChordRejectsOtherKeys() {
+    #expect(!EditorTextView.isInsertLineBelowChord(
+        modifiers: [.command], charactersIgnoringModifiers: "a"))
+}

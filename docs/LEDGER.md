@@ -135,6 +135,9 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T12.16 | A9 语言定义扩充：YAML / TOML / Go / Rust / Swift（懒加载；Ruby/PHP/Kotlin/INI/Dockerfile 留积压） | Highlight/Languages/*（新×5）, SupportedLanguage | implementer | 每语言 tokenizer 测试；builtins 高亮 | ✅ 26 测试，568 全绿；CommentToggle/符号导航/缩进宽度一并接线 |
 | T12.17 | 文档对齐（README×3 功能项、ARCHITECTURE 语言数、变更记录）+ v0.8.0 发布（版本号红线文件 main 改） | README*, docs/, scripts/bundle-macos.sh | chore-worker + main | 370+ 全绿、visual-smoke、mem-benchmark、公证发布 | ✅ v0.8.0 已发布：568 全绿、基准 27/48/63 PASS、公证+装订+DMG、三资产上线，appcast 实测解析 0.8.0/build10 含 EdDSA 签名。发布时曾受阻于 sign_update 钥匙串 ACL 弹窗，用户点击"始终允许"后恢复 |
 
+| T12.18 | bug：空文档开头输入 `[]` 等闭合符后整篇字体变小——自动闭合 insertPair/wrap 用裸字符串写 textStorage，位置 0 无前文属性可继承，跌落到默认小字体。改为携带 typingAttributes 的 NSAttributedString 插入 | Editor/EditorTextView.swift | main | 空文档 insertPair/wrap 后 .font 属性 = 编辑器字体 | ✅ 2 回归测试 |
+| T12.19 | ⌘⏎ 无视光标位置在下方开新行（VS Code Insert Line Below；保留当前行缩进；键路径和弦拦截，无菜单项） | Editor/LineOperations.swift, EditorTextView, EditorWindowController | main | 纯函数单测（中间/末行无换行/空文档/缩进保持/选区取末行）；579 全绿 | ✅ 9 测试 |
+
 （B1 多光标维持独立里程碑不混排；C 组除 C8 外按决议不做。）
 
 ## 依赖关系

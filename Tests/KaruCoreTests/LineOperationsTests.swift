@@ -119,3 +119,40 @@ private func applied(
                          selection: NSRange(location: 0, length: 3)) // a + b
     #expect(result?.string == "c\nd\n")
 }
+
+// MARK: - Insert line below (⌘⏎)
+
+@Test func insertLineBelowFromMidLine() {
+    let result = applied("hello\nworld\n", LineOperations.insertLineBelow,
+                         selection: NSRange(location: 2, length: 0)) // mid "hello"
+    #expect(result?.string == "hello\n\nworld\n")
+    #expect(result?.selection == NSRange(location: 6, length: 0)) // on the new line
+}
+
+@Test func insertLineBelowKeepsIndent() {
+    let result = applied("    foo\n", LineOperations.insertLineBelow,
+                         selection: NSRange(location: 5, length: 0))
+    #expect(result?.string == "    foo\n    \n")
+    #expect(result?.selection == NSRange(location: 12, length: 0)) // end of new indent
+}
+
+@Test func insertLineBelowOnLastLineWithoutNewline() {
+    let result = applied("ab", LineOperations.insertLineBelow,
+                         selection: NSRange(location: 0, length: 0))
+    #expect(result?.string == "ab\n")
+    #expect(result?.selection == NSRange(location: 3, length: 0))
+}
+
+@Test func insertLineBelowEmptyDocument() {
+    let result = applied("", LineOperations.insertLineBelow,
+                         selection: NSRange(location: 0, length: 0))
+    #expect(result?.string == "\n")
+    #expect(result?.selection == NSRange(location: 1, length: 0))
+}
+
+@Test func insertLineBelowUsesSelectionEndLine() {
+    // Selection spanning line 1 into line 2: the new line opens below line 2.
+    let result = applied("aa\nbb\ncc\n", LineOperations.insertLineBelow,
+                         selection: NSRange(location: 1, length: 3)) // "a\nb"
+    #expect(result?.string == "aa\nbb\n\ncc\n")
+}

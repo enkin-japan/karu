@@ -844,6 +844,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         applyLineOperation(LineOperations.deleteLines)
     }
 
+    /// ⌘⏎ — open a fresh empty line below the caret's line (keyDown chord in
+    /// EditorTextView; no menu item, mirroring VS Code).
+    @objc public func insertLineBelow(_ sender: Any?) {
+        applyLineOperation(LineOperations.insertLineBelow)
+    }
+
     /// Runs a pure line operation over the current text/selection and applies the
     /// result through the undo channel. A `nil` result (document boundary) is a
     /// silent no-op, matching VS Code.
