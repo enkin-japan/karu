@@ -144,6 +144,8 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T12.22 | 恶性 bug：打字中崩溃（用户崩溃报告）——FoldScanner 无界信任 LineIndex 偏移读字符串，beta display-link 合成时序下与编辑事务交错失同步 → characterAtIndex 越界。三层修复：①扫描器长度守卫（失同步跳过本帧，装饰系统无崩溃权）②折叠编辑内/绘制内的布局失效推迟到事务外 ③IndentRainbow 等其余绘制期消费者审计（均已有界内检查） | TextModel/FoldRegion.swift, Editor/FoldingController.swift | main（紧急） | 失同步对不崩测试；打字/undo/IME 全程 LineIndex 同步压力测试 | ✅ 3 测试，586 全绿 |
 
 （B1 多光标维持独立里程碑不混排；C 组除 C8 外按决议不做。）
+v0.8.2 发布（2026-07-22）：T12.21/T12.22 两恶性 bug 紧急修复。全程无人值守（钥匙串
+"始终允许"生效）；latest appcast 解析 0.8.2/build 12。
 v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产上线，latest appcast
 实测解析 0.8.1/build 11；sign_update 钥匙串 ACL 已获"始终允许"，后续发布可无人值守。
 
