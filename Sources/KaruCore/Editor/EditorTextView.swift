@@ -601,6 +601,50 @@ public final class EditorTextView: NSTextView {
     /// Bool), reset the moment the next key resolves the chord.
     private var foldChordPrefixActive = false
 
+    /// Runs one event through the fold-chord machine. Returns `true` when the
+    /// event was consumed (prefix armed, chord fired, or Esc dismissed an armed
+    /// prefix); `false` means normal handling should proceed.
+    private func handleFoldChord(_ event: NSEvent) -> Bool {
+        switch Self.chordStep(prefixActive: foldChordPrefixActive,
+                              modifiers: event.modifierFlags,
+                              charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
+        case .enterPrefix:
+            foldChordPrefixActive = true
+            return true // swallow ⌘K
+        case .foldAll:
+            foldChordPrefixActive = false
+            NSApp.sendAction(#selector(EditorWindowController.foldAll(_:)), to: nil, from: self)
+            return true
+        case .unfoldAll:
+            foldChordPrefixActive = false
+            NSApp.sendAction(#selector(EditorWindowController.unfoldAllFolds(_:)), to: nil, from: self)
+            return true
+        case .cancelAndSwallow:
+            foldChordPrefixActive = false
+            return true // swallow Esc that dismissed the armed prefix
+        case .cancelAndHandle:
+            foldChordPrefixActive = false // proceed with normal handling
+            return false
+        }
+    }
+
+    /// The chord's second key, ⌘0, doubles as View ▸ Actual Size's menu key
+    /// equivalent — and menu matching runs during the key-equivalent pass,
+    /// *before* `keyDown` ever fires. So with the prefix armed, ⌘0 was eaten by
+    /// the menu (resetting the font) and the chord never completed (user bug,
+    /// 2026-07-28). Views get the key-equivalent pass ahead of the menu, so the
+    /// chord machine must run here; `keyDown` keeps its own copy for keys that
+    /// never enter this pass (plain Esc). Without the prefix armed, ⌘0 / ⌘J
+    /// fall through unchanged — Actual Size keeps working.
+    public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Only when the editor itself has focus — a ⌘K typed into the find bar
+        // must not arm the fold prefix.
+        if window?.firstResponder === self, handleFoldChord(event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     // MARK: Completion key routing
 
     /// Give an active completion popup first refusal on navigation keys, then
@@ -615,28 +659,11 @@ public final class EditorTextView: NSTextView {
             return
         }
         // ⌘K fold-chord prefix (VS Code parity): ⌘K then ⌘0 (fold all) / ⌘J
-        // (unfold all). ⌘K carries no conflicting binding here (Delete Line is
-        // ⌘⇧K), so it is safe to intercept before the rest of keyDown.
-        switch Self.chordStep(prefixActive: foldChordPrefixActive,
-                              modifiers: event.modifierFlags,
-                              charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
-        case .enterPrefix:
-            foldChordPrefixActive = true
-            return // swallow ⌘K
-        case .foldAll:
-            foldChordPrefixActive = false
-            NSApp.sendAction(#selector(EditorWindowController.foldAll(_:)), to: nil, from: self)
-            return
-        case .unfoldAll:
-            foldChordPrefixActive = false
-            NSApp.sendAction(#selector(EditorWindowController.unfoldAllFolds(_:)), to: nil, from: self)
-            return
-        case .cancelAndSwallow:
-            foldChordPrefixActive = false
-            return // swallow Esc that dismissed the armed prefix
-        case .cancelAndHandle:
-            foldChordPrefixActive = false // fall through to normal handling
-        }
+        // (unfold all). ⌘-bearing steps are normally consumed in
+        // `performKeyEquivalent` (they must beat the menu — see above); this
+        // copy handles what never enters that pass, chiefly the plain Esc that
+        // dismisses an armed prefix.
+        if handleFoldChord(event) { return }
         if let handler = completionKeyHandler,
            handler.isCompletionActive,
            handler.handleCompletionKeyDown(event) {

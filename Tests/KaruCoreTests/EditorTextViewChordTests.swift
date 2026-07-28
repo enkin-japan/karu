@@ -221,3 +221,57 @@ private let escape = "\u{1B}"
     #expect(!EditorTextView.isInsertLineBelowChord(
         modifiers: [.command], charactersIgnoringModifiers: "a"))
 }
+
+// MARK: - ⌘K chord vs menu key equivalents (T13.8 regression)
+//
+// ⌘0 doubles as View ▸ Actual Size's menu equivalent, and menus match during
+// the key-equivalent pass — before keyDown. The chord must therefore consume
+// its ⌘-bearing steps in `performKeyEquivalent`, or the armed prefix's ⌘0 is
+// eaten by the menu and the chord never completes (user bug, 2026-07-28).
+
+@MainActor
+private func makeKeyEvent(_ chars: String, modifiers: NSEvent.ModifierFlags) -> NSEvent {
+    NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                     timestamp: 0, windowNumber: 0, context: nil,
+                     characters: chars, charactersIgnoringModifiers: chars,
+                     isARepeat: false, keyCode: 0)!
+}
+
+@MainActor
+private func makeFocusedEditor() -> (NSWindow, EditorTextView) {
+    let tv = EditorTextView()
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView?.addSubview(tv)
+    window.makeFirstResponder(tv)
+    return (window, tv)
+}
+
+@MainActor
+@Test func performKeyEquivalentConsumesFoldChordBeforeMenu() {
+    let (window, tv) = makeFocusedEditor()
+    defer { window.orderOut(nil) }
+    // ⌘K arms the prefix and is consumed; the armed ⌘0 is consumed too (it must
+    // never reach the menu's Actual Size binding).
+    #expect(tv.performKeyEquivalent(with: makeKeyEvent("k", modifiers: .command)) == true)
+    #expect(tv.performKeyEquivalent(with: makeKeyEvent("0", modifiers: .command)) == true)
+}
+
+@MainActor
+@Test func performKeyEquivalentWithoutPrefixLetsCommandZeroThrough() {
+    let (window, tv) = makeFocusedEditor()
+    defer { window.orderOut(nil) }
+    // No prefix armed: ⌘0 falls through so View ▸ Actual Size keeps working.
+    #expect(tv.performKeyEquivalent(with: makeKeyEvent("0", modifiers: .command)) == false)
+    // Ordinary shortcuts pass through untouched as well.
+    #expect(tv.performKeyEquivalent(with: makeKeyEvent("s", modifiers: .command)) == false)
+}
+
+@MainActor
+@Test func performKeyEquivalentIgnoresChordWhenEditorNotFocused() {
+    let (window, tv) = makeFocusedEditor()
+    defer { window.orderOut(nil) }
+    window.makeFirstResponder(nil)
+    // A ⌘K typed while another control has focus must not arm the prefix.
+    #expect(tv.performKeyEquivalent(with: makeKeyEvent("k", modifiers: .command)) == false)
+}
