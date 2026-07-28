@@ -177,6 +177,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         (textView as? EditorTextView)?.lineIndex = lineIndex
         self.foldingController = folding
 
+        // Live selection count: while a mouse drag is extending the selection,
+        // AppKit suppresses the did-change-selection notification, so the text
+        // view pings us directly. Only the status bar refreshes here — the
+        // heavier bracket/word highlights wait for the final selection.
+        (textView as? EditorTextView)?.liveSelectionChanged = { [weak self] in
+            self?.refreshStatusBar()
+        }
+
         // Cursor-word occurrence highlighter: viewport-only, debounced. Shares
         // the observer hub for edit notifications; pinged from selectionDidChange.
         let wordHighlighter = WordOccurrenceHighlighter(textView: textView)
@@ -630,8 +638,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// failures are surfaced as a localized alert.
     func renameFile(to newName: String) {
         do {
+            let previousExtension = documentController.fileURL?.pathExtension.lowercased()
             let newURL = try documentController.rename(to: newName)
             window?.representedURL = newURL
+            redetectLanguageIfExtensionChanged(from: previousExtension)
             updateWindowState()
         } catch let error as DocumentController.RenameError {
             presentRenameError(error)
@@ -1129,13 +1139,25 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
+            let previousExtension = documentController.fileURL?.pathExtension.lowercased()
             try documentController.save(text: textView.string, to: url)
+            redetectLanguageIfExtensionChanged(from: previousExtension)
             updateWindowState()
             return true
         } catch {
             showSaveError(error)
             return false
         }
+    }
+
+    /// Re-runs language detection (extension first, content fallback) after a
+    /// Save As / titlebar rename gave the document a *different* extension —
+    /// an untitled buffer saved as `notes.py` should highlight as Python
+    /// immediately. A same-extension operation (Save As a copy, renaming only
+    /// the stem) changes nothing, so a manual language choice survives it.
+    private func redetectLanguageIfExtensionChanged(from previousExtension: String?) {
+        guard documentController.fileURL?.pathExtension.lowercased() != previousExtension else { return }
+        chooseAutoLanguage()
     }
 
     private func showSaveError(_ error: Error) {

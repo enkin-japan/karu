@@ -23,6 +23,7 @@ extension L10n {
         .menuClose: "Close",
         .menuSave: "Save",
         .menuSaveAs: "Save As…",
+        .dockNewWindow: "New Window",
 
         .menuReopenWithEncoding: "Reopen with Encoding",
         .reopenConfirmMessage: "Reopen “%@” with a different encoding?",
@@ -157,6 +158,7 @@ extension L10n {
         .menuClose: "关闭",
         .menuSave: "存储",
         .menuSaveAs: "存储为…",
+        .dockNewWindow: "新建窗口",
 
         .menuReopenWithEncoding: "以编码重新打开",
         .reopenConfirmMessage: "以其他编码重新打开“%@”？",
@@ -291,6 +293,7 @@ extension L10n {
         .menuClose: "閉じる",
         .menuSave: "保存",
         .menuSaveAs: "別名で保存…",
+        .dockNewWindow: "新規ウインドウ",
 
         .menuReopenWithEncoding: "エンコーディングを指定して再オープン",
         .reopenConfirmMessage: "“%@” を別のエンコーディングで再オープンしますか？",

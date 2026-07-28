@@ -213,6 +213,20 @@ public final class EditorTextView: NSTextView {
     /// cost beyond a nil / bool check.
     public weak var completionKeyHandler: CompletionKeyHandler?
 
+    /// Fired for each in-progress selection change while the mouse is still
+    /// dragging. AppKit tracks a drag via `stillSelecting: true`, which
+    /// suppresses `NSTextView.didChangeSelectionNotification` until mouse-up —
+    /// so without this hook the status bar's selection count only appears after
+    /// release. The window controller wires this to a status-bar-only refresh.
+    public var liveSelectionChanged: (() -> Void)?
+
+    public override func setSelectedRanges(_ ranges: [NSValue],
+                                           affinity: NSSelectionAffinity,
+                                           stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        if stillSelecting { liveSelectionChanged?() }
+    }
+
     /// Folding layer queried while drawing the collapsed-block background
     /// highlight. Weak: owned by the window controller. When `nil` the editor
     /// draws no fold decorations. Nothing is stored per line — the folded header

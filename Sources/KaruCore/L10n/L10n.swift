@@ -26,6 +26,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case appAbout, appCheckForUpdates, appSettings, appHide, appQuit
     // File menu.
     case menuFile, menuNew, menuOpen, menuClose, menuSave, menuSaveAs
+    // Dock icon context menu.
+    case dockNewWindow
     // Reopen-with-encoding submenu + its alerts.
     case menuReopenWithEncoding
     case reopenConfirmMessage, reopenConfirmInfo, reopenDiscardButton

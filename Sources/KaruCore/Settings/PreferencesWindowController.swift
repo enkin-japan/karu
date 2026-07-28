@@ -12,6 +12,18 @@ import AppKit
 /// All changes persist immediately through `UserDefaults`. Settings that affect
 /// already-open windows (indent rainbow, indent width, font size) are pushed to
 /// every live `EditorTextView` so the effect is visible without reopening.
+/// The settings window itself: closes on Esc (checkboxes / steppers / popups
+/// never consume that key, so it always reaches the window's `keyDown`).
+private final class PreferencesWindow: NSWindow {
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { // Esc
+            performClose(nil)
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
 public final class PreferencesWindowController: NSWindowController {
 
     // Module toggles, ordered to match `FeatureModule.allCases`.
@@ -59,7 +71,7 @@ public final class PreferencesWindowController: NSWindowController {
     ]
 
     public convenience init() {
-        let window = NSWindow(
+        let window = PreferencesWindow(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,

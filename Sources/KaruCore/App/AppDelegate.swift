@@ -110,6 +110,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    /// Dock icon context menu: a "New Window" entry (a new document *is* a new
+    /// window in Karu). Built fresh on every right-click, so it always speaks
+    /// the current UI language.
+    public func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(withTitle: L10n.t(.dockNewWindow),
+                     action: #selector(newDocument(_:)),
+                     keyEquivalent: "")
+        return menu
+    }
+
     // Quit must honor the same unsaved-changes confirmation as closing a window;
     // NSApp.terminate does not consult windowShouldClose on its own.
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
