@@ -156,6 +156,10 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T13.5 | 程序坞图标右键菜单"新建窗口"（applicationDockMenu，三语） | App/AppDelegate.swift, L10n | main | 构建通过，菜单随 UI 语言 | ✅ |
 | T13.6 | 设置窗口 Esc 关闭（PreferencesWindow 子类拦 keyCode 53） | Settings/PreferencesWindowController.swift | main | 构建通过 | ✅ |
 | T13.7 | 框选字符数**拖拽中实时**统计：AppKit 拖选以 stillSelecting 抑制选区通知，EditorTextView 覆写 setSelectedRanges 回调仅刷状态栏（括号/词高亮仍等选区定稿） | Editor/EditorTextView.swift, Editor/EditorWindowController.swift | main | 构建通过，零常驻 | ✅ |
+v0.9.0 发布（2026-07-28）：M13 全部七项（T13.1–T13.7）。首跑因登录钥匙串锁定在第一签
+失败（errSecInternalComponent，久未发布后锁屏/重启所致；已入记忆——发布前先做小签名探路），
+用户解锁后重跑全程无人值守。latest appcast 解析 0.9.0/build 13；Gatekeeper
+"Notarized Developer ID"；DMG 3.1 MB。
 v0.8.2 发布（2026-07-22）：T12.21/T12.22 两恶性 bug 紧急修复。全程无人值守（钥匙串
 "始终允许"生效）；latest appcast 解析 0.8.2/build 12。
 v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产上线，latest appcast
