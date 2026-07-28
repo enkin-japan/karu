@@ -82,6 +82,12 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
     /// membership test. Invalidated together with `cachedRegions`.
     private var cachedStartLines: Set<Int>?
 
+    /// Supplies the document's current language identifier (`""` = plain), read
+    /// lazily at scan time so folding never caches a language that a manual
+    /// switch or a late auto-detection has already changed. The scanner uses it
+    /// to pick its rule set (markdown folds by heading / code fence, T13.4).
+    public var languageProvider: (() -> String)?
+
     public init(textView: NSTextView, lineIndex: LineIndex) {
         self.textView = textView
         self.lineIndex = lineIndex
@@ -103,7 +109,9 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
     private func regions() -> [FoldRegion] {
         if let cachedRegions { return cachedRegions }
         guard let textView else { return [] }
-        let scanned = FoldScanner.regions(text: textView.string, lineIndex: lineIndex)
+        let scanned = FoldScanner.regions(text: textView.string,
+                                          lineIndex: lineIndex,
+                                          language: languageProvider?() ?? "")
         cachedRegions = scanned
         cachedStartLines = Set(scanned.map { $0.startLine })
         validateActiveFolds(against: scanned)
@@ -138,6 +146,18 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
     private func invalidateRegionCache() {
         cachedRegions = nil
         cachedStartLines = nil
+    }
+
+    /// Tells folding the document's language changed (open, manual pick, or
+    /// auto-detection), so the cached regions — scanned under the *old* rule set —
+    /// are dropped and the gutter redraws with the new arrows. Nothing else needs
+    /// invalidating: a language switch leaves the text, and therefore the layout,
+    /// untouched. Active folds are kept as they are; the lazy `validateActiveFolds`
+    /// pass on the next scan discards any that the new rules no longer produce.
+    public func noteLanguageChanged() {
+        invalidateRegionCache()
+        textView?.needsDisplay = true
+        textView?.enclosingScrollView?.verticalRulerView?.needsDisplay = true
     }
 
     // MARK: - FoldStatusProviding

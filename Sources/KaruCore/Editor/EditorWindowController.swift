@@ -169,6 +169,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // already updated when folding reacts to an edit.
         let folding = FoldingController(textView: textView, lineIndex: lineIndex)
         textView.layoutManager?.delegate = folding
+        // Folding rules are language-dependent (markdown folds by heading / code
+        // fence); read the identifier at scan time rather than mirroring it here.
+        folding.languageProvider = { [weak textView] in
+            (textView as? EditorTextView)?.languageIdentifier ?? ""
+        }
         observerHub.add(folding)
         gutter.foldProvider = folding
         // The editor paints the collapsed-block background; give it the same
@@ -442,7 +447,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
                 identifier = highlightEngine.setLanguage(identifier: sniffed)
                 didAutoDetectLanguage = true
             }
-            (textView as? EditorTextView)?.languageIdentifier = identifier ?? ext.lowercased()
+            setEditorLanguage(identifier: identifier ?? ext.lowercased())
 
             // Point completion at the same language (for its keywords / symbol
             // dialect) and index the freshly loaded document. Prefer the resolved
@@ -592,11 +597,20 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// every entry path (menu / toolbar / sniffer / load) stays in sync.
     private func applyLanguage(identifier: String) {
         highlightEngine.setLanguage(identifier: identifier)
-        (textView as? EditorTextView)?.languageIdentifier = identifier
+        setEditorLanguage(identifier: identifier)
         completionController.setLanguage(identifier: identifier)
         redetectIndentUnit()
         toolbarController?.refreshAll()
         statusBar.updateLanguage(identifier)
+    }
+
+    /// Records the language on the text view (it drives indent width, formatting
+    /// and comment tokens) and tells folding to rescan, since the fold rules
+    /// themselves are language-dependent (T13.4). The single writer for
+    /// `languageIdentifier`, so no entry path can update one and forget the other.
+    private func setEditorLanguage(identifier: String) {
+        (textView as? EditorTextView)?.languageIdentifier = identifier
+        foldingController?.noteLanguageChanged()
     }
 
     /// Re-runs `IndentDetector` over the whole buffer and stores the result on
@@ -1022,7 +1036,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
                 didAutoDetectLanguage = true
             }
             let resolved = identifier ?? ext.lowercased()
-            (textView as? EditorTextView)?.languageIdentifier = resolved
+            setEditorLanguage(identifier: resolved)
             if let identifier {
                 completionController.setLanguage(identifier: identifier)
             } else {
@@ -1035,7 +1049,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             // Untitled: reset to plain, then let the sniffer re-classify if the
             // buffer already holds enough content.
             highlightEngine.setLanguage(identifier: nil)
-            (textView as? EditorTextView)?.languageIdentifier = ""
+            setEditorLanguage(identifier: "")
             completionController.setLanguage(identifier: nil)
             redetectIndentUnit()
             toolbarController?.refreshAll()

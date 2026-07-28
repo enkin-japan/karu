@@ -292,6 +292,75 @@ class A {
     #expect(rig.folding.isLineHidden(7) == true) // fold 3 body (was 6)
 }
 
+// MARK: - Language-aware folding (T13.4)
+
+/// A small markdown document: heading sections (1,4) / (3,4) / (5,6) under the
+/// markdown rules, and nothing at all under the generic ones.
+private let markdownDoc = "# A\ntext\n## B\ntext\n# C\ntext\n"
+
+@MainActor
+@Test func markdownDocumentFoldsBySection() {
+    let rig = FoldRig(markdownDoc)
+    rig.folding.languageProvider = { "markdown" }
+    #expect(rig.folding.foldState(atLine: 1) == .foldable)
+    #expect(rig.folding.foldState(atLine: 2) == .none)
+
+    rig.folding.toggleFold(atLine: 1) // hides 2..4
+    #expect(rig.folding.foldedHeaderLines() == [1])
+    #expect(rig.folding.hiddenLineCount(forHeader: 1) == 3)
+    #expect(rig.folding.foldState(atLine: 1) == .folded)
+    for line in 2...4 { #expect(rig.folding.isLineHidden(line) == true) }
+    #expect(rig.folding.isLineHidden(5) == false)
+
+    rig.folding.toggleFold(atLine: 1)
+    #expect(rig.folding.foldedHeaderLines() == [])
+}
+
+@MainActor
+@Test func languageChangeInvalidatesRegionCache() {
+    // Same document, scanned first as plain text (no foldable region at all),
+    // then as markdown after noteLanguageChanged(): the cache must be dropped or
+    // the gutter would keep showing no arrow.
+    var language = ""
+    let rig = FoldRig(markdownDoc)
+    rig.folding.languageProvider = { language }
+    #expect(rig.folding.foldState(atLine: 1) == .none)
+
+    language = "markdown"
+    rig.folding.noteLanguageChanged()
+    #expect(rig.folding.foldState(atLine: 1) == .foldable)
+    #expect(rig.folding.foldState(atLine: 3) == .foldable)
+}
+
+@MainActor
+@Test func languageChangeDropsFoldsTheNewRulesNoLongerProduce() {
+    // Folded as a colon block under the generic rules; switching to markdown
+    // removes that region, so the lazy validation on the next scan unfolds it.
+    let rig = FoldRig("key:\n    [a](b)\n    [c](d)\n")
+    rig.folding.toggleFold(atLine: 1)
+    #expect(rig.folding.foldedHeaderLines() == [1])
+
+    rig.folding.languageProvider = { "markdown" }
+    rig.folding.noteLanguageChanged()
+    #expect(rig.folding.foldState(atLine: 1) == .none)
+    #expect(rig.folding.foldedHeaderLines() == [])
+    #expect(rig.folding.isLineHidden(2) == false)
+}
+
+@MainActor
+@Test func markdownFencedBlockFoldsKeepingClosingFenceVisible() {
+    // 1 # T / 2 ```swift / 3-4 code / 5 ``` — folding the fence hides its body
+    // only, like a brace block. (Folding the *heading* on line 1 collapses the
+    // whole section, fence included; that is the section's job.)
+    let rig = FoldRig("# T\n```swift\ncode\ncode\n```\n")
+    rig.folding.languageProvider = { "markdown" }
+    #expect(rig.folding.foldState(atLine: 2) == .foldable)
+    rig.folding.toggleFold(atLine: 2)
+    #expect(rig.folding.isLineHidden(3) == true)
+    #expect(rig.folding.isLineHidden(4) == true)
+    #expect(rig.folding.isLineHidden(5) == false) // the closing fence stays on screen
+}
+
 // MARK: - Performance smoke (not a strict timing assertion)
 
 @MainActor

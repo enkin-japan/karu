@@ -10,6 +10,11 @@ private func scan(_ text: String) -> [FoldRegion] {
     FoldScanner.regions(text: text, lineIndex: LineIndex(text: text))
 }
 
+/// Same, but under the markdown rule set (T13.4).
+private func scanMarkdown(_ text: String) -> [FoldRegion] {
+    FoldScanner.regions(text: text, lineIndex: LineIndex(text: text), language: "markdown")
+}
+
 // MARK: - Empty / trivial
 
 @Test func foldEmptyDocument() {
@@ -222,6 +227,114 @@ private func scan(_ text: String) -> [FoldRegion] {
         FoldRegion(startLine: 4, endLine: 5),
     ]
     #expect(scan(text) == expected)
+}
+
+// MARK: - Markdown rules (T13.4)
+
+@Test func markdownHeadingSectionsNest() {
+    // 1 # A     -> section runs to the line before the next level-1 heading (4)
+    // 2 text
+    // 3 ## B    -> deeper heading also stops at "# C" (4)
+    // 4 text
+    // 5 # C     -> no following heading: to the document's last content line
+    // 6 text
+    let expected = [
+        FoldRegion(startLine: 1, endLine: 4),
+        FoldRegion(startLine: 3, endLine: 4),
+        FoldRegion(startLine: 5, endLine: 6),
+    ]
+    #expect(scanMarkdown("# A\ntext\n## B\ntext\n# C\ntext\n") == expected)
+}
+
+@Test func markdownHeadingWithNoBodyProducesNoRegion() {
+    // Two headings back to back: the first has nothing to hide.
+    #expect(scanMarkdown("# A\n# B\nbody\n") == [FoldRegion(startLine: 2, endLine: 3)])
+}
+
+@Test func markdownDeeperHeadingDoesNotCloseShallowerOne() {
+    // "### C" is deeper than "## B", so B's section swallows it and both run to
+    // the end of the document.
+    let expected = [
+        FoldRegion(startLine: 1, endLine: 4),
+        FoldRegion(startLine: 3, endLine: 4),
+    ]
+    #expect(scanMarkdown("## B\ntext\n### C\ntext\n") == expected)
+}
+
+@Test func markdownNonHeadingHashLinesIgnored() {
+    // No space after the hashes / more than six of them / four-space indent.
+    #expect(scanMarkdown("#NoSpace\ntext\n") == [])
+    #expect(scanMarkdown("####### seven\ntext\n") == [])
+    #expect(scanMarkdown("    # indented code\ntext\n") == [])
+    // Up to three leading spaces still counts (CommonMark).
+    #expect(scanMarkdown("  # A\ntext\n") == [FoldRegion(startLine: 1, endLine: 2)])
+}
+
+@Test func markdownFencedBlockKeepsClosingFenceVisible() {
+    // 1 # T
+    // 2 ```swift   <- opener (info string allowed)
+    // 3 code
+    // 4 code
+    // 5 ```        <- closer stays visible
+    let regions = scanMarkdown("# T\n```swift\ncode\ncode\n```\n")
+    #expect(regions.contains(FoldRegion(startLine: 2, endLine: 4)))
+    #expect(!regions.contains(FoldRegion(startLine: 2, endLine: 5)))
+}
+
+@Test func markdownTildeFenceWorksTheSameWay() {
+    #expect(scanMarkdown("~~~\ncode\ncode\n~~~\n").contains(FoldRegion(startLine: 1, endLine: 3)))
+}
+
+@Test func markdownHeadingInsideFenceIsNotASection() {
+    // The `# not a heading` line lives inside the code block: only the fence
+    // region exists, and the real heading's section covers the whole fence.
+    let expected = [
+        FoldRegion(startLine: 1, endLine: 5),
+        FoldRegion(startLine: 2, endLine: 4),
+    ]
+    #expect(scanMarkdown("# T\n```sh\n# not a heading\necho hi\n```\n") == expected)
+}
+
+@Test func markdownOtherFenceCharInsideFenceIsContent() {
+    // 1 ```
+    // 2 ~~~     <- ordinary content, does not open a fence
+    // 3 ~~~
+    // 4 ```     <- the only closer
+    // A single region (1,3); nothing starts on line 2.
+    #expect(scanMarkdown("```\n~~~\n~~~\n```\n") == [FoldRegion(startLine: 1, endLine: 3)])
+}
+
+@Test func markdownFenceNeedsAtLeastAsManyClosingChars() {
+    // A three-backtick line cannot close a four-backtick fence.
+    // 1 ````
+    // 2 ```
+    // 3 text
+    // 4 ````
+    #expect(scanMarkdown("````\n```\ntext\n````\n") == [FoldRegion(startLine: 1, endLine: 3)])
+}
+
+@Test func markdownUnclosedFenceRunsToEndOfDocument() {
+    // No closing fence: fold everything below the opener (trailing blank line
+    // aside).
+    #expect(scanMarkdown("```swift\ncode\nmore\n") == [FoldRegion(startLine: 1, endLine: 3)])
+}
+
+@Test func markdownIgnoresBracketAndColonRules() {
+    // Links and a prose colon: the generic rules would fire, markdown must not.
+    #expect(scanMarkdown("key:\n    [a](b)\n    [c](d)\n") == [])
+    // ...while the same text under the default rules still folds.
+    #expect(!scan("key:\n    [a](b)\n    [c](d)\n").isEmpty)
+}
+
+@Test func markdownSectionStopsBeforeSeparatingBlankLines() {
+    // Blank lines between sections belong to neither.
+    #expect(scanMarkdown("# A\ntext\n\n\n# B\nbody\n")
+            == [FoldRegion(startLine: 1, endLine: 2), FoldRegion(startLine: 5, endLine: 6)])
+}
+
+@Test func markdownPlainProseHasNoRegions() {
+    #expect(scanMarkdown("just some prose\nand more of it\n") == [])
+    #expect(scanMarkdown("") == [])
 }
 
 // MARK: - FoldRegion value semantics

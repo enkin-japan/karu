@@ -42,6 +42,13 @@ public struct FoldRegion: Equatable {
 ///   produces a region down to the last such line before the indentation falls
 ///   back.
 ///
+/// Markdown is the one language that opts out of both (T13.4): its `[]` links
+/// and its prose colons produce nothing but noise, while the structure a reader
+/// actually wants to collapse — heading sections and fenced code blocks — is
+/// invisible to the generic rules. `regions(text:lineIndex:language:)` therefore
+/// routes `"markdown"` to a dedicated pair of rules; every other language keeps
+/// the generic behaviour unchanged.
+///
 /// v1 trade-off: brackets and colons inside string literals or comments are
 /// **not** excluded (that needs the tokenizer / precise lexing which folding
 /// deliberately avoids). In practice mismatches are rare and merely offer an
@@ -54,7 +61,15 @@ public enum FoldScanner {
     /// Computes every foldable region in `text`. `lineIndex` supplies line
     /// boundaries (the "one index, reused everywhere" structure) so we never
     /// recount newlines.
-    public static func regions(text: String, lineIndex: LineIndex) -> [FoldRegion] {
+    ///
+    /// `language` is the editor's language identifier (`""` = plain / unknown).
+    /// Only `"markdown"` changes the outcome today: it swaps the bracket +
+    /// indentation rules for the markdown-specific ones. Every other value keeps
+    /// the language-agnostic behaviour, so callers that have no language handy
+    /// can simply omit the argument.
+    public static func regions(text: String,
+                               lineIndex: LineIndex,
+                               language: String = "") -> [FoldRegion] {
         let ns = text as NSString
         // Consistency guard: the scanner trusts `lineIndex` offsets when reading
         // `ns`, and the two can transiently disagree (a gutter draw interleaved
@@ -65,8 +80,13 @@ public enum FoldScanner {
         guard lineIndex.length == ns.length else { return [] }
         let lineCount = lineIndex.lineCount
 
-        var result = bracketRegions(ns: ns, lineIndex: lineIndex, lineCount: lineCount)
-        result += indentRegions(ns: ns, lineIndex: lineIndex, lineCount: lineCount)
+        var result: [FoldRegion]
+        if language.lowercased() == "markdown" {
+            result = markdownRegions(ns: ns, lineIndex: lineIndex, lineCount: lineCount)
+        } else {
+            result = bracketRegions(ns: ns, lineIndex: lineIndex, lineCount: lineCount)
+            result += indentRegions(ns: ns, lineIndex: lineIndex, lineCount: lineCount)
+        }
 
         // Deduplicate exact matches (a brace and an indent rule can agree) and
         // sort for stable, predictable output.
@@ -159,6 +179,136 @@ public enum FoldScanner {
             }
         }
         return regions
+    }
+
+    // MARK: - Markdown (T13.4)
+
+    /// The two rules VS Code's markdown folding offers, and nothing else:
+    ///
+    /// - **Heading sections**: an ATX heading (`#` … `######`) folds down to the
+    ///   line before the next heading of the *same or lower* level, or to the end
+    ///   of the document. Sub-headings nest naturally because a deeper level
+    ///   stops only at an equally deep (or shallower) one.
+    /// - **Fenced code blocks**: ``` ``` ``` or `~~~` opens a fence; the matching
+    ///   closing fence line stays visible (`endLine = closeLine - 1`), the same
+    ///   "delimiters stay on screen" shape the bracket rule uses.
+    ///
+    /// Setext headings (`===` / `---` underlines) are deliberately not detected:
+    /// they need a look-ahead that also has to exclude `---` front-matter fences,
+    /// thematic breaks and table separators, for a form that is rare in practice.
+    private static func markdownRegions(ns: NSString, lineIndex: LineIndex, lineCount: Int) -> [FoldRegion] {
+        var regions: [FoldRegion] = []
+        // Lines belonging to a fenced code block (fence lines included). Headings
+        // are looked for outside these only, so a `# comment` in a shell snippet
+        // never starts a section.
+        var fenced = [Bool](repeating: false, count: lineCount + 1) // 1-based
+
+        var line = 1
+        while line <= lineCount {
+            guard let fence = fenceOpener(lineContent(ns: ns, lineIndex: lineIndex, line: line)) else {
+                line += 1
+                continue
+            }
+            // Inside a fence only the *same* character can close it, so a `~~~`
+            // inside a ``` block is ordinary content.
+            var close = line + 1
+            var closed = false
+            while close <= lineCount {
+                if fenceCloses(lineContent(ns: ns, lineIndex: lineIndex, line: close), fence: fence) {
+                    closed = true
+                    break
+                }
+                close += 1
+            }
+            let last = closed ? close : lineCount
+            for l in line...last { fenced[l] = true }
+            // Closed: hide the body only. Unclosed: run to the document's last
+            // content line (a trailing blank line is not worth hiding).
+            let end = closed ? close - 1 : trimmingTrailingBlanks(lastLine: lineCount, notBelow: line,
+                                                                 ns: ns, lineIndex: lineIndex)
+            if end > line { regions.append(FoldRegion(startLine: line, endLine: end)) }
+            line = last + 1
+        }
+
+        // Heading sections: collect the headings first, then close each one at the
+        // next same-or-shallower heading. Walking backwards keeps that lookup O(1)
+        // — `nextLine[level]` holds the nearest *following* heading of each level,
+        // so a section ends just before the closest of levels 1…N.
+        var headings: [(line: Int, level: Int)] = []
+        for l in 1...lineCount where !fenced[l] {
+            if let level = headingLevel(lineContent(ns: ns, lineIndex: lineIndex, line: l)) {
+                headings.append((l, level))
+            }
+        }
+        var nextLine = [Int](repeating: lineCount + 1, count: 7) // index = heading level
+        for heading in headings.reversed() {
+            var end = lineCount
+            for level in 1...heading.level where nextLine[level] <= lineCount {
+                end = min(end, nextLine[level] - 1)
+            }
+            // Blank lines before the next heading (or at EOF) separate sections
+            // rather than belong to one, exactly as the indent rule treats them.
+            end = trimmingTrailingBlanks(lastLine: end, notBelow: heading.line, ns: ns, lineIndex: lineIndex)
+            if end > heading.line { regions.append(FoldRegion(startLine: heading.line, endLine: end)) }
+            nextLine[heading.level] = heading.line
+        }
+        return regions
+    }
+
+    /// ATX heading level (1…6) of `line`, or `nil` when it is not a heading.
+    /// Up to three leading spaces are allowed (CommonMark; a fourth makes it an
+    /// indented code block) and the hashes must be followed by a space or tab.
+    private static func headingLevel(_ line: String) -> Int? {
+        var chars = Array(line)
+        var indent = 0
+        while indent < chars.count, chars[indent] == " " { indent += 1 }
+        guard indent <= 3 else { return nil }
+        chars.removeFirst(indent)
+        var level = 0
+        while level < chars.count, chars[level] == "#" { level += 1 }
+        guard (1...6).contains(level), level < chars.count,
+              chars[level] == " " || chars[level] == "\t" else { return nil }
+        return level
+    }
+
+    /// Opening fence of `line`: at least three backticks or tildes, indented by at
+    /// most three spaces. An info string (```` ```swift ````) may follow, but a
+    /// backtick fence's info string must not contain another backtick (CommonMark),
+    /// which keeps inline code spans like `` `a` `` from opening a fence.
+    private static func fenceOpener(_ line: String) -> (char: Character, count: Int)? {
+        var chars = Array(line)
+        var indent = 0
+        while indent < chars.count, chars[indent] == " " { indent += 1 }
+        guard indent <= 3 else { return nil }
+        chars.removeFirst(indent)
+        guard let marker = chars.first, marker == "`" || marker == "~" else { return nil }
+        var count = 0
+        while count < chars.count, chars[count] == marker { count += 1 }
+        guard count >= 3 else { return nil }
+        let info = chars.dropFirst(count)
+        if marker == "`", info.contains("`") { return nil }
+        return (marker, count)
+    }
+
+    /// True when `line` closes `fence`: nothing but the same fence character, at
+    /// least as many of them as the opener had (leading / trailing whitespace and
+    /// the terminator ignored).
+    private static func fenceCloses(_ line: String, fence: (char: Character, count: Int)) -> Bool {
+        var chars = Array(line)
+        while let last = chars.last, last == " " || last == "\t" || last == "\n" || last == "\r" {
+            chars.removeLast()
+        }
+        while let first = chars.first, first == " " || first == "\t" { chars.removeFirst() }
+        guard chars.count >= fence.count else { return false }
+        return chars.allSatisfy { $0 == fence.char }
+    }
+
+    /// Walks `lastLine` back over blank lines, never past `notBelow`.
+    private static func trimmingTrailingBlanks(lastLine: Int, notBelow floor: Int,
+                                               ns: NSString, lineIndex: LineIndex) -> Int {
+        var end = lastLine
+        while end > floor, isBlank(lineContent(ns: ns, lineIndex: lineIndex, line: end)) { end -= 1 }
+        return end
     }
 
     // MARK: - Line helpers
