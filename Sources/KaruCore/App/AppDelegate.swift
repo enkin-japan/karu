@@ -52,6 +52,53 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
 
+        // Fold-rendering diagnostics hook (T13.9, used by visual-smoke.sh):
+        // KARU_FOLDTEST=all|current[:<line>] performs the fold shortly after
+        // launch so KARU_SNAPSHOT captures the folded rendering, and
+        // KARU_FOLDTEST_GEO dumps per-line fragment geometry. Fold rendering
+        // proved environment-sensitive (the unit rig's typesetter breaks lines
+        // at .null glyphs, the app's fuses them), so the regression guard must
+        // run the real app. Zero cost when the variables are unset.
+        if let foldTest = ProcessInfo.processInfo.environment["KARU_FOLDTEST"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let controller = self?.windowControllers.first else { return }
+                if foldTest == "all" {
+                    controller.foldAll(nil)
+                } else if foldTest.hasPrefix("current") {
+                    if let lineStr = foldTest.split(separator: ":").last, let line = Int(lineStr),
+                       let tv = controller.window?.contentView?.firstSubview(ofType: NSTextView.self) {
+                        let ns = tv.string as NSString
+                        var offset = 0
+                        for _ in 1..<line { offset = ns.range(of: "\n", range: NSRange(location: offset, length: ns.length - offset)).location + 1 }
+                        tv.setSelectedRange(NSRange(location: offset, length: 0))
+                    }
+                    controller.foldCurrentBlock(nil)
+                }
+                // Geometry dump shortly after the fold, before the snapshot.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    guard let tv = controller.window?.contentView?.firstSubview(ofType: NSTextView.self),
+                          let lm = tv.layoutManager else { return }
+                    let ns = tv.string as NSString
+                    var out = ""
+                    var idx = 0
+                    var line = 1
+                    while idx < ns.length {
+                        let lineRange = ns.lineRange(for: NSRange(location: idx, length: 0))
+                        let g = lm.glyphIndexForCharacter(at: lineRange.location)
+                        var eff = NSRange()
+                        let frag = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: &eff)
+                        let used = lm.lineFragmentUsedRect(forGlyphAt: g, effectiveRange: nil)
+                        let fragChars = lm.characterRange(forGlyphRange: eff, actualGlyphRange: nil)
+                        out += "L\(line) chars=\(NSStringFromRange(lineRange)) glyph=\(g) fragY=\(frag.origin.y) fragH=\(frag.size.height) usedW=\(used.size.width) fragChars=\(NSStringFromRange(fragChars))\n"
+                        idx = NSMaxRange(lineRange)
+                        line += 1
+                    }
+                    try? out.write(toFile: ProcessInfo.processInfo.environment["KARU_FOLDTEST_GEO"] ?? "/tmp/foldgeo.txt",
+                                   atomically: true, encoding: .utf8)
+                }
+            }
+        }
+
         // Headless visual-diagnostics hook: KARU_SNAPSHOT=<png-path>
         // renders the first window's content view to a PNG after layout settles
         // and exits. Lets scripts verify real rendering without the screen-

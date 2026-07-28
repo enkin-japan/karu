@@ -285,6 +285,16 @@ public final class EditorTextView: NSTextView {
         var loc = ns.lineRange(for: NSRange(location: min(charRange.location, ns.length - 1), length: 0)).location
         while loc <= endChar {
             let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
+            // Folded-away lines collapse to zero-height fragments; painting
+            // their rainbow blocks / indent dots would squeeze stray marks onto
+            // the fold boundary row.
+            if let foldProvider, let lineIndex,
+               foldProvider.isLineHidden(lineIndex.lineNumber(forOffset: loc)) {
+                let next = lineRange.location + lineRange.length
+                if next <= loc { break }
+                loc = next
+                continue
+            }
             let lineString = ns.substring(with: lineRange)
             let blocks = IndentRainbow.blocks(forLine: lineString, indentWidth: width)
             for block in blocks {
@@ -365,6 +375,10 @@ public final class EditorTextView: NSTextView {
         ]
 
         for header in headers where header >= 1 && header <= lineIndex.lineCount {
+            // A header can itself be hidden inside a wider fold (fold-all nests);
+            // its fragment is zero-height, so bar and "⋯" would smear onto the
+            // fold boundary row.
+            guard provider.isLineHidden(header) == false else { continue }
             let lineStart = lineIndex.offsetRange(ofLine: header).lowerBound
             // A folded header always has hidden lines below it, so it is never
             // the final empty line; still guard defensively.

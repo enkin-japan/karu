@@ -297,26 +297,39 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
         hiddenLineIntervals = Self.mergeLineIntervals(lineIntervals)
     }
 
-    /// Invalidates glyphs + layout for each range (clamped to the document),
-    /// optionally forcing synchronous layout, then schedules the editor and ruler
-    /// to repaint. Passing an empty `ranges` still refreshes the ruler (fold
-    /// arrows / hidden-line numbers may have moved with the text).
+    /// Invalidates glyphs for each range (clamped to the document) and layout
+    /// from the earliest affected character through the end of the document,
+    /// optionally forcing synchronous layout, then schedules the editor and
+    /// ruler to repaint. Passing an empty `ranges` still refreshes the ruler
+    /// (fold arrows / hidden-line numbers may have moved with the text).
+    ///
+    /// Layout must extend to the document end: invalidating only the hidden
+    /// ranges leaves the typesetter free to keep stale fragments *around* them,
+    /// and the regenerated null glyphs then land in fragments that straddle the
+    /// hidden/visible boundary — the zero-height collapse (which rightly touches
+    /// only fully-hidden fragments) can't fire, producing a ghost blank row and
+    /// a closing line rendered displaced or not at all (user bug, 2026-07-28,
+    /// debug/test.json). Glyph invalidation stays per-range (cheap and precise);
+    /// the tail relayout is user-initiated-fold cost, not a per-edit cost.
     private func applyInvalidation(_ ranges: [NSRange], ensureLayout: Bool) {
         guard let layoutManager = textView?.layoutManager,
               let container = textView?.textContainer else { return }
         let docLen = (textView?.string as NSString?)?.length ?? 0
-        var didInvalidate = false
+        var earliest = Int.max
         for r in ranges {
             let lo = max(0, r.location)
             let hi = min(docLen, r.location + r.length)
             guard hi > lo else { continue }
             let clamped = NSRange(location: lo, length: hi - lo)
             layoutManager.invalidateGlyphs(forCharacterRange: clamped, changeInLength: 0, actualCharacterRange: nil)
-            layoutManager.invalidateLayout(forCharacterRange: clamped, actualCharacterRange: nil)
-            didInvalidate = true
+            earliest = min(earliest, lo)
         }
-        if didInvalidate && ensureLayout {
-            layoutManager.ensureLayout(for: container)
+        if earliest < docLen {
+            layoutManager.invalidateLayout(forCharacterRange: NSRange(location: earliest, length: docLen - earliest),
+                                           actualCharacterRange: nil)
+            if ensureLayout {
+                layoutManager.ensureLayout(for: container)
+            }
         }
         textView?.needsDisplay = true
         // The ruler tracks fold state for its arrows / hidden-line skipping.
@@ -498,12 +511,24 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
         MainActor.assumeIsolated {
             guard !mergedHiddenRanges.isEmpty else { return 0 }
 
+            // Hidden *newlines* must keep their original (control) property: a
+            // `.null` glyph is skipped by the typesetter entirely — including
+            // its line-break action — so nulling them fuses paragraphs into
+            // fragments that straddle the hidden/visible boundary. Straddling
+            // fragments defeat the fully-hidden zero-height collapse below and
+            // rendered as a ghost blank row / a displaced or missing closing
+            // line (user bug, 2026-07-28, debug/test.json). Keeping the breaks
+            // preserves one fragment per hidden line, each fully hidden and
+            // safely collapsible.
+            let ns = (layoutManager.textStorage?.string ?? "") as NSString
             let count = glyphRange.length
             var modified = false
             let newProps = UnsafeMutablePointer<NSLayoutManager.GlyphProperty>.allocate(capacity: count)
             defer { newProps.deallocate() }
             for i in 0..<count {
-                if isHidden(characterIndex: charIndexes[i]) {
+                let charIndex = charIndexes[i]
+                if isHidden(characterIndex: charIndex), charIndex < ns.length,
+                   !Self.isNewline(ns.character(at: charIndex)) {
                     newProps[i] = .null
                     modified = true
                 } else {
@@ -519,6 +544,12 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
                                     forGlyphRange: glyphRange)
             return count
         }
+    }
+
+    /// UTF-16 line terminators (LF, CR; NEL/LS/PS for completeness — the
+    /// document model normalizes to LF, but glyph generation sees raw storage).
+    private nonisolated static func isNewline(_ c: unichar) -> Bool {
+        c == 0x0A || c == 0x0D || c == 0x85 || c == 0x2028 || c == 0x2029
     }
 
     /// Collapses a fully-hidden line fragment to zero height so the folded block
