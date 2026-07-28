@@ -144,6 +144,18 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T12.22 | 恶性 bug：打字中崩溃（用户崩溃报告）——FoldScanner 无界信任 LineIndex 偏移读字符串，beta display-link 合成时序下与编辑事务交错失同步 → characterAtIndex 越界。三层修复：①扫描器长度守卫（失同步跳过本帧，装饰系统无崩溃权）②折叠编辑内/绘制内的布局失效推迟到事务外 ③IndentRainbow 等其余绘制期消费者审计（均已有界内检查） | TextModel/FoldRegion.swift, Editor/FoldingController.swift | main（紧急） | 失同步对不崩测试；打字/undo/IME 全程 LineIndex 同步压力测试 | ✅ 3 测试，586 全绿 |
 
 （B1 多光标维持独立里程碑不混排；C 组除 C8 外按决议不做。）
+
+## M13 用户反馈第九轮：识别空档 + 折叠统一 + Markdown 折叠 + 桌面惯例（2026-07-28）
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T13.1 | 语言识别空档补齐：另存为 / 标题栏改名后若**扩展名变化**立即重跑识别（扩展名优先，内容嗅探兜底）；同扩展名操作不打扰手动选择 | Editor/EditorWindowController.swift | main | 改名换扩展名→重识别、同扩展名→保留手动选择，2 回归测试 | ✅ 588 全绿 |
+| T13.2 | 折叠 UI 统一 VS Code 样式：①缩进区域尾部收缩，纯闭合符号行（`]` `},` `]);`）不再被冒号区域吞掉，一键折叠与单独折叠同块结果一致、闭合括号永远可见 ②折叠头 "⋯ N" 改 "⋯" ③⌥⌘[ 重复按向外折叠一层 | TextModel/FoldRegion.swift, Editor/FoldingController.swift, Editor/EditorTextView.swift | implementer | 反例文档 foldAll 后闭合行可见；向外折叠累积；6 新测试全绿 + visual-smoke | ✅ 594 全绿 |
+| T13.3 | 一键折叠/展开键位 ⌘K ⌘0 / ⌘K ⌘J——复盘确认 T12.13 已实现（ChordStep 状态机，Esc 可取消），无需改动 | Editor/EditorTextView.swift | main | 复盘既有实现与测试 | ✅ 已存在 |
+| T13.4 | Markdown 折叠：FoldScanner 增语言参数，markdown 停用括号/冒号规则，改 ATX 标题分节（≤3 前导空格，子标题嵌套，Setext 不做）+ 围栏代码块（```/~~~，闭栏行可见，未闭合折到文末，栏内 # 不当标题）；FoldingController 经 languageProvider 按需读语言 + noteLanguageChanged 缓存失效；languageIdentifier 四赋值点收拢单一 helper | TextModel/FoldRegion.swift, Editor/FoldingController.swift, Editor/EditorWindowController.swift | implementer | 分节/围栏/抑制通用规则/语言切换缓存失效，17 新测试全绿 + visual-smoke | ✅ 611 全绿 |
+| T13.5 | 程序坞图标右键菜单"新建窗口"（applicationDockMenu，三语） | App/AppDelegate.swift, L10n | main | 构建通过，菜单随 UI 语言 | ✅ |
+| T13.6 | 设置窗口 Esc 关闭（PreferencesWindow 子类拦 keyCode 53） | Settings/PreferencesWindowController.swift | main | 构建通过 | ✅ |
+| T13.7 | 框选字符数**拖拽中实时**统计：AppKit 拖选以 stillSelecting 抑制选区通知，EditorTextView 覆写 setSelectedRanges 回调仅刷状态栏（括号/词高亮仍等选区定稿） | Editor/EditorTextView.swift, Editor/EditorWindowController.swift | main | 构建通过，零常驻 | ✅ |
 v0.8.2 发布（2026-07-22）：T12.21/T12.22 两恶性 bug 紧急修复。全程无人值守（钥匙串
 "始终允许"生效）；latest appcast 解析 0.8.2/build 12。
 v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产上线，latest appcast
