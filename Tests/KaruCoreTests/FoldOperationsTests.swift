@@ -98,6 +98,16 @@ class A {
     #expect(rig.folding.foldedHeaderLines() == [])
 }
 
+@MainActor
+@Test func foldAllKeepsClosingBracketLineVisible() {
+    // T13.2: the indent region of `def f():` must stop before the `]` line, so a
+    // fold-all leaves the closer on screen — same as folding the bracket region.
+    let rig = FoldRig("def f():\n    return [\n        1,\n    ]\n")
+    rig.folding.foldAll()
+    #expect(rig.folding.isLineHidden(4) == false)
+    #expect(rig.folding.isLineHidden(3) == true)
+}
+
 // MARK: - foldCurrent / unfoldCurrent innermost selection (T12.12)
 
 @MainActor
@@ -107,6 +117,22 @@ class A {
     rig.folding.foldCurrent(atLine: 4)
     #expect(rig.folding.foldedHeaderLines() == [3])
     #expect(rig.folding.hiddenLineCount(forHeader: 3) == 1) // hides line 4 only
+}
+
+@MainActor
+@Test func foldCurrentRepeatedWalksOutward() {
+    // VS Code's ⌥⌘[: each press folds the next-innermost region that is not
+    // folded yet, so the caret's enclosing blocks collapse one level at a time.
+    let rig = FoldRig(nestedBraces)
+    rig.folding.foldCurrent(atLine: 4) // innermost (3,4)
+    #expect(rig.folding.foldedHeaderLines() == [3])
+    rig.folding.foldCurrent(atLine: 4) // next out (2,5)
+    #expect(rig.folding.foldedHeaderLines() == [2, 3])
+    rig.folding.foldCurrent(atLine: 4) // outermost (1,6)
+    #expect(rig.folding.foldedHeaderLines() == [1, 2, 3])
+    // Everything containing the line is folded: further presses do nothing.
+    rig.folding.foldCurrent(atLine: 4)
+    #expect(rig.folding.foldedHeaderLines() == [1, 2, 3])
 }
 
 @MainActor

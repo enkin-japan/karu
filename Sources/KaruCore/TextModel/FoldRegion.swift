@@ -143,6 +143,17 @@ public enum FoldScanner {
                     break
                 }
             }
+            // Pull the tail back over pure closing lines (`]`, `},`, `});`): the
+            // bracket rule deliberately keeps such a line visible
+            // (`endLine = closeLine - 1`), so swallowing it here would make a
+            // fold-all hide a closer that folding the bracket region alone keeps
+            // on screen. Blank lines uncovered on the way aren't the block's last
+            // line either.
+            while lastDeep > line,
+                  isPureCloser(lineContent(ns: ns, lineIndex: lineIndex, line: lastDeep))
+                    || isBlank(lineContent(ns: ns, lineIndex: lineIndex, line: lastDeep)) {
+                lastDeep -= 1
+            }
             if lastDeep > line {
                 regions.append(FoldRegion(startLine: line, endLine: lastDeep))
             }
@@ -174,6 +185,22 @@ public enum FoldScanner {
             return false
         }
         return true
+    }
+
+    /// True when the line carries nothing but closing brackets, optionally
+    /// followed by `,` / `;` (`]`, `],`, `});`). Such a line closes the block
+    /// rather than belonging to its body, so an indent region stops before it.
+    private static func isPureCloser(_ line: String) -> Bool {
+        var chars = Array(line)
+        while let last = chars.last,
+              last == " " || last == "\t" || last == "\n" || last == "\r" || last == "," || last == ";" {
+            chars.removeLast()
+        }
+        while let first = chars.first, first == " " || first == "\t" {
+            chars.removeFirst()
+        }
+        guard !chars.isEmpty else { return false }
+        return chars.allSatisfy { $0 == ")" || $0 == "]" || $0 == "}" }
     }
 
     /// True when the line's content, ignoring trailing whitespace / terminator,

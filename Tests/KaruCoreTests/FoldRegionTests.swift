@@ -154,6 +154,50 @@ private func scan(_ text: String) -> [FoldRegion] {
     #expect(scan(text) == [FoldRegion(startLine: 1, endLine: 2)])
 }
 
+// MARK: - Indent regions stop before closing lines (T13.2)
+
+@Test func foldIndentRegionStopsBeforeClosingBracketLine() {
+    // The `]` on line 4 is more deeply indented than the `def` header, but it
+    // closes the bracket block — the bracket rule keeps it visible, so the
+    // indent rule must not swallow it either.
+    let text = "def f():\n    return [\n        1,\n    ]\n"
+    // Indent region (1,3), bracket region (2,3).
+    let expected = [
+        FoldRegion(startLine: 1, endLine: 3),
+        FoldRegion(startLine: 2, endLine: 3),
+    ]
+    #expect(scan(text) == expected)
+}
+
+@Test func foldIndentRegionShrinksOverMultipleClosingLines() {
+    // A run of closing lines at the tail is shrunk away entirely.
+    let text = "def f():\n    x = g(\n        [\n            1,\n        ],\n    )\n"
+    // 1 def f():
+    // 2     x = g(
+    // 3         [
+    // 4             1,
+    // 5         ],
+    // 6     )
+    // Lines 5 and 6 are pure closers -> the indent region ends at line 4.
+    #expect(scan(text).contains(FoldRegion(startLine: 1, endLine: 4)))
+    #expect(!scan(text).contains(FoldRegion(startLine: 1, endLine: 6)))
+}
+
+@Test func foldIndentRegionDegeneratesToNothing() {
+    // The only "body" line is a closer, so the region collapses and is dropped.
+    #expect(scan("key:\n    }\n") == [])
+}
+
+@Test func foldClosingLineDetectionBoundaries() {
+    // `]` / `],` / `});` count as pure closing lines...
+    #expect(scan("key:\n    a\n    ]\n") == [FoldRegion(startLine: 1, endLine: 2)])
+    #expect(scan("key:\n    a\n    ],\n") == [FoldRegion(startLine: 1, endLine: 2)])
+    #expect(scan("key:\n    a\n    });\n") == [FoldRegion(startLine: 1, endLine: 2)])
+    // ...but anything else on the line does not.
+    #expect(scan("key:\n    a\n    ], # comment\n") == [FoldRegion(startLine: 1, endLine: 3)])
+    #expect(scan("key:\n    a\n    a]\n") == [FoldRegion(startLine: 1, endLine: 3)])
+}
+
 // MARK: - Mixed document
 
 @Test func foldMixedBraceAndIndent() {

@@ -341,8 +341,8 @@ public final class EditorTextView: NSTextView {
     }
 
     /// Paints a faint accent-coloured bar across every currently-folded header
-    /// line intersecting `rect`, with a trailing "⋯ N" indicator (N = hidden
-    /// line count) just past the end of the header text. Viewport-only and
+    /// line intersecting `rect`, with a trailing "⋯" indicator (VS Code style)
+    /// just past the end of the header text. Viewport-only and
     /// storage-free: the (tiny) folded-header set is re-queried each draw and
     /// each bar is positioned from the shared `LineIndex` + layout manager;
     /// nothing is retained. Same safe path as the indent rainbow — this is the
@@ -383,10 +383,9 @@ public final class EditorTextView: NSTextView {
             barColor.setFill()
             barRect.fill()
 
-            // "⋯ N" hint just past the header text.
-            let hidden = provider.hiddenLineCount(forHeader: header)
+            // "⋯" hint just past the header text.
             let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
-            let hint = "\u{22EF} \(hidden)" as NSString  // ⋯
+            let hint = "\u{22EF}" as NSString  // ⋯
             let hintSize = hint.size(withAttributes: hintAttrs)
             let hintX = usedRect.maxX + origin.x + 12
             let hintY = fragRect.midY + origin.y - hintSize.height / 2

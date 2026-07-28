@@ -26,7 +26,8 @@ public protocol FoldStatusProviding: AnyObject {
     /// can paint their collapsed-block background. Empty when nothing is folded.
     func foldedHeaderLines() -> [Int]
     /// Number of lines hidden beneath the folded header `line` (0 when `line` is
-    /// not a folded header), used for the "⋯ N" collapsed-block indicator.
+    /// not a folded header). The collapsed-block indicator no longer shows this
+    /// count ("⋯" only, VS Code style); this stays as the fold-extent query.
     func hiddenLineCount(forHeader line: Int) -> Int
 }
 
@@ -207,13 +208,17 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
         applyFolds(invalidating: dirty)
     }
 
-    /// Folds the innermost foldable region that contains `line` (the caret line;
-    /// a caret sitting on the header line counts as contained). No-op when `line`
-    /// is inside no foldable region, or the innermost one is already folded.
+    /// Folds the innermost *not-yet-folded* foldable region that contains `line`
+    /// (the caret line; a caret sitting on the header line counts as contained).
+    /// Skipping the already-folded ones makes repeated invocations walk outward
+    /// one level at a time (VS Code's ⌥⌘[). No-op when `line` is inside no
+    /// foldable region, or every containing region is already folded.
     public func foldCurrent(atLine line: Int) {
-        let containing = regions().filter { $0.startLine <= line && line <= $0.endLine }
-        guard let region = containing.min(by: { span($0) < span($1) }),
-              activeFolds[region.startLine]?.endLine != region.endLine else { return }
+        let containing = regions().filter {
+            $0.startLine <= line && line <= $0.endLine
+                && activeFolds[$0.startLine]?.endLine != $0.endLine
+        }
+        guard let region = containing.min(by: { span($0) < span($1) }) else { return }
         activeFolds[region.startLine] = region
         applyFolds(invalidating: [hiddenCharRange(for: region)])
     }
