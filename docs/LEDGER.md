@@ -156,6 +156,8 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T13.5 | 程序坞图标右键菜单"新建窗口"（applicationDockMenu，三语） | App/AppDelegate.swift, L10n | main | 构建通过，菜单随 UI 语言 | ✅ |
 | T13.6 | 设置窗口 Esc 关闭（PreferencesWindow 子类拦 keyCode 53） | Settings/PreferencesWindowController.swift | main | 构建通过 | ✅ |
 | T13.7 | 框选字符数**拖拽中实时**统计：AppKit 拖选以 stillSelecting 抑制选区通知，EditorTextView 覆写 setSelectedRanges 回调仅刷状态栏（括号/词高亮仍等选区定稿） | Editor/EditorTextView.swift, Editor/EditorWindowController.swift | main | 构建通过，零常驻 | ✅ |
+| T13.8 | 用户实测反馈：⌘K ⌘0/⌘K ⌘J 无反应——⌘0 同时是"实际大小"菜单键位，菜单匹配在 keyDown 之前吃掉和弦第二键。和弦机抽 handleFoldChord，⌘ 步骤改 performKeyEquivalent 消费（视图先于菜单）；未武装原样放行；失焦不拦截 | Editor/EditorTextView.swift | main | 消费/放行/失焦 3 回归测试 | ✅ 614 全绿 |
+| T13.9 | 用户实测反馈：折叠幽灵空行 + 闭合括号错位/消失（debug/test.json 截图）——真机 KARU_FOLDTEST 钩子 + 片段几何转储实锤：.null 字形令 typesetter 连隐藏换行一起跳过，段落熔合成跨隐藏/可见边界片段，零高塌缩永不触发；rig 环境 typesetter 行为不同故单测全绿（环境敏感回归）。修复：隐藏换行保留字形属性；布局失效延伸到文末；rainbow/缩进点/被吞折叠头跳过隐藏行。守门：visual-smoke.sh 增真机折叠几何校验 | Editor/FoldingController.swift, Editor/EditorTextView.swift, App/AppDelegate.swift, scripts/visual-smoke.sh | main | 真机几何断言（闭合行紧贴头行、隐藏行全塌缩）+ 3 rig 几何测试 | ✅ 617 全绿 + FOLD GEOMETRY OK |
 v0.9.0 发布（2026-07-28）：M13 全部七项（T13.1–T13.7）。首跑因登录钥匙串锁定在第一签
 失败（errSecInternalComponent，久未发布后锁屏/重启所致；已入记忆——发布前先做小签名探路），
 用户解锁后重跑全程无人值守。latest appcast 解析 0.9.0/build 13；Gatekeeper
