@@ -158,6 +158,20 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T13.7 | 框选字符数**拖拽中实时**统计：AppKit 拖选以 stillSelecting 抑制选区通知，EditorTextView 覆写 setSelectedRanges 回调仅刷状态栏（括号/词高亮仍等选区定稿） | Editor/EditorTextView.swift, Editor/EditorWindowController.swift | main | 构建通过，零常驻 | ✅ |
 | T13.8 | 用户实测反馈：⌘K ⌘0/⌘K ⌘J 无反应——⌘0 同时是"实际大小"菜单键位，菜单匹配在 keyDown 之前吃掉和弦第二键。和弦机抽 handleFoldChord，⌘ 步骤改 performKeyEquivalent 消费（视图先于菜单）；未武装原样放行；失焦不拦截 | Editor/EditorTextView.swift | main | 消费/放行/失焦 3 回归测试 | ✅ 614 全绿 |
 | T13.9 | 用户实测反馈：折叠幽灵空行 + 闭合括号错位/消失（debug/test.json 截图）——真机 KARU_FOLDTEST 钩子 + 片段几何转储实锤：.null 字形令 typesetter 连隐藏换行一起跳过，段落熔合成跨隐藏/可见边界片段，零高塌缩永不触发；rig 环境 typesetter 行为不同故单测全绿（环境敏感回归）。修复：隐藏换行保留字形属性；布局失效延伸到文末；rainbow/缩进点/被吞折叠头跳过隐藏行。守门：visual-smoke.sh 增真机折叠几何校验 | Editor/FoldingController.swift, Editor/EditorTextView.swift, App/AppDelegate.swift, scripts/visual-smoke.sh | main | 真机几何断言（闭合行紧贴头行、隐藏行全塌缩）+ 3 rig 几何测试 | ✅ 617 全绿 + FOLD GEOMETRY OK |
+## M14 用户反馈第十轮：体验优化批（2026-07-30）
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T14.1 | 拉伸窗口行号不刷新：重排换行移动所有行片段但不触发 gutter 已监听的三种通知——补 textView frameDidChange 观察（高亮引擎早已监听，gutter 漏了） | Gutter/GutterView.swift | main | 构建通过 | ✅ |
+| T14.2 | ⌘←/⌘→ 到逻辑行首/行末（软换行不影响）；行首 VS Code Home 语义（首个非空白⇄列 0 切换）；⇧ 选择变体同步 | Editor/EditorTextView.swift | main | 纯函数 6 测试 | ✅ |
+| T14.3 | 第二个及以上窗口右下错开 24pt（共享 frame 自动保存槽致完全重叠）；越界回卷屏幕左上 | App/AppDelegate.swift | main | 构建通过 | ✅ |
+| T14.4 | 补全弹窗移到光标上方（中文输入法候选窗在下方被遮，用户反馈）；上方不足回退下方 | Completion/CompletionController.swift | main | 构建通过 | ✅ |
+| T14.5 | markdown 补漏：列表标记 .punctuation→.property（原色同正文视觉无高亮）；补 ***粗斜***/___粗斜___/~~删除线~~ 规则。代码块按语言高亮**搁置**（预算大，用户决议） | Highlight/Languages/MarkdownLanguage.swift | main | 3 新测试 + 1 旧预期更新 | ✅ |
+| T14.6 | 第三个连续引号补全三引号对（Python """/'''，``` 围栏同规则受益）；decide 加 charBefore2 参数 | Editor/AutoClosePairs.swift, Editor/EditorTextView.swift | main | 3 新测试（补全/两连不触发/stepOver 优先） | ✅ |
+| T14.7 | Python 三引号体内仍套代码高亮（用户 bug）：LanguageDefinition 加 multilineStringDelimiters（仅 Python），引擎画带起点瞬时扫描跨行状态（零常驻），体内行合成 .string token 兼堵 symbol 层，关闭行只 tokenize 尾部；'''/"""互不关闭；# 内定界符误翻转为文档化 v1 近似 | Highlight/HighlightEngine.swift, LanguageDefinition.swift, Languages/PythonLanguage.swift | implementer | 7 测试含端到端属性断言 | ✅ 636 全绿 |
+
+（本轮决议：粘贴 Python 不识别复现失败按偶发搁置；markdown 代码块按语言高亮搁置待重提；会话恢复方案对比后待拍板。）
+
 v0.9.1 发布（2026-07-28）：用户实测反馈两修复（T13.8 和弦被菜单截胡 / T13.9 折叠渲染
 片段熔合）。发布前小签名探路生效；全程无人值守；latest appcast 解析 0.9.1/build 14。
 v0.9.0 发布（2026-07-28）：M13 全部七项（T13.1–T13.7）。首跑因登录钥匙串锁定在第一签
