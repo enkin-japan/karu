@@ -175,6 +175,8 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T14.9 | 恢复语义对齐（用户拍板：正常退出不恢复，仅升级/崩溃恢复）：SessionStore 三态标志（beginSession 置进行中 / markCleanExit / markUpdateRelaunch），Sparkle updaterWillRelaunchApplication 委托探测升级重启；不恢复的启动清遗留清单。真机双向验证 | App/SessionStore.swift, App/UpdateController.swift, App/AppDelegate.swift | main | 4 策略测试 + 真机（正常退出不恢复/kill -9 恢复） | ✅ |
 | T14.10 | 缩进感知退格：行首纯空格区退格删至缩进宽度下一较低倍数（宽4：11→8→4→0，9→8，用户规格）；行内文本/tab 前缀回退默认 | Editor/EditorTextView.swift | main | 纯函数 + 端到端 undo 4 测试 | ✅ 657 全绿 |
 
+| T14.11 | 崩溃草稿（原方案 B 语义收窄后落地）：裁决规则"草稿存在⟺缓冲区≠SHA256基线"（与关闭确认同判据）；全部窗口；防抖 1.5s 原子落盘（主线程快照+串行 utility 队列）；终止获准即清（升级重启同理——退出前确认已处理脏窗口）；恢复：未命名/按 path 归位/磁盘较新弃草稿提示/孤儿转未命名；L10n 三语三条 | App/DraftStore.swift（新）, App/AppDelegate.swift, Editor/EditorWindowController.swift, L10n | implementer | 17 测试 + 真机三连（kill -9 恢复/正常退出清空/视觉） | ✅ 674 全绿 |
+
 （本轮决议：粘贴 Python 不识别复现失败按偶发搁置；markdown 代码块按语言高亮搁置待重提。
 **方案 B（未命名草稿恢复）搁置备案**：需草稿落盘机制 + 三个产品语义决策——①主动关闭未命名窗口
 草稿删不删 ②与失焦自动保存/SHA256 关闭确认的交互 ③大缓冲区落盘 I/O 策略；另有"未保存内容
