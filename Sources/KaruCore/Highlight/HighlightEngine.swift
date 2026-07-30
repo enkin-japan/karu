@@ -389,6 +389,138 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
             (outer.location + outer.length) >= (inner.location + inner.length)
     }
 
+    // MARK: - Cross-line multi-line strings (T14.7)
+
+    /// The earliest occurrence of any of `delimiters` in `ns` within
+    /// `[location, limit)`, as a literal (non-regex) search. Returns the hit's
+    /// range together with which delimiter matched, or `nil` when none occurs.
+    private nonisolated static func firstDelimiter(_ delimiters: [String],
+                                                   in ns: NSString,
+                                                   from location: Int,
+                                                   limit: Int) -> (range: NSRange, delimiter: String)? {
+        guard location < limit else { return nil }
+        let search = NSRange(location: location, length: limit - location)
+        var best: (range: NSRange, delimiter: String)?
+        for delimiter in delimiters {
+            let r = ns.range(of: delimiter, options: .literal, range: search)
+            guard r.location != NSNotFound else { continue }
+            if best == nil || r.location < best!.range.location { best = (r, delimiter) }
+        }
+        return best
+    }
+
+    /// Which multi-line string delimiter is still open at character `offset`,
+    /// or `nil` when the offset is outside any multi-line string.
+    ///
+    /// Scans the document from its start with a literal search loop — a
+    /// **transient** pass that builds nothing and is not cached
+    /// (ARCHITECTURE.md §3.4). It runs only when the painted band actually
+    /// changes (a pure scroll short-circuits on `paintedRange` before reaching
+    /// it), and a literal search over even a 10 MB document is a few
+    /// milliseconds.
+    ///
+    /// v1 approximation, deliberate: the scan does not parse comments or
+    /// single-line strings, so a `# """` or `x = '"""'` flips the state as if it
+    /// opened a block. This matches the line-based trade-offs `PythonLanguage`
+    /// already documents.
+    nonisolated static func openMultilineDelimiter(in ns: NSString,
+                                                   at offset: Int,
+                                                   delimiters: [String]) -> String? {
+        guard !delimiters.isEmpty else { return nil }
+        let limit = min(max(offset, 0), ns.length)
+        var pos = 0
+        var open: String?
+        while pos < limit {
+            // Inside a string only the *same* delimiter closes it; outside, any
+            // of them opens one.
+            guard let hit = firstDelimiter(open.map { [$0] } ?? delimiters,
+                                           in: ns, from: pos, limit: limit) else { break }
+            pos = hit.range.location + hit.range.length
+            open = (open == nil) ? hit.delimiter : nil
+        }
+        return open
+    }
+
+    /// Walks the multi-line string state across one line.
+    ///
+    /// `open` is the delimiter that is open when the line *starts*. Returns the
+    /// span (from the line start) that belongs to the string carried in from the
+    /// previous line — up to and including the closing delimiter, or the whole
+    /// line when it does not close here — plus the delimiter still open when the
+    /// line *ends*. A line entered outside a string yields no span: the
+    /// language's own rules already colour a block that opens on it.
+    nonisolated static func multilineStringSpan(inLine line: NSString,
+                                                open: String?,
+                                                delimiters: [String]) -> (span: NSRange?, open: String?) {
+        guard !delimiters.isEmpty, line.length > 0 else { return (nil, open) }
+        // Work in the line's content, excluding its terminator, so the span
+        // matches what `tokenize(line:)` can produce (its `.*` never crosses a
+        // newline) and CR / CRLF / LF all behave alike.
+        var contentsEnd = 0
+        line.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: 0, length: 0))
+        guard contentsEnd > 0 else { return (nil, open) }
+
+        var open = open
+        var span: NSRange?
+        var pos = 0
+        if let entering = open {
+            guard let hit = firstDelimiter([entering], in: line, from: 0, limit: contentsEnd) else {
+                // No close on this line: the whole line is string body.
+                return (NSRange(location: 0, length: contentsEnd), entering)
+            }
+            pos = hit.range.location + hit.range.length
+            span = NSRange(location: 0, length: pos)
+            open = nil
+        }
+        // Whatever remains of the line only advances the state (the rules colour
+        // it): delimiters alternate open / close from here on.
+        while pos < contentsEnd {
+            guard let hit = firstDelimiter(open.map { [$0] } ?? delimiters,
+                                           in: line, from: pos, limit: contentsEnd) else { break }
+            pos = hit.range.location + hit.range.length
+            open = (open == nil) ? hit.delimiter : nil
+        }
+        return (span, open)
+    }
+
+    /// Tokenizes one line with the cross-line multi-line string state applied,
+    /// returning the tokens to paint and the state at the line's end.
+    ///
+    /// For a language with no `multilineStringDelimiters` this is exactly
+    /// `language.tokenize(line:)` — the whole cross-line path short-circuits.
+    /// Otherwise a line that continues a string from above gets a synthesized
+    /// `.string` token covering the carried-in span, and only the text *after*
+    /// that span is handed to the rules (tokenizing the whole line would let a
+    /// rule swallow the tail — `b""" + f(2)` reads as one open string to the
+    /// line-based rules — and would colour the body as code, which is the bug).
+    /// The synthesized token also participates in the symbol pass's gap logic,
+    /// which is what keeps class / function names inside a docstring uncoloured.
+    nonisolated static func tokens(inLine line: String,
+                                   language: LanguageDefinition,
+                                   openDelimiter: String?) -> (tokens: [(range: NSRange, kind: TokenKind)],
+                                                               openDelimiter: String?) {
+        let delimiters = language.multilineStringDelimiters
+        guard !delimiters.isEmpty else { return (language.tokenize(line: line), nil) }
+
+        let ns = line as NSString
+        let (span, open) = multilineStringSpan(inLine: ns, open: openDelimiter, delimiters: delimiters)
+        guard let span else { return (language.tokenize(line: line), open) }
+
+        var tokens = [(range: span, kind: TokenKind.string)]
+        let tailStart = span.location + span.length
+        if tailStart < ns.length {
+            // The tail starts right after a closing delimiter, so tokenizing it
+            // standalone sees the same word boundaries it would in place; shift
+            // the ranges back into line coordinates. Ascending order (which the
+            // symbol pass relies on) is preserved by construction.
+            tokens += language.tokenize(line: ns.substring(from: tailStart)).map {
+                (range: NSRange(location: tailStart + $0.range.location, length: $0.range.length),
+                 kind: $0.kind)
+            }
+        }
+        return (tokens, open)
+    }
+
     /// Maps `rect` to a whole-line, document-clamped character range via the
     /// layout manager's glyph geometry.
     private func lineClampedCharRange(for rect: NSRect,
@@ -441,11 +573,22 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         let end = paintChars.location + paintChars.length
         layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: paintChars)
 
+        // Cross-line multi-line strings (Python `"""` / `'''`): the band may
+        // begin inside a string opened far above it, so resolve the state at
+        // `start` once and then carry it down the lines. Languages that declare
+        // no delimiters short-circuit to `nil` without scanning anything. Typing
+        // a delimiter invalidates `paintedRange` like any other edit, so the
+        // state is re-resolved and the lines below repaint.
+        var openDelimiter = Self.openMultilineDelimiter(in: ns, at: start,
+                                                        delimiters: language.multilineStringDelimiters)
+
         var loc = start
         while loc < end {
             let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
             let lineString = ns.substring(with: lineRange)
-            let tokens = language.tokenize(line: lineString)
+            let (tokens, nextOpen) = Self.tokens(inLine: lineString, language: language,
+                                                 openDelimiter: openDelimiter)
+            openDelimiter = nextOpen
             for token in tokens {
                 guard let color = theme.color(for: token.kind) else { continue }
                 let absolute = NSRange(location: lineRange.location + token.range.location,

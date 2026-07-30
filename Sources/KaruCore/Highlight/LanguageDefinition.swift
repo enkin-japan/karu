@@ -50,9 +50,15 @@ public struct LanguageRule {
 /// v1 tokenizing is **line-based**: `tokenize(line:)` is a pure function over a
 /// single line, which keeps colouring viewport-cheap and trivially testable.
 /// The trade-off is that constructs spanning multiple lines (block comments,
-/// multi-line strings) are only approximated per line; a later revision can add
-/// cross-line state if a language needs it. JSON — the first language — has no
-/// such constructs, so the approximation is exact for it.
+/// multi-line strings) are only approximated per line. JSON — the first
+/// language — has no such constructs, so the approximation is exact for it.
+///
+/// The one escape hatch is `multilineStringDelimiters`: a language that lists
+/// its multi-line string delimiters gets the engine to carry a *transient*
+/// open/closed state across lines while painting (see
+/// `HighlightEngine.tokens(inLine:language:openDelimiter:)`), so the body of a
+/// Python `"""…"""` block is coloured as one string instead of being
+/// re-tokenized as code. Languages that leave it empty are unaffected.
 public struct LanguageDefinition {
     /// Stable language id (e.g. `"json"`), also used for indent-width lookup.
     public let identifier: String
@@ -78,16 +84,25 @@ public struct LanguageDefinition {
     /// `console`). Languages with no fixed built-in set leave this empty.
     public let builtins: [String]
 
+    /// Delimiters that open **and** close a string spanning multiple lines
+    /// (Python's `"""` / `'''`). A delimiter only ever closes a string opened by
+    /// the *same* delimiter, so `'''` inside a `"""` block is plain content.
+    /// Empty for every language whose strings never cross a line break — those
+    /// skip the engine's cross-line pass entirely.
+    public let multilineStringDelimiters: [String]
+
     public init(identifier: String,
                 fileExtensions: [String],
                 rules: [LanguageRule],
                 keywords: [String] = [],
-                builtins: [String] = []) {
+                builtins: [String] = [],
+                multilineStringDelimiters: [String] = []) {
         self.identifier = identifier
         self.fileExtensions = fileExtensions
         self.rules = rules
         self.keywords = keywords
         self.builtins = builtins
+        self.multilineStringDelimiters = multilineStringDelimiters
     }
 
     /// Tokenizes a single line into a list of `(range, kind)` spans.

@@ -2,12 +2,14 @@ import Foundation
 
 /// Python definition (v1, line-based).
 ///
+/// Triple-quoted strings *are* handled across lines: the rules below colour the
+/// same-line and open-to-end-of-line forms, and `multilineStringDelimiters`
+/// makes the engine carry the open/closed state from line to line, so a block's
+/// body and its closing line are coloured as string rather than as code
+/// (T14.7). See `HighlightEngine.tokens(inLine:language:openDelimiter:)` for
+/// the approximation that state scan accepts (`# """` flips it).
+///
 /// Line-approximation trade-offs accepted for v1:
-/// - Triple-quoted strings are approximated per line: a triple quote that both
-///   opens and closes on one line is coloured exactly; an *opening* line
-///   colours from the triple quote to end-of-line. A line that only *closes* a
-///   multi-line string (text preceding a trailing `'''`) is not detected as a
-///   string, because there is no cross-line state.
 /// - Prefixed strings (f / r / b / u, and their combinations) are treated the
 ///   same as plain strings; f-string interpolations `{…}` are not tokenized
 ///   separately.
@@ -75,7 +77,8 @@ public enum PythonLanguage {
                 ),
             ],
             keywords: keywords,
-            builtins: builtins
+            builtins: builtins,
+            multilineStringDelimiters: ["\"\"\"", "'''"]
         )
     }
 }

@@ -23,6 +23,26 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     pairs.first { $0.text == text }?.kind
 }
 
+/// Walks `source` line by line exactly as `highlightVisibleRange` does —
+/// carrying the multi-line string state across lines — and returns the
+/// `(text, kind)` spans of each line.
+private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(text: String, kind: TokenKind)]] {
+    let ns = source as NSString
+    var lines: [[(text: String, kind: TokenKind)]] = []
+    var open: String?
+    var loc = 0
+    while loc < ns.length {
+        let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
+        let line = ns.substring(with: lineRange)
+        let lineNS = line as NSString
+        let (tokens, next) = HighlightEngine.tokens(inLine: line, language: def, openDelimiter: open)
+        open = next
+        lines.append(tokens.map { (lineNS.substring(with: $0.range), $0.kind) })
+        loc = lineRange.location + lineRange.length
+    }
+    return lines
+}
+
 // MARK: - JSON tokenizer classification
 
 @Test func jsonClassifiesKeysValuesNumbersLiteralsPunctuation() {
@@ -332,6 +352,134 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     let ns = line as NSString
     let spans = def.tokenize(line: line).map { ns.substring(with: $0.range) }
     #expect(spans.contains("***both***"))
+}
+
+// MARK: - Cross-line multi-line strings (T14.7)
+
+/// User bug: the *body* lines of a Python `"""` block were re-tokenized as
+/// code, so numbers / classes / functions inside a docstring got their code
+/// colours. The body must read as one string span, and the state must be
+/// released again after the closing delimiter.
+@Test func pythonDocstringBodyIsOneStringSpan() {
+    let py = PythonLanguage.make()
+    let lines = documentSpans(py, "def f():\n    \"\"\"doc\n    x = 1 + 2\n    \"\"\"\n    y = 3\n")
+
+    // Body line: a single string token covering the whole line, no number.
+    #expect(lines[2].count == 1)
+    #expect(lines[2].first?.kind == .string)
+    #expect(lines[2].first?.text == "    x = 1 + 2")
+    #expect(lines[2].contains { $0.kind == .number } == false)
+
+    // After the closing line, normal colouring is back.
+    #expect(kind(of: "3", in: lines[4]) == .number)
+    #expect(kind(of: "def", in: lines[0]) == .keyword)
+}
+
+@Test func pythonDocstringCloseLineColoursOnlyUpToDelimiter() {
+    let py = PythonLanguage.make()
+    let lines = documentSpans(py, "s = \"\"\"a\nb\"\"\" + repr(2)\n")
+
+    // The carried-in string ends at the closing delimiter …
+    #expect(lines[1].first?.kind == .string)
+    #expect(lines[1].first?.text == "b\"\"\"")
+    // … and the code after it on the same line is tokenized normally.
+    #expect(kind(of: "repr", in: lines[1]) == .builtin)
+    #expect(kind(of: "2", in: lines[1]) == .number)
+}
+
+@Test func pythonMultilineStringClosesOnlyWithItsOwnDelimiter() {
+    let py = PythonLanguage.make()
+
+    // A `"""` inside a `'''` block is plain body text, not a close.
+    let single = documentSpans(py, "x = '''\n\"\"\" not a close 7\n'''\ny = 4\n")
+    #expect(single[1].count == 1)
+    #expect(single[1].first?.kind == .string)
+    #expect(single[1].contains { $0.kind == .number } == false)
+    #expect(kind(of: "4", in: single[3]) == .number)
+
+    // … and symmetrically for `'''` inside a `"""` block.
+    let double = documentSpans(py, "x = \"\"\"\n''' not a close 7\n\"\"\"\ny = 4\n")
+    #expect(double[1].count == 1)
+    #expect(double[1].first?.kind == .string)
+    #expect(kind(of: "4", in: double[3]) == .number)
+}
+
+@Test func pythonSingleLineTripleQuoteLeavesFollowingLinesAlone() {
+    let py = PythonLanguage.make()
+    let lines = documentSpans(py, "a = \"\"\"x\"\"\"\nb = 5\n")
+    #expect(kind(of: "\"\"\"x\"\"\"", in: lines[0]) == .string)
+    // The state closed on the same line, so line 2 is ordinary code.
+    #expect(kind(of: "5", in: lines[1]) == .number)
+    #expect(lines[1].contains { $0.kind == .string } == false)
+}
+
+@Test func openDelimiterScanResolvesStateAtAnyOffset() {
+    let delimiters = PythonLanguage.make().multilineStringDelimiters
+    let source = "a = \"\"\"\nbody 1\n\"\"\"\nz = 1\nb = '''\ntail\n"
+    let ns = source as NSString
+    func state(atLineStartingWith prefix: String) -> String? {
+        HighlightEngine.openMultilineDelimiter(in: ns,
+                                               at: ns.range(of: prefix).location,
+                                               delimiters: delimiters)
+    }
+
+    #expect(HighlightEngine.openMultilineDelimiter(in: ns, at: 0, delimiters: delimiters) == nil)
+    #expect(state(atLineStartingWith: "body 1") == "\"\"\"")   // inside the block
+    #expect(state(atLineStartingWith: "z = 1") == nil)        // closed again
+    #expect(state(atLineStartingWith: "tail") == "'''")       // inside the unterminated block
+    // Document end of an unterminated block: still open.
+    #expect(HighlightEngine.openMultilineDelimiter(in: ns, at: ns.length, delimiters: delimiters) == "'''")
+    // No delimiters declared → never any state, whatever the text says.
+    #expect(HighlightEngine.openMultilineDelimiter(in: ns, at: ns.length, delimiters: []) == nil)
+}
+
+@Test func languagesWithoutMultilineDelimitersAreUnaffected() {
+    for def in [JSONLanguage.make(), JavaScriptLanguage.make(), MarkdownLanguage.make()] {
+        #expect(def.multilineStringDelimiters.isEmpty)
+        // The cross-line path short-circuits: same tokens, no state carried.
+        let line = "let s = \"\"\"x\"\"\";"
+        let (tokens, open) = HighlightEngine.tokens(inLine: line, language: def, openDelimiter: nil)
+        #expect(open == nil)
+        #expect(tokens.map(\.range) == def.tokenize(line: line).map(\.range))
+    }
+}
+
+/// End-to-end through the engine: painting a docstring must leave the body's
+/// identifiers with the string colour, i.e. the in-document symbol pass (which
+/// colours class / function names) must not reach inside the synthesized span.
+@MainActor
+@Test func enginePaintsDocstringBodyAsStringIncludingSymbols() {
+    let center = NotificationCenter()
+    let settings = ModuleSettings(defaults: isolatedDefaults(), center: center)
+
+    let frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+    let scrollView = NSScrollView(frame: frame)
+    let textView = EditorTextView(frame: frame)
+    scrollView.documentView = textView
+    let source = "class Widget:\n    \"\"\"Widget makes 42.\n    \"\"\"\n    n = 42\n"
+    textView.string = source
+
+    let engine = HighlightEngine(textView: textView,
+                                 scrollView: scrollView,
+                                 moduleSettings: settings,
+                                 moduleCenter: center)
+    engine.setLanguage(identifier: "python")
+    textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+    engine.appearanceDidChange()   // invalidate + repaint synchronously
+
+    let ns = source as NSString
+    let lm = textView.layoutManager!
+    func colour(at index: Int) -> NSColor? {
+        lm.temporaryAttribute(.foregroundColor, atCharacterIndex: index,
+                              effectiveRange: nil) as? NSColor
+    }
+    let theme = HighlightTheme()
+    // `Widget` inside the docstring: string colour, not the symbol/type colour.
+    #expect(colour(at: ns.range(of: "Widget makes").location) === theme.color(for: .string))
+    // The number inside the docstring is string-coloured too …
+    #expect(colour(at: ns.range(of: "42.").location) === theme.color(for: .string))
+    // … while the one on the code line below keeps the number colour.
+    #expect(colour(at: ns.range(of: "n = 42").location + 4) === theme.color(for: .number))
 }
 
 @Test func markdownListMarkersAreVisiblyColoured() {
