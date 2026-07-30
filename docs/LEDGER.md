@@ -172,6 +172,9 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 
 | T14.8 | 会话恢复方案 A：SessionStore 随开随记（open/改名/失焦/关窗/退出五点），主动关窗移除、随退出关窗保留（isTerminating 区分），冷启动恢复文件+光标+滚动，已删文件静默清理，64 项上限 | App/SessionStore.swift（新）, App/AppDelegate.swift, Editor/EditorWindowController.swift | implementer | 13 测试（隔离 defaults suite）+ 真机三连跑 | ✅ 649 全绿 |
 
+| T14.9 | 恢复语义对齐（用户拍板：正常退出不恢复，仅升级/崩溃恢复）：SessionStore 三态标志（beginSession 置进行中 / markCleanExit / markUpdateRelaunch），Sparkle updaterWillRelaunchApplication 委托探测升级重启；不恢复的启动清遗留清单。真机双向验证 | App/SessionStore.swift, App/UpdateController.swift, App/AppDelegate.swift | main | 4 策略测试 + 真机（正常退出不恢复/kill -9 恢复） | ✅ |
+| T14.10 | 缩进感知退格：行首纯空格区退格删至缩进宽度下一较低倍数（宽4：11→8→4→0，9→8，用户规格）；行内文本/tab 前缀回退默认 | Editor/EditorTextView.swift | main | 纯函数 + 端到端 undo 4 测试 | ✅ 657 全绿 |
+
 （本轮决议：粘贴 Python 不识别复现失败按偶发搁置；markdown 代码块按语言高亮搁置待重提。
 **方案 B（未命名草稿恢复）搁置备案**：需草稿落盘机制 + 三个产品语义决策——①主动关闭未命名窗口
 草稿删不删 ②与失焦自动保存/SHA256 关闭确认的交互 ③大缓冲区落盘 I/O 策略；另有"未保存内容
