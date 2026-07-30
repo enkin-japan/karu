@@ -170,7 +170,12 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 | T14.6 | 第三个连续引号补全三引号对（Python """/'''，``` 围栏同规则受益）；decide 加 charBefore2 参数 | Editor/AutoClosePairs.swift, Editor/EditorTextView.swift | main | 3 新测试（补全/两连不触发/stepOver 优先） | ✅ |
 | T14.7 | Python 三引号体内仍套代码高亮（用户 bug）：LanguageDefinition 加 multilineStringDelimiters（仅 Python），引擎画带起点瞬时扫描跨行状态（零常驻），体内行合成 .string token 兼堵 symbol 层，关闭行只 tokenize 尾部；'''/"""互不关闭；# 内定界符误翻转为文档化 v1 近似 | Highlight/HighlightEngine.swift, LanguageDefinition.swift, Languages/PythonLanguage.swift | implementer | 7 测试含端到端属性断言 | ✅ 636 全绿 |
 
-（本轮决议：粘贴 Python 不识别复现失败按偶发搁置；markdown 代码块按语言高亮搁置待重提；会话恢复方案对比后待拍板。）
+| T14.8 | 会话恢复方案 A：SessionStore 随开随记（open/改名/失焦/关窗/退出五点），主动关窗移除、随退出关窗保留（isTerminating 区分），冷启动恢复文件+光标+滚动，已删文件静默清理，64 项上限 | App/SessionStore.swift（新）, App/AppDelegate.swift, Editor/EditorWindowController.swift | implementer | 13 测试（隔离 defaults suite）+ 真机三连跑 | ✅ 649 全绿 |
+
+（本轮决议：粘贴 Python 不识别复现失败按偶发搁置；markdown 代码块按语言高亮搁置待重提。
+**方案 B（未命名草稿恢复）搁置备案**：需草稿落盘机制 + 三个产品语义决策——①主动关闭未命名窗口
+草稿删不删 ②与失焦自动保存/SHA256 关闭确认的交互 ③大缓冲区落盘 I/O 策略；另有"未保存内容
+悄悄写盘"的隐私考量。预算约为方案 A 的 3–4 倍。待真实需求出现再重提。）
 
 v0.9.1 发布（2026-07-28）：用户实测反馈两修复（T13.8 和弦被菜单截胡 / T13.9 折叠渲染
 片段熔合）。发布前小签名探路生效；全程无人值守；latest appcast 解析 0.9.1/build 14。
