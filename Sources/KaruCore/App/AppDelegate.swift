@@ -12,6 +12,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// feed URL or signing key and must not start an updater.
     private var updateController: UpdateController?
 
+    /// "What was open last time" list backing session restore (T14.8). Shared
+    /// with every window this delegate creates; injectable so tests can isolate
+    /// it in their own UserDefaults suite.
+    var sessionStore = SessionStore()
+
+    /// True from the moment termination is approved. Windows consult it while
+    /// closing: a close during quit keeps its session entry (so the file
+    /// reopens next launch), a close by the user removes it.
+    private(set) var isTerminating = false
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
         if UpdateController.isSupported {
             updateController = UpdateController()
@@ -41,7 +51,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // create the untitled window when nothing else is open, otherwise
             // every Finder open spawned a stray empty window.
             if windowControllers.isEmpty {
-                newDocument(nil)
+                // Plain launch (no file arguments, nothing opened from Finder):
+                // bring back the documents the previous session had open — the
+                // whole point of T14.8, since an update relaunch or a crash used
+                // to leave the user with a single empty window. Falls back to an
+                // untitled window when there is nothing to restore.
+                if restoreSession() == 0 {
+                    newDocument(nil)
+                }
             }
         } else {
             for path in fileArgs {
@@ -176,7 +193,43 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 return .terminateCancel
             }
         }
+        // Quitting for real (⌘Q, or a Sparkle update relaunch). Mark it *before*
+        // any window closes, so the closes that follow keep their session
+        // entries instead of clearing the list, and take one last caret/scroll
+        // snapshot here — AppKit does not reliably send windowWillClose during
+        // termination, so this is the only dependable moment (T14.8).
+        isTerminating = true
+        for controller in windowControllers {
+            controller.recordSessionState()
+        }
         return .terminateNow
+    }
+
+    // MARK: - Session restore (T14.8)
+
+    /// Reopens the files recorded by the previous session, in the order they
+    /// were opened, and returns how many windows were restored.
+    ///
+    /// Entries whose file has since disappeared (moved, deleted, an unmounted
+    /// volume) are dropped from the list silently — a restore must never nag on
+    /// launch. Only saved documents are involved; untitled drafts are out of
+    /// scope for plan A.
+    @discardableResult
+    func restoreSession() -> Int {
+        var restored = 0
+        for entry in sessionStore.entries() {
+            let url = UbiquitousFile.resolvedURL(for: URL(fileURLWithPath: entry.path))
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                sessionStore.remove(path: entry.path)
+                continue
+            }
+            let controller = makeController()
+            controller.load(url: url)
+            controller.restoreSession(caret: entry.caret, scrollY: entry.scrollY)
+            controller.showWindow(nil)
+            restored += 1
+        }
+        return restored
     }
 
     @objc private func languageDidChange() {
@@ -310,6 +363,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makeController() -> EditorWindowController {
         let controller = EditorWindowController()
+        // Session restore (T14.8): every window shares this delegate's store and
+        // asks it whether a close is "the user closed it" or "the app is
+        // quitting" — the two mean opposite things for the restore list.
+        controller.sessionStore = sessionStore
+        controller.isAppTerminating = { [weak self] in self?.isTerminating ?? false }
         // Every window shares one frame-autosave slot, so a second window would
         // restore to exactly the first one's frame and hide it completely.
         // Cascade it down-right from the most recent window instead, wrapping

@@ -82,6 +82,20 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     private static let downloadPollInterval: TimeInterval = 0.4
     private static let downloadTimeout: TimeInterval = 120
 
+    /// Session bookkeeping for restore-after-relaunch (T14.8). Injected by
+    /// `AppDelegate` so every window shares its store (and tests can point it at
+    /// an isolated UserDefaults suite); a standalone window falls back to the
+    /// standard domain.
+    var sessionStore = SessionStore()
+
+    /// Whether the app as a whole is quitting, supplied by `AppDelegate`.
+    /// Decides what a window close means for the session list: a *user* close
+    /// says "don't reopen this next launch" (entry removed), while a close that
+    /// merely rides along with termination must keep the entry so the file comes
+    /// back. Defaults to `false` — a window with no delegate behind it (tests,
+    /// diagnostics) is always closed "by the user".
+    var isAppTerminating: () -> Bool = { false }
+
     /// The document's current line-ending style. Detected on open / reopen and
     /// updated after a manual conversion; deliberately *not* re-detected on every
     /// keystroke (a document-level property, and detection scans the whole buffer),
@@ -266,7 +280,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // sibling window losing focus never triggers a save here.
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(autoSaveOnResignKey(_:)),
+            selector: #selector(handleResignKey(_:)),
             name: NSWindow.didResignKeyNotification,
             object: window
         )
@@ -471,9 +485,65 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             updateWindowState()
             toolbarController?.refreshAll()
             refreshStatusBar()
+
+            // The document is now "open" as far as session restore is concerned
+            // (T14.8) — recorded here, at open time, so an update relaunch or a
+            // crash still finds it in the list.
+            recordSessionState()
         } catch {
             showSaveError(error)
         }
+    }
+
+    // MARK: - Session restore (T14.8)
+
+    /// Document-space y of the visible area's top edge — what `restoreSession`
+    /// scrolls back to.
+    private var currentScrollY: Double {
+        Double(textView.enclosingScrollView?.contentView.bounds.origin.y ?? 0)
+    }
+
+    /// Writes this window's file + caret + scroll position into the session
+    /// list. A no-op for an untitled document (plan A restores saved files
+    /// only). Called at the few low-frequency moments where the position is
+    /// worth persisting: open, rename / Save As, focus loss, close, quit.
+    func recordSessionState() {
+        guard let url = documentController.fileURL else { return }
+        sessionStore.record(path: url.path,
+                            caret: textView.selectedRange().location,
+                            scrollY: currentScrollY)
+    }
+
+    /// Moves the session entry after the document's URL changed (Save As or a
+    /// titlebar rename): the old path must not resurrect a file that is no
+    /// longer there under that name.
+    private func migrateSessionEntry(from previousURL: URL?) {
+        let current = documentController.fileURL.map { SessionStore.normalize($0.path) }
+        if let previousURL, SessionStore.normalize(previousURL.path) != current {
+            sessionStore.remove(path: previousURL.path)
+        }
+        recordSessionState()
+    }
+
+    /// Puts the caret and the scroll offset back where the previous session left
+    /// them, after `load(url:)` has filled the window. The caret is clamped to
+    /// the document (the file may have shrunk on disk since), and the scroll
+    /// offset is best-effort — the clip view clamps it to the laid-out document
+    /// height on its own.
+    func restoreSession(caret: Int, scrollY: Double) {
+        let length = (textView.string as NSString).length
+        let selection = NSRange(location: min(max(0, caret), length), length: 0)
+        textView.setSelectedRange(selection)
+        textView.scrollRangeToVisible(selection)
+
+        if scrollY > 0, let scrollView = textView.enclosingScrollView {
+            let clipView = scrollView.contentView
+            clipView.scroll(to: NSPoint(x: clipView.bounds.origin.x, y: scrollY))
+            scrollView.reflectScrolledClipView(clipView)
+        }
+        // Keep the stored position in step with what was actually restored, so a
+        // crash right after launch reopens the same place rather than the top.
+        recordSessionState()
     }
 
     // MARK: - Text change tracking
@@ -652,11 +722,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// failures are surfaced as a localized alert.
     func renameFile(to newName: String) {
         do {
-            let previousExtension = documentController.fileURL?.pathExtension.lowercased()
+            let previousURL = documentController.fileURL
+            let previousExtension = previousURL?.pathExtension.lowercased()
             let newURL = try documentController.rename(to: newName)
             window?.representedURL = newURL
             redetectLanguageIfExtensionChanged(from: previousExtension)
             updateWindowState()
+            migrateSessionEntry(from: previousURL)
         } catch let error as DocumentController.RenameError {
             presentRenameError(error)
         } catch {
@@ -1097,7 +1169,17 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         return true
     }
 
-    // MARK: - Focus-loss auto-save (T12.14)
+    // MARK: - Focus loss (T12.14 auto-save + T14.8 session position)
+
+    /// Single handler for this window losing key focus. Focus loss is a natural,
+    /// low-frequency checkpoint, so the session position rides along with the
+    /// auto-save on the same notification (no extra observer). Deliberately
+    /// *not* named `windowDidResignKey` — that is an `NSWindowDelegate`
+    /// requirement, and AppKit would then call it a second time.
+    @objc private func handleResignKey(_ note: Notification) {
+        recordSessionState()
+        autoSaveOnFocusLoss()
+    }
 
     /// Silently writes the document to its existing file when the window loses
     /// key focus, if the feature is enabled. Deliberately non-modal:
@@ -1107,7 +1189,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// - On write failure we do **not** show an `NSAlert` (a modal sheet the
     ///   instant focus leaves is exactly the disruption to avoid). The document
     ///   stays dirty and a transient note flashes in the status bar instead.
-    @objc private func autoSaveOnResignKey(_ note: Notification) {
+    private func autoSaveOnFocusLoss() {
         guard AutoSavePolicy.shouldSave(enabled: AutoSavePolicy.defaultEnabled,
                                         isDirty: documentController.isDirty,
                                         hasFileURL: documentController.fileURL != nil) else { return }
@@ -1153,10 +1235,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
-            let previousExtension = documentController.fileURL?.pathExtension.lowercased()
+            let previousURL = documentController.fileURL
+            let previousExtension = previousURL?.pathExtension.lowercased()
             try documentController.save(text: textView.string, to: url)
             redetectLanguageIfExtensionChanged(from: previousExtension)
             updateWindowState()
+            migrateSessionEntry(from: previousURL)
             return true
         } catch {
             showSaveError(error)
@@ -1211,6 +1295,15 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     }
 
     public func windowWillClose(_ notification: Notification) {
+        // Session bookkeeping (T14.8). Closing a window *by hand* is the user
+        // saying "I'm done with this file" — it drops out of the restore list.
+        // A close that is only a side effect of quitting keeps its entry, with
+        // a final caret/scroll update, so the next launch brings the file back.
+        if isAppTerminating() {
+            recordSessionState()
+        } else if let url = documentController.fileURL {
+            sessionStore.remove(path: url.path)
+        }
         onClose?()
     }
 }
