@@ -88,6 +88,37 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// standard domain.
     var sessionStore = SessionStore()
 
+    /// Crash-draft backup for this window's unsaved content (T14.11). Injected
+    /// by `AppDelegate` so every window shares one store (and tests can point it
+    /// at a temporary directory); a standalone window falls back to the real
+    /// Application Support location.
+    var draftStore = DraftStore()
+
+    /// Identity of this window's draft on disk. Freshly minted per window, but
+    /// *inherited* from a recovered draft (see `applyRecoveredDraft`) so a
+    /// window that came back from a crash keeps updating the same files instead
+    /// of orphaning them.
+    private(set) var draftID = UUID()
+
+    /// The pending debounced draft write, if any. Cancelled on every new edit,
+    /// on an explicit flush, and at teardown — so nothing but a sub-second work
+    /// item ever outlives a keystroke (no resident timer, ARCHITECTURE.md §3.4).
+    private var draftFlushWork: DispatchWorkItem?
+
+    /// Delay between the last keystroke and the draft hitting disk. Short enough
+    /// that a crash costs at most a sentence, long enough that continuous typing
+    /// writes rarely. Stored per window (rather than as a global) so a test can
+    /// zero it out without mutating shared state.
+    static let defaultDraftDebounce: TimeInterval = 1.5
+    var draftDebounceInterval: TimeInterval = EditorWindowController.defaultDraftDebounce
+
+    /// Shared serial queue for draft I/O: keeps a multi-megabyte snapshot off
+    /// the main thread, while its seriality guarantees a window's writes and
+    /// removals land in the order they were issued (a "remove" can never be
+    /// overtaken by an earlier "write").
+    private static let draftQueue = DispatchQueue(label: "dev.enkin.karu.drafts",
+                                                  qos: .utility)
+
     /// Whether the app as a whole is quitting, supplied by `AppDelegate`.
     /// Decides what a window close means for the session list: a *user* close
     /// says "don't reopen this next launch" (entry removed), while a close that
@@ -307,6 +338,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     deinit {
         NotificationCenter.default.removeObserver(self)
         downloadTimer?.invalidate()
+        // A pending draft checkpoint holds only a weak reference, but cancel it
+        // anyway so nothing is left scheduled behind a closed window.
+        draftFlushWork?.cancel()
         // The word highlighter cancels its own pending work item in its deinit,
         // which runs as this controller (its sole owner) is released.
     }
@@ -546,6 +580,96 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         recordSessionState()
     }
 
+    // MARK: - Crash drafts (T14.11)
+
+    /// Queues a draft checkpoint for a moment after the typing stops. Each new
+    /// edit replaces the pending one, so a burst of keystrokes costs a single
+    /// write.
+    private func scheduleDraftFlush() {
+        draftFlushWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            // The item is scheduled on the main queue; hopping back onto the
+            // main actor is a formality for Swift 6 isolation checking (same
+            // pattern as the status bar's flash timer).
+            MainActor.assumeIsolated { self?.flushDraftNow() }
+        }
+        draftFlushWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + draftDebounceInterval, execute: work)
+    }
+
+    /// Brings the on-disk draft in line with the buffer right now, skipping the
+    /// debounce. The arbitration rule (T14.11): **a draft exists exactly while
+    /// the buffer differs from the saved baseline** — the very test the close
+    /// prompt uses, so "there is a draft" and "closing would ask to save" can
+    /// never disagree. Internal so tests can drive the write synchronously.
+    func flushDraftNow() {
+        guard !documentController.matchesBaseline(textView.string) else {
+            removeDraft()
+            return
+        }
+        cancelDraftFlush()
+        // Snapshot on the main thread, write on the utility queue: a 10 MB
+        // buffer must not stall typing while it is encoded and stored.
+        let store = draftStore
+        let id = draftID
+        let content = textView.string
+        let path = documentController.fileURL?.path
+        Self.draftQueue.async { store.write(id: id, content: content, originalPath: path) }
+    }
+
+    /// Drops this window's draft — the content is back in sync with disk
+    /// (saved, undone, reopened) or the user closed the window for good.
+    private func removeDraft() {
+        cancelDraftFlush()
+        let store = draftStore
+        let id = draftID
+        Self.draftQueue.async { store.remove(id: id) }
+    }
+
+    /// Forgets any queued checkpoint without touching what is already on disk.
+    private func cancelDraftFlush() {
+        draftFlushWork?.cancel()
+        draftFlushWork = nil
+    }
+
+    /// Blocks until this window's queued draft I/O has landed. Test support
+    /// only: production code never needs to wait for a best-effort backup.
+    func waitForDraftWrites() {
+        Self.draftQueue.sync {}
+    }
+
+    /// Pours recovered draft content into this window and adopts the draft's
+    /// identity, so later edits keep updating the same files. The document
+    /// baseline is deliberately left alone: against a file it stays the on-disk
+    /// text (and against an untitled window it stays ""), so the window reads
+    /// as dirty and the close prompt behaves exactly as it did before the crash.
+    func applyRecoveredDraft(id: UUID, content: String) {
+        draftID = id
+        // Pin the layout mode from the size before inserting, as `load` does.
+        layoutModeController?.setLength((content as NSString).length)
+        textView.string = content
+        currentLineEnding = LineEnding.detect(in: content)
+
+        documentController.markEdited()
+        completionController.indexDocument()
+        redetectIndentUnit()
+        // A recovered untitled buffer has no extension to classify it, so let
+        // the sniffer have the same look it would get from typing.
+        if documentController.fileURL == nil {
+            maybeAutoDetectLanguage()
+        }
+        updateWindowState()
+        toolbarController?.refreshAll()
+        refreshStatusBar()
+    }
+
+    /// Shows a transient note in this window's status strip. Exists because the
+    /// status bar is private to the window while the recovery messages are
+    /// decided by `AppDelegate` (T14.11).
+    func flashStatus(_ message: String) {
+        statusBar.flashMessage(message)
+    }
+
     // MARK: - Text change tracking
 
     @objc private func textDidChange(_ notification: Notification) {
@@ -556,6 +680,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
         maybeAutoDetectLanguage()
         refreshStatusBar()
+        scheduleDraftFlush()
     }
 
     @objc private func selectionDidChange(_ notification: Notification) {
@@ -1001,6 +1126,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             updateWindowState()
             toolbarController?.refreshAll()
             refreshStatusBar()
+            // The on-disk bytes are authoritative again — no draft to keep.
+            removeDraft()
         } catch {
             let alert = NSAlert()
             alert.messageText = L10n.t(.encodingDecodeFailedTitle)
@@ -1197,6 +1324,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             try documentController.save(text: textView.string)
             updateWindowState()
             refreshStatusBar()
+            // Buffer and disk agree again, so the crash draft has nothing left
+            // to protect (T14.11).
+            removeDraft()
         } catch {
             // Silent degrade: keep the dirty state, surface a transient hint only.
             statusBar.flashMessage(L10n.t(.autosaveFailed))
@@ -1221,6 +1351,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         do {
             try documentController.save(text: textView.string)
             updateWindowState()
+            removeDraft()
             return true
         } catch {
             showSaveError(error)
@@ -1241,6 +1372,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             redetectLanguageIfExtensionChanged(from: previousExtension)
             updateWindowState()
             migrateSessionEntry(from: previousURL)
+            removeDraft()
             return true
         } catch {
             showSaveError(error)
@@ -1301,8 +1433,19 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // a final caret/scroll update, so the next launch brings the file back.
         if isAppTerminating() {
             recordSessionState()
-        } else if let url = documentController.fileURL {
-            sessionStore.remove(path: url.path)
+            // Crash drafts (T14.11): a close that merely rides along with the
+            // quit leaves the draft file alone — `AppDelegate` wipes the whole
+            // directory once termination is approved, and only then, so an
+            // interrupted quit still has every draft. Just drop the pending
+            // checkpoint so no work item outlives the window.
+            cancelDraftFlush()
+        } else {
+            if let url = documentController.fileURL {
+                sessionStore.remove(path: url.path)
+            }
+            // The user closed this window, having already answered the unsaved-
+            // changes prompt: whatever is unsaved was discarded on purpose.
+            removeDraft()
         }
         onClose?()
     }

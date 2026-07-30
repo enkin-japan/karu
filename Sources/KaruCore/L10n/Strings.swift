@@ -134,6 +134,10 @@ extension L10n {
 
         .autosaveFailed: "Auto-save failed",
 
+        .draftRestored: "Unsaved changes recovered",
+        .draftDiscardedDiskNewer: "File on disk is newer — draft discarded",
+        .draftRestoredAsUntitled: "Original file is gone — recovered as untitled",
+
         .moduleHighlight: "Syntax Highlighting",
         .moduleCompletion: "Completion",
         .moduleFormat: "Formatting",
@@ -269,6 +273,10 @@ extension L10n {
 
         .autosaveFailed: "自动保存失败",
 
+        .draftRestored: "已恢复未保存的更改",
+        .draftDiscardedDiskNewer: "磁盘版本较新，已放弃未保存草稿",
+        .draftRestoredAsUntitled: "原文件已不存在，内容已恢复为未命名文档",
+
         .moduleHighlight: "语法高亮",
         .moduleCompletion: "代码补全",
         .moduleFormat: "格式化",
@@ -403,6 +411,10 @@ extension L10n {
         .prefLanguageSystem: "システムに従う",
 
         .autosaveFailed: "自動保存に失敗しました",
+
+        .draftRestored: "未保存の変更を復元しました",
+        .draftDiscardedDiskNewer: "ディスク上のファイルが新しいため下書きを破棄しました",
+        .draftRestoredAsUntitled: "元のファイルがないため未題ドキュメントとして復元しました",
 
         .moduleHighlight: "シンタックスハイライト",
         .moduleCompletion: "コード補完",

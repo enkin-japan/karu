@@ -83,6 +83,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case prefLanguageLabel, prefLanguageSystem
     // Transient status-bar note when a focus-loss auto-save fails (T12.14).
     case autosaveFailed
+    // Transient status-bar notes for crash-draft recovery (T14.11).
+    case draftRestored, draftDiscardedDiskNewer, draftRestoredAsUntitled
     // Feature-module display names.
     case moduleHighlight, moduleCompletion, moduleFormat
     // Status bar.

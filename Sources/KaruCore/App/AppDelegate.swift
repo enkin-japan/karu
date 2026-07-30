@@ -17,6 +17,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// it in their own UserDefaults suite.
     var sessionStore = SessionStore()
 
+    /// Unsaved-content backup shared by every window (T14.11): what a crash
+    /// leaves behind and this delegate hands back at the next launch.
+    /// Injectable so tests never touch the user's real drafts.
+    var draftStore = DraftStore()
+
     /// True from the moment termination is approved. Windows consult it while
     /// closing: a close during quit keeps its session entry (so the file
     /// reopens next launch), a close by the user removes it.
@@ -41,6 +46,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let shouldRestoreSession = sessionStore.beginSession()
         if !shouldRestoreSession {
             sessionStore.clear()
+            // Belt and braces: a clean quit already wiped the drafts, so
+            // anything still here is residue that must not resurface (T14.11).
+            draftStore.clear()
         }
 
         // Rebuild the main menu in the new language on a live switch; open
@@ -68,10 +76,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if windowControllers.isEmpty {
                 // Plain launch (no file arguments, nothing opened from Finder):
                 // bring back the previous session's documents when the restore
-                // policy above says so (update relaunch / crash). Falls back to
-                // an untitled window otherwise or when there is nothing to
-                // restore.
-                if !shouldRestoreSession || restoreSession() == 0 {
+                // policy above says so (update relaunch / crash), then pour any
+                // unsaved content a crash left behind into them (T14.11 — it
+                // can also open windows of its own, for untitled drafts).
+                if shouldRestoreSession {
+                    restoreSession()
+                    restoreDrafts()
+                }
+                // Nothing came back (or nothing to come back to): start fresh.
+                if windowControllers.isEmpty {
                     newDocument(nil)
                 }
             }
@@ -222,6 +235,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // before terminating us, that flag overrides cleanliness and the next
         // launch restores anyway (T14.9).
         sessionStore.markCleanExit()
+        // Every window has just passed its unsaved-changes confirmation above —
+        // saved, or discarded on purpose — so the crash drafts have done their
+        // job and must not resurface next launch (T14.11). A crash never
+        // reaches this line, which is exactly what keeps its drafts alive.
+        draftStore.clear()
         return .terminateNow
     }
 
@@ -250,6 +268,84 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             restored += 1
         }
         return restored
+    }
+
+    // MARK: - Crash-draft restore (T14.11)
+
+    /// Hands back the unsaved content a crash (or force quit) left behind, and
+    /// returns how many drafts were recovered.
+    ///
+    /// Runs right after `restoreSession()` on a restoring launch, so the windows
+    /// for saved files already exist and most drafts only have to be poured into
+    /// one. Three shapes are handled:
+    ///   * untitled draft → a new window carrying the content;
+    ///   * draft for a file that is open (or can be opened) → the buffer is
+    ///     replaced with the draft, unless the file itself changed on disk after
+    ///     the draft was taken, in which case disk wins and the draft is dropped;
+    ///   * draft for a file that no longer exists → recovered as untitled, since
+    ///     the draft is then the only copy of that text left.
+    @discardableResult
+    func restoreDrafts() -> Int {
+        var restored = 0
+        for draft in draftStore.drafts() {
+            guard let path = draft.originalPath else {
+                openRecoveredUntitled(draft, message: L10n.t(.draftRestored))
+                restored += 1
+                continue
+            }
+            let url = UbiquitousFile.resolvedURL(for: URL(fileURLWithPath: path))
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                openRecoveredUntitled(draft, message: L10n.t(.draftRestoredAsUntitled))
+                restored += 1
+                continue
+            }
+            let controller = windowController(for: url) ?? openRestoredFile(url)
+
+            // Conflict rule (user decision): a file that changed on disk *after*
+            // the draft was written wins — another app or a sync edited it in
+            // the meantime, and silently pasting stale text over that would be
+            // the worse loss. Reported in the status bar rather than a modal:
+            // a launch must never open with an alert.
+            if let modified = Self.modificationDate(of: url), modified > draft.savedAt {
+                draftStore.remove(id: draft.id)
+                controller.flashStatus(L10n.t(.draftDiscardedDiskNewer))
+                continue
+            }
+            controller.applyRecoveredDraft(id: draft.id, content: draft.content)
+            controller.flashStatus(L10n.t(.draftRestored))
+            restored += 1
+        }
+        return restored
+    }
+
+    /// Opens a fresh untitled window holding a recovered draft.
+    private func openRecoveredUntitled(_ draft: DraftStore.Draft, message: String) {
+        let controller = makeController()
+        controller.applyRecoveredDraft(id: draft.id, content: draft.content)
+        controller.showWindow(nil)
+        controller.flashStatus(message)
+    }
+
+    /// The already-open window showing `url`, if any.
+    private func windowController(for url: URL) -> EditorWindowController? {
+        windowControllers.first {
+            $0.currentFileURL.map { UbiquitousFile.sameFile($0, url) } ?? false
+        }
+    }
+
+    /// Opens a window for a draft whose file the session list did not restore
+    /// (the window had been closed, or the file arrived some other way), so the
+    /// recovered text lands next to its document rather than as an orphan.
+    private func openRestoredFile(_ url: URL) -> EditorWindowController {
+        let controller = makeController()
+        controller.load(url: url)
+        controller.showWindow(nil)
+        return controller
+    }
+
+    private static func modificationDate(of url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate
     }
 
     @objc private func languageDidChange() {
@@ -388,6 +484,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // quitting" — the two mean opposite things for the restore list.
         controller.sessionStore = sessionStore
         controller.isAppTerminating = { [weak self] in self?.isTerminating ?? false }
+        // Crash drafts (T14.11): one shared store, so a window's unsaved content
+        // ends up where this delegate looks for it at the next launch.
+        controller.draftStore = draftStore
         // Every window shares one frame-autosave slot, so a second window would
         // restore to exactly the first one's frame and hide it completely.
         // Cascade it down-right from the most recent window instead, wrapping
