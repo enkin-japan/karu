@@ -302,3 +302,54 @@ private extension NSView {
         return nil
     }
 }
+
+// MARK: - Restore policy: clean exit vs crash vs update relaunch (T14.9)
+
+private func makePolicyStore() -> (SessionStore, () -> Void) {
+    let name = "KaruSessionPolicyTests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    return (SessionStore(defaults: defaults), {
+        UserDefaults().removePersistentDomain(forName: name)
+    })
+}
+
+@Test func cleanExitDoesNotRestore() {
+    let (store, tearDown) = makePolicyStore()
+    defer { tearDown() }
+    // Previous run: began, then quit cleanly → next launch starts fresh.
+    _ = store.beginSession()
+    store.markCleanExit()
+    #expect(store.beginSession() == false)
+}
+
+@Test func crashRestores() {
+    let (store, tearDown) = makePolicyStore()
+    defer { tearDown() }
+    // Previous run began a session and never marked a clean exit (crash /
+    // force quit): the next launch restores.
+    _ = store.beginSession()
+    #expect(store.beginSession() == true)
+    // The flag is consumed: the run after that (ending cleanly) does not.
+    store.markCleanExit()
+    #expect(store.beginSession() == false)
+}
+
+@Test func updateRelaunchRestoresDespiteCleanQuit() {
+    let (store, tearDown) = makePolicyStore()
+    defer { tearDown() }
+    // Sparkle: will-relaunch fires, then the (clean) termination follows.
+    _ = store.beginSession()
+    store.markUpdateRelaunch()
+    store.markCleanExit()
+    #expect(store.beginSession() == true)
+    // The update flag is one-shot.
+    store.markCleanExit()
+    #expect(store.beginSession() == false)
+}
+
+@Test func firstRunEverDoesNotRestore() {
+    let (store, tearDown) = makePolicyStore()
+    defer { tearDown() }
+    // Fresh install: no cleanExit key at all reads as "clean".
+    #expect(store.beginSession() == false)
+}

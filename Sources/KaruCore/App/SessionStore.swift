@@ -105,6 +105,39 @@ public struct SessionStore {
         defaults.removeObject(forKey: Self.key)
     }
 
+    // MARK: - Restore policy (T14.9)
+
+    /// UserDefaults keys for the exit-kind bookkeeping. `cleanExit` is absent on
+    /// the very first run, which reads as "clean" — a fresh install must not
+    /// restore anything.
+    public static let cleanExitKey = "session.cleanExit"
+    public static let updateRelaunchKey = "session.updateRelaunch"
+
+    /// Call once at launch, before any window opens. Returns whether this
+    /// launch should restore the previous session — true only after an update
+    /// relaunch or an exit that never reached `markCleanExit()` (crash, force
+    /// quit). A normal quit-and-reopen starts fresh (user decision 2026-07-30).
+    /// Also flips the marker to "session in progress", so a crash from here on
+    /// is detected next time.
+    public func beginSession() -> Bool {
+        let wasClean = (defaults.object(forKey: Self.cleanExitKey) as? Bool) ?? true
+        let updateRelaunch = defaults.bool(forKey: Self.updateRelaunchKey)
+        defaults.set(false, forKey: Self.cleanExitKey)
+        defaults.set(false, forKey: Self.updateRelaunchKey)
+        return !wasClean || updateRelaunch
+    }
+
+    /// Marks a deliberate quit (⌘Q and friends). Left un-called by a crash.
+    public func markCleanExit() {
+        defaults.set(true, forKey: Self.cleanExitKey)
+    }
+
+    /// Marks the termination as a Sparkle update relaunch, which restores even
+    /// though the quit itself is clean.
+    public func markUpdateRelaunch() {
+        defaults.set(true, forKey: Self.updateRelaunchKey)
+    }
+
     private func write(_ entries: [Entry]) {
         let capped = entries.count > Self.maxEntries
             ? Array(entries.suffix(Self.maxEntries))

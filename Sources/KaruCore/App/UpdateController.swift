@@ -14,19 +14,38 @@ import Sparkle
 @MainActor
 public final class UpdateController {
     private let controller: SPUStandardUpdaterController
+    private let delegate = UpdaterDelegate()
 
     /// True when this process can meaningfully update itself (bundled app).
     public static var isSupported: Bool {
         Bundle.main.bundleURL.pathExtension == "app"
     }
 
+    /// Fired right before Sparkle relaunches the app to install an update —
+    /// the one moment that distinguishes an update restart from a normal quit,
+    /// which session restore treats differently (T14.9).
+    public var willRelaunchForUpdate: (() -> Void)? {
+        get { delegate.willRelaunch }
+        set { delegate.willRelaunch = newValue }
+    }
+
     public init() {
         controller = SPUStandardUpdaterController(startingUpdater: true,
-                                                  updaterDelegate: nil,
+                                                  updaterDelegate: delegate,
                                                   userDriverDelegate: nil)
     }
 
     @objc public func checkForUpdates(_ sender: Any?) {
         controller.checkForUpdates(sender)
+    }
+}
+
+/// Minimal Sparkle delegate: forwards the will-relaunch moment. Sparkle calls
+/// its delegate on the main thread; the hop is asserted, not assumed.
+private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
+    var willRelaunch: (() -> Void)?
+
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        willRelaunch?()
     }
 }

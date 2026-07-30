@@ -25,8 +25,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
         if UpdateController.isSupported {
             updateController = UpdateController()
+            // An update relaunch must restore the session even though the quit
+            // it rides on is otherwise clean (T14.9).
+            updateController?.willRelaunchForUpdate = { [sessionStore] in
+                sessionStore.markUpdateRelaunch()
+            }
         }
         NSApp.mainMenu = MainMenu.build()
+
+        // Restore policy (T14.9, user decision): only an update relaunch or an
+        // exit that never marked itself clean (crash / force quit) restores the
+        // previous session; a normal quit-and-reopen starts fresh. Decided once
+        // here, before any window opens; when not restoring, the leftover list
+        // is dropped so stale entries can't resurface after a later crash.
+        let shouldRestoreSession = sessionStore.beginSession()
+        if !shouldRestoreSession {
+            sessionStore.clear()
+        }
 
         // Rebuild the main menu in the new language on a live switch; open
         // windows and the preferences window re-pull their own strings via their
@@ -52,11 +67,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // every Finder open spawned a stray empty window.
             if windowControllers.isEmpty {
                 // Plain launch (no file arguments, nothing opened from Finder):
-                // bring back the documents the previous session had open — the
-                // whole point of T14.8, since an update relaunch or a crash used
-                // to leave the user with a single empty window. Falls back to an
-                // untitled window when there is nothing to restore.
-                if restoreSession() == 0 {
+                // bring back the previous session's documents when the restore
+                // policy above says so (update relaunch / crash). Falls back to
+                // an untitled window otherwise or when there is nothing to
+                // restore.
+                if !shouldRestoreSession || restoreSession() == 0 {
                     newDocument(nil)
                 }
             }
@@ -202,6 +217,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         for controller in windowControllers {
             controller.recordSessionState()
         }
+        // A quit that reaches this line is deliberate: mark it clean so the
+        // next launch starts fresh. If Sparkle set the update-relaunch flag
+        // before terminating us, that flag overrides cleanliness and the next
+        // launch restores anyway (T14.9).
+        sessionStore.markCleanExit()
         return .terminateNow
     }
 

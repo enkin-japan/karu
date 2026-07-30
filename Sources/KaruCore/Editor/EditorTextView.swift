@@ -884,7 +884,44 @@ public final class EditorTextView: NSTextView {
     /// the caret between them (e.g. `(|)` → `|`). Guards identically to
     /// `insertText` (off / composing / non-caret selection) before consulting the
     /// pure `AutoClosePairs.shouldDeletePair` predicate.
+    /// Range one backspace should delete when the caret sits in a line's
+    /// leading spaces, or `nil` when default (single-character) handling
+    /// applies. VS Code semantics (T14.10, user spec): the remaining indent
+    /// snaps to the next lower multiple of `width` — with width 4, an
+    /// 11-column indent deletes to 8, then 4, then 0 (and 9 → 8, not 5).
+    /// Only pure-space prefixes qualify; a tab (or any text) before the caret
+    /// falls back to the default so a tab deletes as itself.
+    static func indentBackspaceRange(text: String, caret: Int, width: Int) -> NSRange? {
+        guard width > 1 else { return nil }
+        let ns = text as NSString
+        guard caret > 0, caret <= ns.length else { return nil }
+        let lineStart = ns.lineRange(for: NSRange(location: caret, length: 0)).location
+        let column = caret - lineStart
+        guard column > 0 else { return nil }
+        for i in lineStart..<caret where ns.character(at: i) != 0x20 {
+            return nil
+        }
+        let target = ((column - 1) / width) * width
+        return NSRange(location: lineStart + target, length: column - target)
+    }
+
     public override func deleteBackward(_ sender: Any?) {
+        // Indent-aware backspace runs first (independent of the auto-close
+        // toggle): a caret in leading spaces snaps back one indent level.
+        if !hasMarkedText() {
+            let selection = selectedRange()
+            if selection.length == 0,
+               let indentRange = Self.indentBackspaceRange(text: string,
+                                                           caret: selection.location,
+                                                           width: effectiveIndentWidth),
+               indentRange.length > 1 {
+                guard shouldChangeText(in: indentRange, replacementString: "") else { return }
+                textStorage?.replaceCharacters(in: indentRange, with: "")
+                didChangeText()
+                setSelectedRange(NSRange(location: indentRange.location, length: 0))
+                return
+            }
+        }
         guard autoClosePairsEnabled, !hasMarkedText() else {
             super.deleteBackward(sender)
             return
