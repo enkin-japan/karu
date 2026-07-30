@@ -318,3 +318,27 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     let tokens = def.tokenize(line: "x1 = y")
     #expect(!tokens.contains { $0.kind == .number })
 }
+
+// MARK: - Markdown additions (T14.5)
+
+@Test func markdownStrikethroughIsDimmed() {
+    let kinds = MarkdownLanguage.make().tokenize(line: "a ~~gone~~ b").map(\.kind)
+    #expect(kinds.contains(.comment))
+}
+
+@Test func markdownBoldItalicMatchesWholeSpan() {
+    let def = MarkdownLanguage.make()
+    let line = "***both*** rest"
+    let ns = line as NSString
+    let spans = def.tokenize(line: line).map { ns.substring(with: $0.range) }
+    #expect(spans.contains("***both***"))
+}
+
+@Test func markdownListMarkersAreVisiblyColoured() {
+    let def = MarkdownLanguage.make()
+    // `.property` resolves to the variable blue; `.punctuation` resolved to the
+    // plain text colour and looked un-highlighted (user feedback).
+    for line in ["- item", "* item", "+ item", "1. item", "  - sub"] {
+        #expect(def.tokenize(line: line).contains { $0.kind == .property }, "marker not coloured in: \(line)")
+    }
+}

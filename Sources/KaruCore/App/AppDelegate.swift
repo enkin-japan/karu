@@ -310,6 +310,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makeController() -> EditorWindowController {
         let controller = EditorWindowController()
+        // Every window shares one frame-autosave slot, so a second window would
+        // restore to exactly the first one's frame and hide it completely.
+        // Cascade it down-right from the most recent window instead, wrapping
+        // back to the screen's top-left when it would fall off the visible area.
+        if let previous = windowControllers.last?.window, let window = controller.window {
+            var topLeft = NSPoint(x: previous.frame.minX + 24, y: previous.frame.maxY - 24)
+            if let screen = previous.screen ?? NSScreen.main {
+                let visible = screen.visibleFrame
+                if topLeft.x + window.frame.width > visible.maxX
+                    || topLeft.y - window.frame.height < visible.minY {
+                    topLeft = NSPoint(x: visible.minX + 24, y: visible.maxY - 24)
+                }
+            }
+            window.setFrameTopLeftPoint(topLeft)
+        }
         controller.onClose = { [weak self, weak controller] in
             self?.windowControllers.removeAll { $0 === controller }
         }

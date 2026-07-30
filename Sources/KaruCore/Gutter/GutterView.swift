@@ -76,6 +76,16 @@ public final class GutterView: NSRulerView, TextStorageObserving {
             name: NSText.didChangeNotification,
             object: textView
         )
+        // Redraw on text-view resize: a horizontal window stretch re-wraps the
+        // text and moves every line fragment, but posts none of the above —
+        // without this the numbers only caught up on the next click (user bug).
+        textView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(viewportChanged),
+            name: NSView.frameDidChangeNotification,
+            object: textView
+        )
 
         updateThickness()
     }

@@ -62,12 +62,15 @@ public enum AutoClosePairs {
     /// - Close bracket: the same closer already follows the caret → `stepOver`;
     ///   otherwise `passthrough`.
     /// - Quote: selection → `wrap`; the same quote already follows → `stepOver`;
-    ///   the character before is a word character or the same quote (so `don't` /
-    ///   Python `'''` don't auto-close) → `passthrough`; otherwise `insertPair`.
+    ///   the *third* consecutive quote completes a triple-quote opener (Python
+    ///   `"""` / `'''`, markdown ``` ``` ```) by inserting the closing triple;
+    ///   the character before is a word character or the same quote (so `don't`
+    ///   doesn't auto-close) → `passthrough`; otherwise `insertPair`.
     public static func decide(typed: String,
                               charBefore: Character?,
                               charAfter: Character?,
-                              hasSelection: Bool) -> Decision {
+                              hasSelection: Bool,
+                              charBefore2: Character? = nil) -> Decision {
         guard typed.count == 1, let ch = typed.first else { return .passthrough }
 
         // Opening bracket.
@@ -89,6 +92,12 @@ public enum AutoClosePairs {
                 return .wrap(prefix: String(ch), suffix: String(ch))
             }
             if charAfter == ch { return .stepOver }
+            // Third consecutive quote completes a triple-quote opener (Python
+            // """ / ''', and ``` fences by the same rule): typing the third
+            // one inserts it *plus* the closing triple, caret in between.
+            if let before = charBefore, before == ch, charBefore2 == ch {
+                return .insertPair(String(repeating: ch, count: 4), caretOffset: 1)
+            }
             if let before = charBefore, isWordCharacter(before) || before == ch {
                 return .passthrough
             }

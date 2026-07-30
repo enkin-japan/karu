@@ -31,15 +31,22 @@ public enum MarkdownLanguage {
                 // Blockquote line.
                 LanguageRule(pattern: #"^\s*>.*"#, kind: .comment),
                 // List markers: bullet (`- ` `* ` `+ `) and ordered (`1. `).
-                // Only the marker is punctuation; the rest of the line still
-                // gets inline treatment.
-                LanguageRule(pattern: #"^\s*[-*+]\s"#, kind: .punctuation),
-                LanguageRule(pattern: #"^\s*\d+\.\s"#, kind: .punctuation),
+                // Only the marker is coloured; the rest of the line still gets
+                // inline treatment. `.property` (VS Code's list-bullet blue) —
+                // `.punctuation` resolves to the plain text colour, which made
+                // the markers look un-highlighted (user feedback).
+                LanguageRule(pattern: #"^\s*[-*+]\s"#, kind: .property),
+                LanguageRule(pattern: #"^\s*\d+\.\s"#, kind: .property),
 
                 // Inline constructs (match at any position).
                 // Inline code span.
                 LanguageRule(pattern: #"`[^`]+`"#, kind: .string),
-                // Bold (**…** / __…__) before italic so `**` is not eaten by `*`.
+                // Strikethrough (~~…~~), dimmed like a comment.
+                LanguageRule(pattern: #"~~[^~]+~~"#, kind: .comment),
+                // Bold-italic (***…*** / ___…___) before bold, bold before
+                // italic, so the longer delimiter is never eaten by the shorter.
+                LanguageRule(pattern: #"\*\*\*[^*]+\*\*\*"#, kind: .keyword),
+                LanguageRule(pattern: #"___[^_]+___"#, kind: .keyword),
                 LanguageRule(pattern: #"\*\*[^*]+\*\*"#, kind: .keyword),
                 LanguageRule(pattern: #"__[^_]+__"#, kind: .keyword),
                 // Italic (*…* / _…_).

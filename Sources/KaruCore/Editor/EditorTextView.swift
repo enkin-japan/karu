@@ -706,6 +706,69 @@ public final class EditorTextView: NSTextView {
         completionKeyHandler?.textViewDidInsertKey(event)
     }
 
+    // MARK: Logical line start / end (⌘← / ⌘→, T14.2)
+
+    /// Target offset for ⌘← with VS Code Home semantics: first press goes to
+    /// the line's first non-whitespace character; pressing there again toggles
+    /// to column 0. "Line" is the *logical* line (paragraph), so soft wrapping
+    /// from a narrow window never changes where the caret lands.
+    static func smartLineStart(text: String, caret: Int) -> Int {
+        let ns = text as NSString
+        let clamped = max(0, min(caret, ns.length))
+        let line = ns.lineRange(for: NSRange(location: clamped, length: 0))
+        var firstNonWS = line.location
+        while firstNonWS < line.location + line.length {
+            let c = ns.character(at: firstNonWS)
+            if c == 0x20 || c == 0x09 { firstNonWS += 1 } else { break }
+        }
+        return clamped == firstNonWS ? line.location : firstNonWS
+    }
+
+    /// Target offset for ⌘→: the logical line's end, before its terminator.
+    static func smartLineEnd(text: String, caret: Int) -> Int {
+        let ns = text as NSString
+        let clamped = max(0, min(caret, ns.length))
+        let line = ns.lineRange(for: NSRange(location: clamped, length: 0))
+        var end = line.location + line.length
+        while end > line.location {
+            let c = ns.character(at: end - 1)
+            if c == 0x0A || c == 0x0D { end -= 1 } else { break }
+        }
+        return end
+    }
+
+    // ⌘←/⌘→ default to the *visual* line ends, so a soft-wrapped long line
+    // sends the caret mid-content depending on window width (user feedback).
+    // Route them to the logical line instead; the ⇧ variants extend the
+    // selection from its non-moving end to the same targets.
+
+    public override func moveToLeftEndOfLine(_ sender: Any?) {
+        let target = Self.smartLineStart(text: string, caret: selectedRange().location)
+        setSelectedRange(NSRange(location: target, length: 0))
+        scrollRangeToVisible(NSRange(location: target, length: 0))
+    }
+
+    public override func moveToRightEndOfLine(_ sender: Any?) {
+        let caret = selectedRange()
+        let target = Self.smartLineEnd(text: string, caret: caret.location + caret.length)
+        setSelectedRange(NSRange(location: target, length: 0))
+        scrollRangeToVisible(NSRange(location: target, length: 0))
+    }
+
+    public override func moveToLeftEndOfLineAndModifySelection(_ sender: Any?) {
+        let selection = selectedRange()
+        let target = Self.smartLineStart(text: string, caret: selection.location)
+        let upper = selection.location + selection.length
+        setSelectedRange(NSRange(location: min(target, upper), length: max(0, upper - target)))
+    }
+
+    public override func moveToRightEndOfLineAndModifySelection(_ sender: Any?) {
+        let selection = selectedRange()
+        let target = Self.smartLineEnd(text: string, caret: selection.location + selection.length)
+        setSelectedRange(NSRange(location: selection.location,
+                                 length: max(0, target - selection.location)))
+    }
+
     /// Clicking in the text dismisses an open completion popup.
     public override func mouseDown(with event: NSEvent) {
         completionKeyHandler?.dismissCompletion()
@@ -781,7 +844,8 @@ public final class EditorTextView: NSTextView {
         let decision = AutoClosePairs.decide(typed: typed,
                                              charBefore: before,
                                              charAfter: after,
-                                             hasSelection: hasSelection)
+                                             hasSelection: hasSelection,
+                                             charBefore2: character(at: target.location - 2, in: ns))
         switch decision {
         case .passthrough:
             super.insertText(string, replacementRange: replacementRange)

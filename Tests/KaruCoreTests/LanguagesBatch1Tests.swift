@@ -61,8 +61,10 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 
 @Test func markdownListMarkerAndBlockquote() {
     let md = MarkdownLanguage.make()
-    #expect(kind(of: "- ", in: spans(md, "- item")) == .punctuation)
-    #expect(kind(of: "1. ", in: spans(md, "1. item")) == .punctuation)
+    // T14.5: markers moved from .punctuation (renders as plain text — looked
+    // un-highlighted) to .property (VS Code's list-bullet blue).
+    #expect(kind(of: "- ", in: spans(md, "- item")) == .property)
+    #expect(kind(of: "1. ", in: spans(md, "1. item")) == .property)
     #expect(kind(of: "> quoted", in: spans(md, "> quoted")) == .comment)
     #expect(kind(of: "```swift", in: spans(md, "```swift")) == .comment)
 }

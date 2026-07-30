@@ -372,9 +372,14 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         let rowCount = min(suggestions.count, 10)
         let height = CGFloat(rowCount) * 19 + 4
         let width: CGFloat = 240
-        // Below the caret line (screen coords: y grows upward).
-        let originPoint = NSPoint(x: rectOnScreen.minX,
-                                  y: rectOnScreen.minY - height - 2)
+        // Above the caret line (screen coords: y grows upward): the IME
+        // candidate window sits *below* the caret during Chinese / Japanese
+        // composition, and a below-the-caret popup covered it (user feedback).
+        // Falls back to below only when there is no room above.
+        var originPoint = NSPoint(x: rectOnScreen.minX, y: rectOnScreen.maxY + 2)
+        if let screen = window.screen, originPoint.y + height > screen.visibleFrame.maxY {
+            originPoint.y = rectOnScreen.minY - height - 2
+        }
         panel.setFrame(NSRect(x: originPoint.x, y: originPoint.y, width: width, height: height),
                        display: true)
     }

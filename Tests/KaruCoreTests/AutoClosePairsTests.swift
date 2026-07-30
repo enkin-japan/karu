@@ -135,3 +135,37 @@ import Testing
     // contract directly against an isolated store.
     #expect(defaults.object(forKey: AutoClosePairs.enabledKey) == nil)
 }
+
+// MARK: - Triple-quote completion (T14.6)
+
+@Test func thirdQuoteCompletesTripleQuote() {
+    // `''` with the caret after both: typing the third `'` inserts it plus the
+    // closing `'''`, caret in between → `'''|'''`.
+    #expect(AutoClosePairs.decide(typed: "'", charBefore: "'", charAfter: nil,
+                                  hasSelection: false, charBefore2: "'")
+            == .insertPair("''''", caretOffset: 1))
+    #expect(AutoClosePairs.decide(typed: "\"", charBefore: "\"", charAfter: nil,
+                                  hasSelection: false, charBefore2: "\"")
+            == .insertPair("\"\"\"\"", caretOffset: 1))
+    // Backtick triples complete the same way (markdown fences).
+    #expect(AutoClosePairs.decide(typed: "`", charBefore: "`", charAfter: nil,
+                                  hasSelection: false, charBefore2: "`")
+            == .insertPair("````", caretOffset: 1))
+}
+
+@Test func secondQuoteStillPassesThrough() {
+    // Only two in a row (charBefore2 differs): unchanged v1 behaviour.
+    #expect(AutoClosePairs.decide(typed: "'", charBefore: "'", charAfter: nil,
+                                  hasSelection: false, charBefore2: "x")
+            == .passthrough)
+    #expect(AutoClosePairs.decide(typed: "'", charBefore: "'", charAfter: nil,
+                                  hasSelection: false, charBefore2: nil)
+            == .passthrough)
+}
+
+@Test func thirdQuoteWithCloserAheadStepsOver() {
+    // Inside `''|'` the step-over rule still wins over triple completion.
+    #expect(AutoClosePairs.decide(typed: "'", charBefore: "'", charAfter: "'",
+                                  hasSelection: false, charBefore2: "'")
+            == .stepOver)
+}
