@@ -182,6 +182,9 @@ Karu 因 viewport 动态加载，快滑有可见的加载等待痕迹。
 草稿删不删 ②与失焦自动保存/SHA256 关闭确认的交互 ③大缓冲区落盘 I/O 策略；另有"未保存内容
 悄悄写盘"的隐私考量。预算约为方案 A 的 3–4 倍。待真实需求出现再重提。）
 
+v0.9.5 发布（2026-07-31）：T15.2 草稿本图钉可见性修复 + 行号。全程无人值守；
+  latest appcast 解析 0.9.5/build 18；Gatekeeper "Notarized Developer ID"；DMG 3.2 MB。
+
 v0.9.4 发布（2026-07-31）：T15.1 常驻草稿本（⌥D 全局热键 + 非激活浮动面板 + 驻留形态）。
   签名探路通过，全程无人值守；latest appcast 解析 0.9.4/build 17；Gatekeeper "Notarized
   Developer ID"；DMG 3.2 MB。
