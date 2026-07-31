@@ -80,9 +80,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.4</string>
+	<string>0.9.5</string>
 	<key>CFBundleVersion</key>
-	<string>17</string>
+	<string>18</string>
 	<key>SUFeedURL</key>
 	<string>https://github.com/enkin-japan/karu/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
