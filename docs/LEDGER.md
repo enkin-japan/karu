@@ -197,6 +197,16 @@ v0.8.2 发布（2026-07-22）：T12.21/T12.22 两恶性 bug 紧急修复。全�
 v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产上线，latest appcast
 实测解析 0.8.1/build 11；sign_update 钥匙串 ACL 已获"始终允许"，后续发布可无人值守。
 
+## M15 常驻草稿本（2026-07-31，交互方案与热键经两轮对齐定案）
+
+| ID | 任务 | 文件 | 负责 | 验收标准 | 状态 |
+|---|---|---|---|---|---|
+| T15.1 | 常驻草稿本：全局热键 ⌥D（Carbon RegisterEventHotKey，免辅助功能权限，设置可录制改键+恢复默认）+ 非激活浮动面板（.nonactivatingPanel，唤出不切换活跃 app，隐藏焦点自动归还）；纯文本无格式（有意不用 EditorTextView）；无保存语义（1.5s 防抖落盘，独立于崩溃草稿）；Esc/⌘W/关闭钮=隐藏，图钉切换失焦保留（默认保留）；⌘S 毕业为真文件并转入编辑器窗口（首行建议文件名）；隐藏即整体拆除（undo 栈随拆有意丢弃），常驻仅热键注册+菜单栏项；驻留（用户拍板）：last-window-close 不退出 + NSStatusItem 菜单 + Dock 点击重开窗口；KARU_SCRATCHTEST=show/cycle 真机诊断钩子 | Scratchpad/ScratchpadStore.swift（新）, Scratchpad/ScratchpadController.swift（新）, App/HotKeyCenter.swift（新）, App/AppDelegate.swift, App/MainMenu.swift, Settings/PreferencesWindowController.swift, L10n/* | implementer | 14 新测试 + visual-smoke + 双钩子 dump（panelVisible/hotkeyStatus=0；panelNil=true/落盘内容） | ✅ 688 全绿 |
+
+热键决策记录：⌘D 否决（全局热键抢占式，会废掉 Finder 复制/浏览器书签）；⌘⇧D 被 Mail 发送等占用；
+⌥D 采纳（英文布局牺牲 ∂ 字符，可忽略）。菜单项落 View 菜单（无 Window 菜单，与命令面板同区），
+不设菜单键等价（Carbon 热键对本 app 同样生效，且改键后菜单键会过期）。
+
 ## 依赖关系
 
 T1.1 → T2.1 → T2.2/T2.3/T2.4（可并行）→ T3.1 → T3.2/T3.3（可并行）→ T3.4/T3.5

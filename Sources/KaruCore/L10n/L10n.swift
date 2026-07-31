@@ -57,6 +57,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuCommandPalette, commandPalettePlaceholder, commandPaletteEmpty
     // View menu — code folding (T12.12).
     case menuFoldCurrent, menuUnfoldCurrent, menuFoldAll, menuUnfoldAll
+    // Scratchpad (T15.1): panel title + status-bar menu entry.
+    case scratchpadTitle, statusScratchpad
     // Language menu.
     case menuLanguage, languageAuto
     // Toolbar labels / tooltips.
@@ -81,6 +83,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case prefIndentWidthLabel, prefInsertSpaces, prefIndentRainbow, prefAutoClosePairs, prefFontSizeLabel
     case prefAutoSaveOnFocusLoss
     case prefLanguageLabel, prefLanguageSystem
+    // Preferences — scratchpad hot-key recorder (T15.1).
+    case prefScratchpadHotkeyLabel, prefHotkeyRecording, prefHotkeyReset
     // Transient status-bar note when a focus-loss auto-save fails (T12.14).
     case autosaveFailed
     // Transient status-bar notes for crash-draft recovery (T14.11).

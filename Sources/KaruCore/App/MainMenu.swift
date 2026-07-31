@@ -182,6 +182,16 @@ enum MainMenu {
                                               action: #selector(EditorWindowController.showCommandPalette(_:)),
                                               keyEquivalent: "p")
         commandPalette.keyEquivalentModifierMask = [.command, .shift]
+        // Scratchpad (T15.1). Deliberately *no* key equivalent: the Carbon global
+        // hot key (⌥D by default) fires for Karu too, so a menu equivalent would
+        // either duplicate it or — worse — go stale the moment the user rebinds
+        // the hot key in Settings. The item exists for discoverability; the
+        // status-bar menu is where the current binding is spelled out. Karu has
+        // no Window menu, so it lives here beside the Command Palette, the other
+        // panel toggle.
+        viewMenu.addItem(withTitle: L10n.t(.scratchpadTitle),
+                         action: #selector(AppDelegate.toggleScratchpad(_:)),
+                         keyEquivalent: "")
         viewMenu.addItem(.separator())
         // Zoom In (⌘+). A hidden alternate on ⌘= handles the common US-keyboard
         // habit of pressing ⌘= to mean ⌘+ (same action, same mask).

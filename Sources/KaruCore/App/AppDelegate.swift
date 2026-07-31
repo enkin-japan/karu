@@ -27,6 +27,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// reopens next launch), a close by the user removes it.
     private(set) var isTerminating = false
 
+    /// The always-available scratchpad (T15.1). While hidden this is an empty
+    /// shell — a store plus two closures; the panel and its text view only exist
+    /// between `show()` and `hide()`. Created lazily so a delegate built by a
+    /// test that never launches the app pays nothing for it.
+    lazy var scratchpadController = ScratchpadController()
+
+    /// The global hot key that summons the scratchpad. Together with the status
+    /// item below it is the only part of the feature that stays resident.
+    private let hotKeyCenter = HotKeyCenter()
+
+    /// Menu-bar item: reaches the scratchpad (and a new window / settings) while
+    /// Karu has no window on screen — the counterpart of the "keep running after
+    /// the last window closes" policy below.
+    private var statusItem: NSStatusItem?
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
         if UpdateController.isSupported {
             updateController = UpdateController()
@@ -97,6 +112,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
 
+        // Scratchpad (T15.1). Installed after the windows exist so the status
+        // item's own window can never be mistaken for the editor by the snapshot
+        // hook below (it walks `NSApp.windows` in creation order).
+        hotKeyCenter.start { [weak self] in
+            MainActor.assumeIsolated { self?.scratchpadController.toggle() }
+        }
+        MainActor.assumeIsolated {
+            // Graduating a note hands the new file back here, where it opens in a
+            // normal editor window through the same path Finder uses.
+            scratchpadController.openInEditor = { [weak self] url in self?.openFromFinder(url) }
+        }
+        installStatusItem()
+        // A rebound hot key must take effect at once (and relabel the status-bar
+        // menu, which spells the binding out).
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hotKeyDidChange),
+            name: HotKeyCenter.didChangeNotification,
+            object: nil
+        )
+
         // Fold-rendering diagnostics hook (T13.9, used by visual-smoke.sh):
         // KARU_FOLDTEST=all|current[:<line>] performs the fold shortly after
         // launch so KARU_SNAPSHOT captures the folded rendering, and
@@ -140,6 +176,52 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try? out.write(toFile: ProcessInfo.processInfo.environment["KARU_FOLDTEST_GEO"] ?? "/tmp/foldgeo.txt",
                                    atomically: true, encoding: .utf8)
+                }
+            }
+        }
+
+        // Scratchpad diagnostics hook (T15.1), same spirit as KARU_FOLDTEST: the
+        // panel is a non-activating floating window whose whole point is what it
+        // leaves behind (nothing) after hiding, and neither headless unit tests
+        // nor a pixel snapshot can show that. KARU_SCRATCHTEST=show dumps the
+        // built panel's state; =cycle types into it, hides it, and dumps proof
+        // that the panel is gone while the text reached disk. Zero cost unset.
+        if let scratchTest = ProcessInfo.processInfo.environment["KARU_SCRATCHTEST"] {
+            let outPath = ProcessInfo.processInfo.environment["KARU_SCRATCHTEST_OUT"]
+                ?? "/tmp/scratchtest.txt"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                self.scratchpadController.show()
+                if scratchTest == "cycle" {
+                    if let tv = self.scratchpadController.diagnosticTextView {
+                        tv.string = "scratch-cycle-proof"
+                        tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+                        tv.insertText(" typed", replacementRange: tv.selectedRange())
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        self.scratchpadController.hide()
+                        let visible = NSApp.windows.filter { $0.isVisible }.count
+                        var dump = "panelNil=\(self.scratchpadController.diagnosticPanel == nil)\n"
+                        dump += "storeContent=\(String(self.scratchpadController.store.read().prefix(80)))\n"
+                        dump += "windowsVisible=\(visible)\n"
+                        try? dump.write(toFile: outPath, atomically: true, encoding: .utf8)
+                        NSApp.terminate(nil)
+                    }
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        let panel = self.scratchpadController.diagnosticPanel
+                        let text = self.scratchpadController.diagnosticTextView?.string ?? ""
+                        var dump = "panelVisible=\(panel?.isVisible == true)\n"
+                        dump += "panelLevel=\(panel?.level.rawValue ?? -1)\n"
+                        dump += "styleMask=\(panel?.styleMask.rawValue ?? 0)\n"
+                        dump += "textLen=\((text as NSString).length)\n"
+                        dump += "text=\(String(text.prefix(80)))\n"
+                        dump += "hotkeyStatus=\(self.hotKeyCenter.lastStatus)\n"
+                        dump += "hotkeyDisplay=\(self.hotKeyCenter.displayString)\n"
+                        dump += "pinned=\(ScratchpadStore.isPinned())\n"
+                        try? dump.write(toFile: outPath, atomically: true, encoding: .utf8)
+                        NSApp.terminate(nil)
+                    }
                 }
             }
         }
@@ -198,8 +280,75 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Karu keeps running with no window open (user decision, T15.1): the whole
+    /// point of a global scratchpad hot key is that it works when the editor is
+    /// out of sight, and quitting on the last close would kill the hot key with
+    /// it. The status-bar item is what makes that state navigable.
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    /// Clicking the Dock icon of a running-but-windowless Karu must give the user
+    /// something to type in; with a window already open, AppKit's own unminimize /
+    /// front behaviour is the right one, so it is left alone.
+    public func applicationShouldHandleReopen(_ sender: NSApplication,
+                                              hasVisibleWindows: Bool) -> Bool {
+        guard windowControllers.isEmpty else { return true }
+        newDocument(nil)
+        return false
+    }
+
+    // MARK: - Status-bar item (T15.1)
+
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        let image = NSImage(systemSymbolName: "square.and.pencil",
+                            accessibilityDescription: L10n.t(.scratchpadTitle))
+        image?.isTemplate = true   // tints itself for light / dark menu bars
+        item.button?.image = image
+        statusItem = item
+        rebuildStatusItemMenu()
+    }
+
+    /// Built fresh whenever the UI language or the hot key changes — the menu
+    /// spells the current binding out next to the scratchpad entry.
+    private func rebuildStatusItemMenu() {
+        guard let statusItem else { return }
+        let menu = NSMenu()
+        let scratchpad = menu.addItem(
+            withTitle: "\(L10n.t(.statusScratchpad))  \(hotKeyCenter.displayString)",
+            action: #selector(toggleScratchpad(_:)), keyEquivalent: "")
+        scratchpad.target = self
+        let newWindow = menu.addItem(withTitle: L10n.t(.dockNewWindow),
+                                     action: #selector(newWindowFromStatusItem(_:)),
+                                     keyEquivalent: "")
+        newWindow.target = self
+        let settings = menu.addItem(withTitle: L10n.t(.appSettings),
+                                    action: #selector(showPreferences(_:)), keyEquivalent: "")
+        settings.target = self
+        menu.addItem(.separator())
+        let quit = menu.addItem(withTitle: L10n.t(.appQuit, L10n.appName),
+                                action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        quit.target = NSApp
+        statusItem.menu = menu
+    }
+
+    /// Scratchpad toggle: the View-menu item, the status-bar entry and the global
+    /// hot key all land here.
+    @objc public func toggleScratchpad(_ sender: Any?) {
+        MainActor.assumeIsolated { scratchpadController.toggle() }
+    }
+
+    /// Status-bar "New Window": unlike the menu-bar item this can be picked while
+    /// Karu is in the background, so it has to activate before opening.
+    @objc private func newWindowFromStatusItem(_ sender: Any?) {
+        NSApp.activate(ignoringOtherApps: true)
+        newDocument(sender)
+    }
+
+    @objc private func hotKeyDidChange() {
+        hotKeyCenter.reregister()
+        rebuildStatusItemMenu()
     }
 
     /// Dock icon context menu: a "New Window" entry (a new document *is* a new
@@ -230,6 +379,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         for controller in windowControllers {
             controller.recordSessionState()
         }
+        // The scratchpad's debounced write would never fire once we return
+        // `.terminateNow`, so force it out here — the pad is a notebook, and
+        // losing the last sentence typed before ⌘Q is not acceptable.
+        MainActor.assumeIsolated { scratchpadController.flushIfVisible() }
         // A quit that reaches this line is deliberate: mark it clean so the
         // next launch starts fresh. If Sparkle set the update-relaunch flag
         // before terminating us, that flag overrides cleanliness and the next
@@ -350,6 +503,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func languageDidChange() {
         NSApp.mainMenu = MainMenu.build()
+        rebuildStatusItemMenu()
     }
 
     @objc public func newDocument(_ sender: Any?) {
@@ -390,7 +544,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   3. A not-yet-synced iCloud item opens a window immediately in a
     ///      "(Downloading…)" state and loads once the download lands, rather
     ///      than opening a blank/failed window that needs a second double-click.
-    private func openFromFinder(_ rawURL: URL) {
+    /// Internal rather than private: the scratchpad hands graduated files back
+    /// through this same path, so a note that just became a document opens
+    /// exactly like one double-clicked in Finder.
+    func openFromFinder(_ rawURL: URL) {
         let url = UbiquitousFile.resolvedURL(for: rawURL)
 
         // De-duplicate against an already-open (or downloading) window.

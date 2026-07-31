@@ -83,6 +83,9 @@ extension L10n {
         .menuFoldAll: "Fold All",
         .menuUnfoldAll: "Unfold All",
 
+        .scratchpadTitle: "Scratchpad",
+        .statusScratchpad: "Show/Hide Scratchpad",
+
         .menuLanguage: "Language",
         .languageAuto: "Auto",
 
@@ -131,6 +134,9 @@ extension L10n {
         .prefFontSizeLabel: "Font size:",
         .prefLanguageLabel: "Language:",
         .prefLanguageSystem: "System",
+        .prefScratchpadHotkeyLabel: "Scratchpad hot key:",
+        .prefHotkeyRecording: "Press new shortcut…",
+        .prefHotkeyReset: "Restore Default",
 
         .autosaveFailed: "Auto-save failed",
 
@@ -222,6 +228,9 @@ extension L10n {
         .menuFoldAll: "全部折叠",
         .menuUnfoldAll: "全部展开",
 
+        .scratchpadTitle: "草稿本",
+        .statusScratchpad: "显示/隐藏草稿本",
+
         .menuLanguage: "语言",
         .languageAuto: "自动",
 
@@ -270,6 +279,9 @@ extension L10n {
         .prefFontSizeLabel: "字体大小：",
         .prefLanguageLabel: "语言：",
         .prefLanguageSystem: "跟随系统",
+        .prefScratchpadHotkeyLabel: "草稿本热键：",
+        .prefHotkeyRecording: "按下新快捷键…",
+        .prefHotkeyReset: "恢复默认",
 
         .autosaveFailed: "自动保存失败",
 
@@ -361,6 +373,9 @@ extension L10n {
         .menuFoldAll: "すべて折りたたむ",
         .menuUnfoldAll: "すべて展開",
 
+        .scratchpadTitle: "スクラッチパッド",
+        .statusScratchpad: "スクラッチパッドを表示/非表示",
+
         .menuLanguage: "言語",
         .languageAuto: "自動",
 
@@ -409,6 +424,9 @@ extension L10n {
         .prefFontSizeLabel: "フォントサイズ：",
         .prefLanguageLabel: "言語：",
         .prefLanguageSystem: "システムに従う",
+        .prefScratchpadHotkeyLabel: "スクラッチパッドのホットキー：",
+        .prefHotkeyRecording: "新しいショートカットキーを押してください…",
+        .prefHotkeyReset: "デフォルトに戻す",
 
         .autosaveFailed: "自動保存に失敗しました",
 

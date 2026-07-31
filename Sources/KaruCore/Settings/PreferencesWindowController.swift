@@ -24,7 +24,7 @@ private final class PreferencesWindow: NSWindow {
     }
 }
 
-public final class PreferencesWindowController: NSWindowController {
+public final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
 
     // Module toggles, ordered to match `FeatureModule.allCases`.
     private var moduleButtons: [NSButton] = []
@@ -43,12 +43,22 @@ public final class PreferencesWindowController: NSWindowController {
     // UI-language picker (System + the three app languages).
     private let uiLanguagePopup = NSPopUpButton()
 
+    // Scratchpad hot-key recorder (T15.1).
+    private let hotkeyButton = NSButton()
+    private let hotkeyResetButton = NSButton()
+
+    /// The local key monitor installed while recording, or `nil`. Removing it is
+    /// mandatory on *every* exit from the recording state (captured, cancelled,
+    /// window closed) — a leaked monitor would swallow keystrokes app-wide.
+    private var hotkeyMonitor: Any?
+
     // Text labels re-pulled on a live language switch.
     private let modulesHeader = NSTextField(labelWithString: "")
     private let editorHeader = NSTextField(labelWithString: "")
     private let indentRowLabel = NSTextField(labelWithString: "")
     private let fontRowLabel = NSTextField(labelWithString: "")
     private let uiLanguageRowLabel = NSTextField(labelWithString: "")
+    private let hotkeyRowLabel = NSTextField(labelWithString: "")
 
     /// Languages offered in the indent-width popup (identifiers match those the
     /// highlighter resolves and `IndentSettings` keys on).
@@ -81,6 +91,9 @@ public final class PreferencesWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.center()
         self.init(window: window)
+        // Only so a close can disarm the hot-key recorder (see windowWillClose);
+        // everything else about the window's behaviour stays AppKit's default.
+        window.delegate = self
         buildUI()
         loadState()
         NotificationCenter.default.addObserver(
@@ -101,6 +114,8 @@ public final class PreferencesWindowController: NSWindowController {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        // A local monitor outlives its installer, so it must never be left behind.
+        if let hotkeyMonitor { NSEvent.removeMonitor(hotkeyMonitor) }
     }
 
     // MARK: - UI construction
@@ -205,12 +220,29 @@ public final class PreferencesWindowController: NSWindowController {
         fontRow.spacing = 8
         fontRow.alignment = .centerY
 
+        // Scratchpad hot-key row: the recorder button shows the current binding
+        // and turns into a "press the keys" prompt while armed.
+        hotkeyButton.bezelStyle = .rounded
+        hotkeyButton.target = self
+        hotkeyButton.action = #selector(hotkeyButtonClicked(_:))
+        hotkeyResetButton.bezelStyle = .rounded
+        hotkeyResetButton.title = L10n.t(.prefHotkeyReset)
+        hotkeyResetButton.target = self
+        hotkeyResetButton.action = #selector(hotkeyResetClicked(_:))
+        hotkeyRowLabel.stringValue = L10n.t(.prefScratchpadHotkeyLabel)
+        updateHotkeyButtonTitle()
+        let hotkeyRow = NSStackView(views: [hotkeyRowLabel, hotkeyButton, hotkeyResetButton])
+        hotkeyRow.orientation = .horizontal
+        hotkeyRow.spacing = 8
+        hotkeyRow.alignment = .centerY
+
         let content = NSStackView(views: [
             languageRow,
             separator(),
             modulesHeader, moduleStack,
             separator(),
             editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, autoSaveButton, fontRow,
+            hotkeyRow,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -319,6 +351,10 @@ public final class PreferencesWindowController: NSWindowController {
         uiLanguageRowLabel.stringValue = L10n.t(.prefLanguageLabel)
         indentRowLabel.stringValue = L10n.t(.prefIndentWidthLabel)
         fontRowLabel.stringValue = L10n.t(.prefFontSizeLabel)
+        hotkeyRowLabel.stringValue = L10n.t(.prefScratchpadHotkeyLabel)
+        hotkeyResetButton.title = L10n.t(.prefHotkeyReset)
+        // Keep the "press new shortcut…" prompt when the switch happened mid-record.
+        if hotkeyMonitor != nil { hotkeyButton.title = L10n.t(.prefHotkeyRecording) }
         usesSpacesButton.title = L10n.t(.prefInsertSpaces)
         rainbowButton.title = L10n.t(.prefIndentRainbow)
         autoCloseButton.title = L10n.t(.prefAutoClosePairs)
@@ -379,6 +415,75 @@ public final class PreferencesWindowController: NSWindowController {
         let size = EditorFontSettings().fontSize
         fontStepper.doubleValue = Double(size)
         updateFontLabel()
+    }
+
+    // MARK: - Scratchpad hot-key recorder (T15.1)
+
+    /// Click once to arm, click again to give up. While armed a local key monitor
+    /// takes over the keyboard for this window.
+    @objc private func hotkeyButtonClicked(_ sender: NSButton) {
+        if hotkeyMonitor != nil {
+            endHotkeyRecording()
+        } else {
+            beginHotkeyRecording()
+        }
+    }
+
+    private func beginHotkeyRecording() {
+        hotkeyButton.title = L10n.t(.prefHotkeyRecording)
+        hotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.captureHotkey(event) ? nil : event
+        }
+    }
+
+    /// Returns true when the event was consumed by the recorder. Everything typed
+    /// while armed is swallowed — including keys that are *not* a valid binding,
+    /// which simply leave the recorder waiting rather than committing a shortcut
+    /// the system would never deliver.
+    private func captureHotkey(_ event: NSEvent) -> Bool {
+        if event.keyCode == 53 {   // Esc — give up, keep the old binding
+            endHotkeyRecording()
+            return true
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // A global hot key needs at least one of ⌘ / ⌥ / ⌃; ⇧ alone would make
+        // every capital letter unusable everywhere else on the system.
+        guard flags.contains(.command) || flags.contains(.option) || flags.contains(.control) else {
+            return true
+        }
+        HotKeyCenter.store(keyCode: UInt32(event.keyCode),
+                           carbonModifiers: HotKeyCenter.carbonModifiers(from: flags))
+        NotificationCenter.default.post(name: HotKeyCenter.didChangeNotification, object: nil)
+        endHotkeyRecording()
+        return true
+    }
+
+    /// The single exit from the recording state: removes the monitor (always) and
+    /// puts the current binding back on the button.
+    private func endHotkeyRecording() {
+        if let hotkeyMonitor { NSEvent.removeMonitor(hotkeyMonitor) }
+        hotkeyMonitor = nil
+        updateHotkeyButtonTitle()
+    }
+
+    private func updateHotkeyButtonTitle() {
+        hotkeyButton.title = HotKeyCenter.displayString(
+            keyCode: HotKeyCenter.storedKeyCode(),
+            carbonModifiers: HotKeyCenter.storedModifiers())
+    }
+
+    @objc private func hotkeyResetClicked(_ sender: NSButton) {
+        endHotkeyRecording()
+        HotKeyCenter.resetToDefault()
+        NotificationCenter.default.post(name: HotKeyCenter.didChangeNotification, object: nil)
+        updateHotkeyButtonTitle()
+    }
+
+    /// Closing the window while the recorder is armed must not leave its monitor
+    /// eating keystrokes for the rest of the session.
+    public func windowWillClose(_ notification: Notification) {
+        endHotkeyRecording()
     }
 
     // MARK: - Live application helpers
