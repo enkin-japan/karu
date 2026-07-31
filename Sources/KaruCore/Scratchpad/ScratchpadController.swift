@@ -41,8 +41,6 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var textView: NSTextView?
     private var pinButton: NSButton?
-    private var headerView: NSView?
-    private var titleLabel: NSTextField?
     private var gutterView: GutterView?
     /// Find / replace over the pad's text (T15.3), the editor's own bar reused:
     /// it needs nothing but an `NSTextView` and a `LineIndex`, both of which the
@@ -73,6 +71,11 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// True while the panel is on screen. Also the "is anything built?" test —
     /// hidden means the panel does not exist at all.
     public var isVisible: Bool { panel?.isVisible == true }
+
+    /// True when the pad is the key window — the state in which the zoom keys
+    /// must resize the pad and not the shared editor size (see the app
+    /// delegate's `zoomTargetsScratchpad`).
+    var isKeyPanel: Bool { panel?.isKeyWindow == true }
 
     // MARK: - Show / hide
 
@@ -116,8 +119,6 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         self.panel = nil
         textView = nil
         pinButton = nil
-        headerView = nil
-        titleLabel = nil
         gutterView = nil
         findBar = nil
         observerHub = nil
@@ -145,17 +146,19 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     // MARK: - Construction
 
     private func makePanel() -> NSPanel {
+        // A *standard* titled panel, not `.utilityWindow` (T15.4, user verdict:
+        // the self-drawn 20 pt header looked worse than the system title bar).
+        // Dropping the utility style is what lets the pin live in the title bar:
+        // a utility panel registers titlebar accessories but never renders them
+        // (the T15.2 pixel finding), while the standard bar draws them fine —
+        // re-proven by pixel capture after this change.
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 480, height: 360),
-            styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel],
+            styleMask: [.titled, .closable, .resizable, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        panel.title = L10n.t(.scratchpadTitle)
-        // The title is drawn by our own header instead (see `makeHeader`): a
-        // utility panel's title bar renders at ~11 pt and offers no way to enlarge
-        // it, which the user found unreadable.
-        panel.titleVisibility = .hidden
+        panel.title = Self.spacedTitle(L10n.t(.scratchpadTitle))
         panel.level = .floating
         // Follow the user across Spaces and survive another app going full
         // screen — a pad that only exists on the Space it was opened on is not
@@ -212,33 +215,47 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         let findBar = FindBarController(textView: textView, lineIndex: lineIndex)
         self.findBar = findBar
 
-        // Vertical band layout: our own title header, the find bar (collapsed out
-        // of the stack while hidden), then the text. The pin moved into the header
-        // — it used to be overlaid on the text, which cost a top-right corner of
-        // every note. It cannot live in the title bar: a utility panel registers
-        // titlebar accessories but never renders them (user report: "no pin
-        // visible", confirmed by pixel capture).
-        let header = makeHeader()
+        // The find bar floats *over* the text's top edge instead of joining the
+        // layout (the editor stacks it above the scroll view). In a stack, the
+        // bar's controls chain a ~660 pt required minimum width up through the
+        // stack's fitting constraints onto the window — the pad suddenly could
+        // not be made narrow (T15.4 user report), hidden or not. As an overlay
+        // with a breakable trailing pin it stretches across the pad when it
+        // fits and is clipped on the right when the pad is narrower; the window
+        // minimum is whatever `contentMinSize` says, nothing else.
+        //
+        // The pin's priority must sit *below* 500: NSWindow resizes itself to
+        // satisfy content constraints above `windowSizeStayPut`, so a 900 pin
+        // plus the bar's minimum actively grew the window back to 682 pt
+        // (measured) instead of breaking — the same bug through a second door.
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView(views: [header, findBar.barView, scrollView])
-        stack.orientation = .vertical
-        stack.spacing = 0
-        stack.distribution = .fill
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
         let container = NSView()
-        container.addSubview(stack)
+        container.clipsToBounds = true
+        container.addSubview(scrollView)
+        container.addSubview(findBar.barView)
+        let barTrailing = findBar.barView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        barTrailing.priority = NSLayoutConstraint.Priority(480)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            header.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
-            findBar.barView.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            findBar.barView.topAnchor.constraint(equalTo: container.topAnchor),
+            findBar.barView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            barTrailing,
         ])
         panel.contentView = container
+        panel.contentMinSize = NSSize(width: 280, height: 160)
+
+        // The pin rides in the (standard) title bar's trailing corner.
+        let accessory = NSTitlebarAccessoryViewController()
+        let pinContainer = NSView(frame: NSRect(x: 0, y: 0, width: 34, height: 24))
+        let pin = makePinButton()
+        pin.frame = NSRect(x: 3, y: 2, width: 24, height: 20)
+        pinContainer.addSubview(pin)
+        accessory.view = pinContainer
+        accessory.layoutAttribute = .trailing
+        panel.addTitlebarAccessoryViewController(accessory)
 
         NotificationCenter.default.addObserver(
             self,
@@ -264,38 +281,15 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         return panel
     }
 
-    /// Height of the self-drawn title band.
-    private static let headerHeight: CGFloat = 32
-
-    /// The title band: big centred title, pin on the right, draggable everywhere
-    /// else. The panel's own (hidden) title bar keeps working as usual.
-    private func makeHeader() -> NSView {
-        let header = ScratchpadHeaderView()
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        // ~20 pt against the utility panel's ~11 pt system title: the point of
-        // drawing the title ourselves (user request: "roughly twice as big").
-        let title = NSTextField(labelWithString: L10n.t(.scratchpadTitle))
-        title.font = .systemFont(ofSize: 20, weight: .semibold)
-        title.textColor = .labelColor
-        title.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(title)
-        titleLabel = title
-
-        let pin = makePinButton()
-        pin.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(pin)
-
-        NSLayoutConstraint.activate([
-            title.centerXAnchor.constraint(equalTo: header.centerXAnchor),
-            title.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            pin.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -8),
-            pin.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            pin.widthAnchor.constraint(equalToConstant: 24),
-            pin.heightAnchor.constraint(equalToConstant: 20),
-        ])
-        headerView = header
-        return header
+    /// Loosens a short CJK title with ideographic spaces — "草稿本" becomes
+    /// "草　稿　本" (user request: the three characters sat too tight in the
+    /// title bar). Longer titles (the English "Scratchpad", the Japanese
+    /// katakana) are left alone: spacing every letter of those would stretch
+    /// them past the point of readability.
+    nonisolated static func spacedTitle(_ title: String) -> String {
+        let characters = Array(title)
+        guard characters.count <= 4, characters.count > 1 else { return title }
+        return characters.map(String.init).joined(separator: "\u{3000}")
     }
 
     /// Pin toggle: on (the default) the pad stays put when it loses focus, off
@@ -540,26 +534,8 @@ private final class ScratchpadTextView: NSTextView {
     }
 }
 
-// MARK: - Header
-
-/// The self-drawn title band. Dragging it moves the window, the way the system
-/// title bar it replaces does; only the pin button takes clicks.
-private final class ScratchpadHeaderView: NSView {
-    override func mouseDown(with event: NSEvent) {
-        window?.performDrag(with: event)
-    }
-
-    /// The title is an `NSTextField`, and a control would swallow the click that
-    /// should have started a drag — so everything that is not a button is routed
-    /// to the band itself.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let hit = super.hitTest(point) else { return nil }
-        return hit is NSButton ? hit : self
-    }
-}
-
-/// Pin toggle with a pointing-hand cursor: it is a button in a band that is
-/// otherwise a drag handle, so the cursor is the only thing that says so.
+/// Pin toggle with a pointing-hand cursor: it sits in the title bar, which is
+/// otherwise a drag handle, so the cursor is the only thing that says "button".
 private final class ScratchpadPinButton: NSButton {
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .pointingHand)

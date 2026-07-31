@@ -214,6 +214,8 @@ v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产�
 
 | T15.3 | 打磨批（实测反馈六项）：①行号字体跟随正文字号+留白按字号比例（18pt 时各 3pt）+去 40pt 硬地板，宽度规则抽纯函数；②字号变化实时刷新 gutter（编辑器与草稿本同修，原需点击文本）；③草稿本字号解耦（scratchpad.fontSize，缺省活继承编辑器、设置后独立，⌘+/⌘-/⌘0 面板内直调不再误动全局，设置窗新行）；④自绘 20pt 标题 header（utility 系统标题无法调大）+图钉搬入 header 右侧+小手光标+header 可拖窗；⑤查找替换复用 FindBarController（仅依赖 NSTextView+LineIndex，与 gutter 共享同一 LineIndex，⌘F 唤出，Esc 先关查找栏再隐面板）；show 钩子补 fontSize 字段 | Gutter/GutterView.swift, Editor/EditorWindowController.swift, Scratchpad/*, Settings/PreferencesWindowController.swift, L10n/*, App/AppDelegate.swift | implementer | 10 新测试；像素验证标题/图钉/行号缩放/查找栏；cycle 拆除不回退；698 全绿 + visual-smoke | ✅ |
 
+| T15.4 | 实测反馈四项（自绘 header 被否）：①标题恢复系统标题栏，CJK 短标题加全角空格（"草　稿　本"，纯函数+测试）；②styleMask 弃 .utilityWindow 换标准标题栏→图钉进标题栏 accessory（标准栏可渲染，utility 才是 T15.2 的祸根）+小手光标；③最小宽度暴增修复：查找栏 660pt 固有最小宽度经 stack fitting 约束传导到窗口，改为浮层叠放文本上方+右缘 480 优先级（**必须 <500**：NSWindow 会主动扩窗满足 >windowSizeStayPut 的约束，900 实测被拖回 682），contentMinSize 280×160，窄窗右侧裁剪；④缩放键误改全局字号：菜单键等价匹配抢在视图层之前，AppDelegate zoom 三动作按键窗口路由到草稿本（双保险），合成事件钩子 KARU_SCRATCHTEST=zoom 真实路径复现（editor 13→13，pad 13→14）；show 钩子补 frameW/title/fitting 几何 + KARU_SCRATCHTEST_NARROW 窄宽压测 | Scratchpad/ScratchpadController.swift, App/AppDelegate.swift | main | zoom 钩子 editor 不动 pad 动；窄宽 280 实测；像素验证标题/图钉；699 全绿 + visual-smoke | ✅ |
+
 热键决策记录：⌘D 否决（全局热键抢占式，会废掉 Finder 复制/浏览器书签）；⌘⇧D 被 Mail 发送等占用；
 ⌥D 采纳（英文布局牺牲 ∂ 字符，可忽略）。菜单项落 View 菜单（无 Window 菜单，与命令面板同区），
 不设菜单键等价（Carbon 热键对本 app 同样生效，且改键后菜单键会过期）。

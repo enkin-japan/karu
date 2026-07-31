@@ -252,3 +252,14 @@ private func makeFontDefaults() -> (UserDefaults, () -> Void) {
     // Nothing has been registered yet, so the status is still the initial noErr.
     #expect(center.lastStatus == noErr)
 }
+
+// MARK: - Title spacing (T15.4)
+
+@Test func scratchpadTitleSpacingLoosensShortCJKTitlesOnly() {
+    // "草稿本" gains ideographic spaces (user request: too tight in the bar);
+    // long titles (EN/JA) and single characters stay untouched.
+    #expect(ScratchpadController.spacedTitle("草稿本") == "草\u{3000}稿\u{3000}本")
+    #expect(ScratchpadController.spacedTitle("Scratchpad") == "Scratchpad")
+    #expect(ScratchpadController.spacedTitle("スクラッチパッド") == "スクラッチパッド")
+    #expect(ScratchpadController.spacedTitle("A") == "A")
+}

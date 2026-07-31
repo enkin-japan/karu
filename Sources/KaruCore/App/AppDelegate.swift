@@ -207,10 +207,45 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         try? dump.write(toFile: outPath, atomically: true, encoding: .utf8)
                         NSApp.terminate(nil)
                     }
+                } else if scratchTest == "zoom" {
+                    // Reproduces the zoom-key routing through the *real* event
+                    // path (NSApp.sendEvent → menu / window key-equivalent
+                    // matching), which is where the T15.4 bug lived: unit tests
+                    // on the view's performKeyEquivalent passed while the menu
+                    // stole the key in the running app.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        let editorBefore = EditorFontSettings().fontSize
+                        let padBefore = self.scratchpadController.diagnosticTextView?.font?.pointSize ?? -1
+                        if let panel = self.scratchpadController.diagnosticPanel,
+                           let event = NSEvent.keyEvent(
+                               with: .keyDown, location: .zero, modifierFlags: [.command],
+                               timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: panel.windowNumber, context: nil,
+                               characters: "=", charactersIgnoringModifiers: "=",
+                               isARepeat: false, keyCode: 24) {
+                            NSApp.sendEvent(event)
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            var dump = "panelIsKey=\(self.scratchpadController.diagnosticPanel?.isKeyWindow == true)\n"
+                            dump += "editorBefore=\(editorBefore) editorAfter=\(EditorFontSettings().fontSize)\n"
+                            dump += "padBefore=\(padBefore) padAfter=\(self.scratchpadController.diagnosticTextView?.font?.pointSize ?? -1)\n"
+                            try? dump.write(toFile: outPath, atomically: true, encoding: .utf8)
+                            NSApp.terminate(nil)
+                        }
+                    }
                 } else {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                         let panel = self.scratchpadController.diagnosticPanel
                         let text = self.scratchpadController.diagnosticTextView?.string ?? ""
+                        // Narrow-width probe (T15.4): the find bar's required
+                        // width equality used to drag its large intrinsic
+                        // minimum onto the window. Asking for 280 and dumping
+                        // what layout actually allows proves the minimum from
+                        // the outside.
+                        if ProcessInfo.processInfo.environment["KARU_SCRATCHTEST_NARROW"] == "1" {
+                            panel?.setContentSize(NSSize(width: 280, height: 200))
+                            panel?.layoutIfNeeded()
+                        }
                         // Optional pixel proof: the pin-button regression (user
                         // report: "no pin visible") showed that what the panel
                         // *contains* and what it *shows* can differ — dump the
@@ -223,6 +258,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                                 .write(to: URL(fileURLWithPath: pngPath))
                         }
                         var dump = "panelVisible=\(panel?.isVisible == true)\n"
+                        dump += "frameW=\(panel?.frame.width ?? -1)\n"
+                        dump += "contentFitting=\(panel?.contentView?.fittingSize ?? .zero)\n"
+                        if let sub = panel?.contentView?.subviews {
+                            for v in sub { dump += "sub=\(type(of: v)) frame=\(v.frame) hidden=\(v.isHidden) fitting=\(v.fittingSize)\n" }
+                        }
+                        dump += "title=\(panel?.title ?? "")\n"
                         dump += "titlebarAccessories=\(panel?.titlebarAccessoryViewControllers.count ?? -1)\n"
                         dump += "panelLevel=\(panel?.level.rawValue ?? -1)\n"
                         dump += "styleMask=\(panel?.styleMask.rawValue ?? 0)\n"
@@ -621,13 +662,35 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The editor font size is a global setting, so zoom lives here: each command
     /// updates the shared `EditorFontSettings` key, which broadcasts the change to
     /// every open window and the preferences panel.
-    @objc public func zoomIn(_ sender: Any?) { applyZoom(.increase) }
+    @objc public func zoomIn(_ sender: Any?) {
+        if zoomTargetsScratchpad(.zoomIn) { return }
+        applyZoom(.increase)
+    }
 
-    @objc public func zoomOut(_ sender: Any?) { applyZoom(.decrease) }
+    @objc public func zoomOut(_ sender: Any?) {
+        if zoomTargetsScratchpad(.zoomOut) { return }
+        applyZoom(.decrease)
+    }
 
     /// Restores the default editor font size (⌘0).
     @objc public func actualSize(_ sender: Any?) {
+        if zoomTargetsScratchpad(.actualSize) { return }
         EditorFontSettings().setFontSize(FontZoom.defaultSize)
+    }
+
+    /// Sends a zoom command to the scratchpad when the pad is the key window,
+    /// and reports whether it did. The pad's text view claims the zoom keys in
+    /// its own `performKeyEquivalent`, but menu key-equivalent matching can win
+    /// that race (View ▸ Zoom carries the same keys) — and then the *shared*
+    /// editor size moved under a key scratchpad, which is exactly the coupling
+    /// T15.3 was meant to end (user report, T15.4). Routing by key window here
+    /// makes the decoupling hold no matter which layer wins the keystroke.
+    private func zoomTargetsScratchpad(_ command: ScratchpadController.ZoomCommand) -> Bool {
+        MainActor.assumeIsolated {
+            guard scratchpadController.isKeyPanel else { return false }
+            scratchpadController.zoom(command)
+            return true
+        }
     }
 
     private func applyZoom(_ direction: FontZoom.Direction) {
