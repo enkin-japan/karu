@@ -135,6 +135,7 @@ extension L10n {
         .prefLanguageLabel: "Language:",
         .prefLanguageSystem: "System",
         .prefScratchpadHotkeyLabel: "Scratchpad hot key:",
+        .prefScratchpadFontSizeLabel: "Scratchpad font size:",
         .prefHotkeyRecording: "Press new shortcut…",
         .prefHotkeyReset: "Restore Default",
 
@@ -280,6 +281,7 @@ extension L10n {
         .prefLanguageLabel: "语言：",
         .prefLanguageSystem: "跟随系统",
         .prefScratchpadHotkeyLabel: "草稿本热键：",
+        .prefScratchpadFontSizeLabel: "草稿本字体大小：",
         .prefHotkeyRecording: "按下新快捷键…",
         .prefHotkeyReset: "恢复默认",
 
@@ -425,6 +427,7 @@ extension L10n {
         .prefLanguageLabel: "言語：",
         .prefLanguageSystem: "システムに従う",
         .prefScratchpadHotkeyLabel: "スクラッチパッドのホットキー：",
+        .prefScratchpadFontSizeLabel: "スクラッチパッドのフォントサイズ：",
         .prefHotkeyRecording: "新しいショートカットキーを押してください…",
         .prefHotkeyReset: "デフォルトに戻す",
 

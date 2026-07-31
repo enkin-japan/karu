@@ -333,6 +333,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// Re-applies the shared editor font size after a change broadcast.
     @objc private func fontSizeDidChange() {
         textView.font = .monospacedSystemFont(ofSize: EditorFontSettings().fontSize, weight: .regular)
+        // The gutter sizes and draws itself from the text view's font, but nothing
+        // tells a ruler its client changed — without this the numbers kept the old
+        // size until the next click into the text (user report).
+        gutterView?.fontDidChange()
     }
 
     deinit {

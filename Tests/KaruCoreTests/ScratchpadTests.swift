@@ -76,6 +76,91 @@ private func makeScratchpadStore() -> (ScratchpadStore, () -> Void) {
     #expect(ScratchpadStore.isPinned(defaults: defaults))
 }
 
+// MARK: - Scratchpad font size (T15.3)
+
+private func makeFontDefaults() -> (UserDefaults, () -> Void) {
+    let name = "ScratchpadFontTests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    return (defaults, { UserDefaults().removePersistentDomain(forName: name) })
+}
+
+@Test func scratchpadFontSizeInheritsTheEditorUntilItIsSetOnce() {
+    let (defaults, cleanup) = makeFontDefaults()
+    defer { cleanup() }
+
+    // Nothing stored anywhere: both fall back to the editor's default.
+    #expect(ScratchpadStore.fontSize(defaults: defaults) == EditorFontSettings.defaultFontSize)
+
+    // The user only ever set the editor size — the pad follows it, so a single
+    // font preference still means one font everywhere.
+    EditorFontSettings(defaults: defaults).setFontSize(20)
+    #expect(ScratchpadStore.fontSize(defaults: defaults) == 20)
+}
+
+@Test func scratchpadFontSizeBecomesIndependentOnceSet() {
+    let (defaults, cleanup) = makeFontDefaults()
+    defer { cleanup() }
+
+    EditorFontSettings(defaults: defaults).setFontSize(20)
+    ScratchpadStore.setFontSize(30, defaults: defaults)
+    #expect(ScratchpadStore.fontSize(defaults: defaults) == 30)
+
+    // Zooming the editor from here on must not move the pad (the whole point:
+    // ⌘+ in the pad used to resize every editor window and vice versa).
+    EditorFontSettings(defaults: defaults).setFontSize(11)
+    #expect(ScratchpadStore.fontSize(defaults: defaults) == 30)
+    #expect(EditorFontSettings(defaults: defaults).fontSize == 11)
+}
+
+@Test func scratchpadFontSizeRoundTripsAndClampsToTheEditorRange() {
+    let (defaults, cleanup) = makeFontDefaults()
+    defer { cleanup() }
+
+    ScratchpadStore.setFontSize(24, defaults: defaults)
+    #expect(ScratchpadStore.fontSize(defaults: defaults) == 24)
+
+    ScratchpadStore.setFontSize(2, defaults: defaults)
+    #expect(ScratchpadStore.fontSize(defaults: defaults) == EditorFontSettings.minFontSize)
+
+    ScratchpadStore.setFontSize(500, defaults: defaults)
+    #expect(ScratchpadStore.fontSize(defaults: defaults) == EditorFontSettings.maxFontSize)
+
+    // A hand-edited defaults value outside the range is clamped on read, too.
+    defaults.set(999.0, forKey: ScratchpadStore.fontSizeKey)
+    #expect(ScratchpadStore.fontSize(defaults: defaults) == EditorFontSettings.maxFontSize)
+}
+
+@Test func scratchpadFontChangeHasItsOwnBroadcast() {
+    // Sharing the editor's notification would drag every editor window into a
+    // pad-only change; they must stay distinct.
+    #expect(ScratchpadStore.fontDidChangeNotification != EditorFontSettings.didChangeNotification)
+}
+
+// MARK: - Scratchpad zoom key routing (T15.3)
+
+@Test func scratchpadClaimsTheZoomKeys() {
+    #expect(ScratchpadController.zoomCommand(modifiers: .command,
+                                             charactersIgnoringModifiers: "=") == .zoomIn)
+    // ⌘+ is ⇧⌘= on a US keyboard; both spellings mean zoom in.
+    #expect(ScratchpadController.zoomCommand(modifiers: [.command, .shift],
+                                             charactersIgnoringModifiers: "+") == .zoomIn)
+    #expect(ScratchpadController.zoomCommand(modifiers: .command,
+                                             charactersIgnoringModifiers: "-") == .zoomOut)
+    #expect(ScratchpadController.zoomCommand(modifiers: .command,
+                                             charactersIgnoringModifiers: "0") == .actualSize)
+}
+
+@Test func scratchpadLeavesOtherChordsToTheResponderChain() {
+    #expect(ScratchpadController.zoomCommand(modifiers: [], charactersIgnoringModifiers: "0") == nil)
+    #expect(ScratchpadController.zoomCommand(modifiers: .command,
+                                             charactersIgnoringModifiers: "s") == nil)
+    // ⌘K ⌘0 (the editor's fold chord) and ⌥⌘0 must not be swallowed here.
+    #expect(ScratchpadController.zoomCommand(modifiers: [.command, .option],
+                                             charactersIgnoringModifiers: "0") == nil)
+    #expect(ScratchpadController.zoomCommand(modifiers: [.command, .control],
+                                             charactersIgnoringModifiers: "-") == nil)
+}
+
 // MARK: - Graduation file name
 
 @Test func graduatedFileNameComesFromTheFirstNonEmptyLine() {

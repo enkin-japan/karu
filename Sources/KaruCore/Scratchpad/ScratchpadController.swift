@@ -41,6 +41,13 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var textView: NSTextView?
     private var pinButton: NSButton?
+    private var headerView: NSView?
+    private var titleLabel: NSTextField?
+    private var gutterView: GutterView?
+    /// Find / replace over the pad's text (T15.3), the editor's own bar reused:
+    /// it needs nothing but an `NSTextView` and a `LineIndex`, both of which the
+    /// pad already builds. Dies with the panel like everything else here.
+    private var findBar: FindBarController?
     private var flushWork: DispatchWorkItem?
     /// Retains the storage-delegate hub for the line-number gutter: the text
     /// storage only holds its delegate weakly, and the gutter (which the scroll
@@ -104,10 +111,15 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         // `orderOut`, and a half-torn-down panel would be dismantled twice.
         NotificationCenter.default.removeObserver(self, name: NSText.didChangeNotification, object: textView)
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: panel)
+        NotificationCenter.default.removeObserver(self, name: ScratchpadStore.fontDidChangeNotification, object: nil)
         panel.delegate = nil
         self.panel = nil
         textView = nil
         pinButton = nil
+        headerView = nil
+        titleLabel = nil
+        gutterView = nil
+        findBar = nil
         observerHub = nil
         panel.orderOut(nil)
     }
@@ -140,6 +152,10 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
             defer: false
         )
         panel.title = L10n.t(.scratchpadTitle)
+        // The title is drawn by our own header instead (see `makeHeader`): a
+        // utility panel's title bar renders at ~11 pt and offers no way to enlarge
+        // it, which the user found unreadable.
+        panel.titleVisibility = .hidden
         panel.level = .floating
         // Follow the user across Spaces and survive another app going full
         // screen — a pad that only exists on the Space it was opened on is not
@@ -164,7 +180,9 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
-        textView.font = .monospacedSystemFont(ofSize: EditorFontSettings().fontSize, weight: .regular)
+        // The pad's own size (T15.3), which starts out inheriting the editor's and
+        // parts ways with it the first time ⌘+ / ⌘- is pressed in here.
+        textView.font = .monospacedSystemFont(ofSize: ScratchpadStore.fontSize(), weight: .regular)
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
@@ -175,39 +193,50 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         scrollView.documentView = textView
         self.textView = textView
 
-        // Line numbers (user request, T15.2): the editor's own gutter, reused
-        // verbatim — a fresh LineIndex and observer hub are built per showing
-        // and die with the panel, so the pad still costs nothing while hidden.
+        // One index, reused (ARCHITECTURE.md §3.3): the gutter and the find bar
+        // share a single LineIndex. Like the observer hub it is built per showing
+        // and dies with the panel, so the pad still costs nothing while hidden.
+        let lineIndex = LineIndex(text: content)
         let hub = TextStorageObserverHub()
         textView.textStorage?.delegate = hub
         observerHub = hub
         let gutter = GutterView(scrollView: scrollView,
                                 textView: textView,
-                                lineIndex: LineIndex(text: content),
+                                lineIndex: lineIndex,
                                 observerHub: hub)
         scrollView.verticalRulerView = gutter
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
+        gutterView = gutter
 
-        // The pin lives *inside* the content, overlaid top-right above the text.
-        // It was born as a titlebar accessory, which a utility panel's compact
-        // title bar registers but never renders (user report: "no pin visible",
-        // confirmed by pixel capture) — so it moved somewhere that provably draws.
-        let container = NSView()
+        let findBar = FindBarController(textView: textView, lineIndex: lineIndex)
+        self.findBar = findBar
+
+        // Vertical band layout: our own title header, the find bar (collapsed out
+        // of the stack while hidden), then the text. The pin moved into the header
+        // — it used to be overlaid on the text, which cost a top-right corner of
+        // every note. It cannot live in the title bar: a utility panel registers
+        // titlebar accessories but never renders them (user report: "no pin
+        // visible", confirmed by pixel capture).
+        let header = makeHeader()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(scrollView)
-        let button = makePinButton()
-        button.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(button)
+        let stack = NSStackView(views: [header, findBar.barView, scrollView])
+        stack.orientation = .vertical
+        stack.spacing = 0
+        stack.distribution = .fill
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView()
+        container.addSubview(stack)
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            button.topAnchor.constraint(equalTo: container.topAnchor, constant: 5),
-            button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -6),
-            button.widthAnchor.constraint(equalToConstant: 24),
-            button.heightAnchor.constraint(equalToConstant: 20),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            header.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
+            findBar.barView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         panel.contentView = container
 
@@ -223,13 +252,56 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
             name: NSWindow.didResignKeyNotification,
             object: panel
         )
+        // Live font size. Installed here — i.e. on `show()`, the only caller — and
+        // removed by `hide()`, so a hidden pad leaves no observer behind
+        // (ARCHITECTURE.md §3.4).
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(fontSizeDidChange),
+            name: ScratchpadStore.fontDidChangeNotification,
+            object: nil
+        )
         return panel
+    }
+
+    /// Height of the self-drawn title band.
+    private static let headerHeight: CGFloat = 32
+
+    /// The title band: big centred title, pin on the right, draggable everywhere
+    /// else. The panel's own (hidden) title bar keeps working as usual.
+    private func makeHeader() -> NSView {
+        let header = ScratchpadHeaderView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        // ~20 pt against the utility panel's ~11 pt system title: the point of
+        // drawing the title ourselves (user request: "roughly twice as big").
+        let title = NSTextField(labelWithString: L10n.t(.scratchpadTitle))
+        title.font = .systemFont(ofSize: 20, weight: .semibold)
+        title.textColor = .labelColor
+        title.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(title)
+        titleLabel = title
+
+        let pin = makePinButton()
+        pin.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(pin)
+
+        NSLayoutConstraint.activate([
+            title.centerXAnchor.constraint(equalTo: header.centerXAnchor),
+            title.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            pin.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -8),
+            pin.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            pin.widthAnchor.constraint(equalToConstant: 24),
+            pin.heightAnchor.constraint(equalToConstant: 20),
+        ])
+        headerView = header
+        return header
     }
 
     /// Pin toggle: on (the default) the pad stays put when it loses focus, off
     /// it disappears the moment you click away — "jot and go".
     private func makePinButton() -> NSButton {
-        let button = NSButton(image: NSImage(), target: self, action: #selector(togglePinned(_:)))
+        let button = ScratchpadPinButton(image: NSImage(), target: self, action: #selector(togglePinned(_:)))
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.setButtonType(.momentaryChange)
@@ -248,6 +320,73 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     @objc private func togglePinned(_ sender: Any?) {
         UserDefaults.standard.set(!ScratchpadStore.isPinned(), forKey: ScratchpadStore.pinnedKey)
         updatePinButton()
+    }
+
+    // MARK: - Font size (T15.3)
+
+    /// Re-applies the pad's own size after ⌘+ / ⌘- here or the preferences
+    /// stepper. The gutter has to be told separately — nothing informs a ruler
+    /// that its client's font changed.
+    @objc private func fontSizeDidChange() {
+        guard let textView else { return }
+        textView.font = .monospacedSystemFont(ofSize: ScratchpadStore.fontSize(), weight: .regular)
+        gutterView?.fontDidChange()
+    }
+
+    /// Applies a zoom key to the *pad's* size only. Same semantics as View ▸ Zoom
+    /// (same step, same clamp, same "actual size"), but the editor windows behind
+    /// the pad are left alone — the shared setting used to move under them.
+    func zoom(_ command: ZoomCommand) {
+        let current = ScratchpadStore.fontSize()
+        switch command {
+        case .zoomIn:
+            ScratchpadStore.setFontSize(FontZoom.step(current: current, direction: .increase))
+        case .zoomOut:
+            ScratchpadStore.setFontSize(FontZoom.step(current: current, direction: .decrease))
+        case .actualSize:
+            ScratchpadStore.setFontSize(FontZoom.defaultSize)
+        }
+    }
+
+    /// The three zoom keys the pad claims for itself.
+    enum ZoomCommand {
+        case zoomIn, zoomOut, actualSize
+    }
+
+    /// Maps a key equivalent to a zoom command, or `nil` when it is not one.
+    /// Pure and `nonisolated` so the routing can be unit tested without a panel.
+    ///
+    /// `⌘=` is included because that is the key US keyboards actually press for
+    /// ⌘+ (the main menu carries the same alternate); ⇧ is tolerated so the
+    /// literal ⌘⇧+ works too, while every other modifier combination is left to
+    /// the responder chain.
+    nonisolated static func zoomCommand(modifiers: NSEvent.ModifierFlags,
+                                        charactersIgnoringModifiers: String?) -> ZoomCommand? {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        guard flags.subtracting(.shift) == .command else { return nil }
+        switch charactersIgnoringModifiers {
+        case "+", "=": return .zoomIn
+        case "-":      return .zoomOut
+        case "0":      return .actualSize
+        default:       return nil
+        }
+    }
+
+    // MARK: - Find bar (T15.3)
+
+    func showFindBar() {
+        findBar?.show()
+    }
+
+    /// Esc, in layers: it closes the find bar first and only hides the pad on a
+    /// second press. (Esc *inside* the search field is the find bar's own
+    /// business and never reaches here.)
+    func escapePressed() {
+        if let findBar, findBar.isShown {
+            findBar.hide()
+            return
+        }
+        hide()
     }
 
     // MARK: - Persistence
@@ -360,8 +499,9 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
 
 // MARK: - Text view
 
-/// The pad's text view. Adds exactly two behaviours to a plain `NSTextView`:
-/// Esc hides the panel and ⌘S graduates the text into a file.
+/// The pad's text view. Adds a handful of behaviours to a plain `NSTextView`:
+/// Esc closes the find bar or hides the panel, ⌘S graduates the text into a
+/// file, ⌘F opens find / replace, and the zoom keys resize the pad alone.
 private final class ScratchpadTextView: NSTextView {
     weak var controller: ScratchpadController?
 
@@ -369,18 +509,59 @@ private final class ScratchpadTextView: NSTextView {
     /// view sees the key first and turns it into `cancelOperation(_:)`, so a
     /// window-level interception would never run.
     override func cancelOperation(_ sender: Any?) {
-        controller?.hide()
+        controller?.escapePressed()
     }
 
-    /// ⌘S never reaches the pad through the main menu (File ▸ Save targets the
-    /// editor window controller), so the key equivalent is claimed here. Only a
-    /// bare ⌘S — ⌘⇧S and friends stay available to the menu.
+    /// The pad's key equivalents. None of them arrive through the main menu —
+    /// File ▸ Save and Edit ▸ Find target the editor window controller, and
+    /// View ▸ Zoom writes the *shared* editor size — so they are claimed here.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "s" {
-            controller?.graduate()
+        if modifiers == .command {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "s":
+                // Only a bare ⌘S — ⌘⇧S and friends stay available to the menu.
+                controller?.graduate()
+                return true
+            case "f":
+                controller?.showFindBar()
+                return true
+            default:
+                break
+            }
+        }
+        if let zoom = ScratchpadController.zoomCommand(
+            modifiers: event.modifierFlags,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
+            controller?.zoom(zoom)
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+// MARK: - Header
+
+/// The self-drawn title band. Dragging it moves the window, the way the system
+/// title bar it replaces does; only the pin button takes clicks.
+private final class ScratchpadHeaderView: NSView {
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+
+    /// The title is an `NSTextField`, and a control would swallow the click that
+    /// should have started a drag — so everything that is not a button is routed
+    /// to the band itself.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        return hit is NSButton ? hit : self
+    }
+}
+
+/// Pin toggle with a pointing-hand cursor: it is a button in a band that is
+/// otherwise a drag handle, so the cursor is the only thing that says so.
+private final class ScratchpadPinButton: NSButton {
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 }

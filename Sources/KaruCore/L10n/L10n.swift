@@ -85,6 +85,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case prefLanguageLabel, prefLanguageSystem
     // Preferences — scratchpad hot-key recorder (T15.1).
     case prefScratchpadHotkeyLabel, prefHotkeyRecording, prefHotkeyReset
+    // Preferences — scratchpad font size (independent of the editor's, T15.3).
+    case prefScratchpadFontSizeLabel
     // Transient status-bar note when a focus-loss auto-save fails (T12.14).
     case autosaveFailed
     // Transient status-bar notes for crash-draft recovery (T14.11).

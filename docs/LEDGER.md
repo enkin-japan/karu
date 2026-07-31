@@ -212,6 +212,8 @@ v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产�
 
 | T15.2 | 实测反馈：图钉不可见——titlebar accessory 在 utility 面板注册成功（count=1）但小标题栏不渲染（像素快照实证）；改为面板内容右上角叠放按钮。行号（用户请求）：复用 GutterView，每次 show 现建 LineIndex+ObserverHub 随 hide 拆除，隐藏态零常驻不变。show 钩子补 titlebarAccessories 计数 + KARU_SCRATCHTEST_PNG 像素快照（本 bug 即靠它定位） | Scratchpad/ScratchpadController.swift, App/AppDelegate.swift | main | 像素验证行号+图钉可见；cycle 钩子拆除+落盘不回退；688 全绿 + visual-smoke | ✅ |
 
+| T15.3 | 打磨批（实测反馈六项）：①行号字体跟随正文字号+留白按字号比例（18pt 时各 3pt）+去 40pt 硬地板，宽度规则抽纯函数；②字号变化实时刷新 gutter（编辑器与草稿本同修，原需点击文本）；③草稿本字号解耦（scratchpad.fontSize，缺省活继承编辑器、设置后独立，⌘+/⌘-/⌘0 面板内直调不再误动全局，设置窗新行）；④自绘 20pt 标题 header（utility 系统标题无法调大）+图钉搬入 header 右侧+小手光标+header 可拖窗；⑤查找替换复用 FindBarController（仅依赖 NSTextView+LineIndex，与 gutter 共享同一 LineIndex，⌘F 唤出，Esc 先关查找栏再隐面板）；show 钩子补 fontSize 字段 | Gutter/GutterView.swift, Editor/EditorWindowController.swift, Scratchpad/*, Settings/PreferencesWindowController.swift, L10n/*, App/AppDelegate.swift | implementer | 10 新测试；像素验证标题/图钉/行号缩放/查找栏；cycle 拆除不回退；698 全绿 + visual-smoke | ✅ |
+
 热键决策记录：⌘D 否决（全局热键抢占式，会废掉 Finder 复制/浏览器书签）；⌘⇧D 被 Mail 发送等占用；
 ⌥D 采纳（英文布局牺牲 ∂ 字符，可忽略）。菜单项落 View 菜单（无 Window 菜单，与命令面板同区），
 不设菜单键等价（Carbon 热键对本 app 同样生效，且改键后菜单键会过期）。

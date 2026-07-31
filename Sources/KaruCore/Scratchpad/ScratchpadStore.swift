@@ -25,6 +25,39 @@ public struct ScratchpadStore: Sendable {
         defaults.object(forKey: pinnedKey) == nil || defaults.bool(forKey: pinnedKey)
     }
 
+    /// UserDefaults key for the pad's own font size.
+    public static let fontSizeKey = "scratchpad.fontSize"
+
+    /// Posted (object: nil) after ``setFontSize(_:defaults:)`` so a visible panel
+    /// re-applies the size live. The editor's own notification is deliberately not
+    /// reused: the two sizes are independent once the pad has one of its own.
+    public static let fontDidChangeNotification = Notification.Name("ScratchpadFontSizeDidChange")
+
+    /// The pad's font size.
+    ///
+    /// Unset it *inherits* the editor's size — a user who has only ever set one
+    /// font size expects the pad to match — but the moment the pad is given a size
+    /// of its own the two part ways for good, so zooming the pad never resizes
+    /// every editor window behind it (the old behaviour, user report).
+    public static func fontSize(defaults: UserDefaults = .standard) -> CGFloat {
+        if defaults.object(forKey: fontSizeKey) != nil {
+            let value = defaults.double(forKey: fontSizeKey)
+            if value > 0 {
+                return min(max(CGFloat(value), EditorFontSettings.minFontSize),
+                           EditorFontSettings.maxFontSize)
+            }
+        }
+        return EditorFontSettings(defaults: defaults).fontSize
+    }
+
+    /// Persists the pad's font size (clamped to the editor's range, so the two
+    /// steppers cannot disagree about what is a legal size) and broadcasts it.
+    public static func setFontSize(_ size: CGFloat, defaults: UserDefaults = .standard) {
+        let clamped = min(max(size, EditorFontSettings.minFontSize), EditorFontSettings.maxFontSize)
+        defaults.set(Double(clamped), forKey: fontSizeKey)
+        NotificationCenter.default.post(name: fontDidChangeNotification, object: nil)
+    }
+
     private static let contentFileName = "content.txt"
 
     /// Where the scratchpad lives. Injectable so tests can run against a

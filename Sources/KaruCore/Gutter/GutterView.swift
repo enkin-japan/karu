@@ -19,15 +19,35 @@ public final class GutterView: NSRulerView, TextStorageObserving {
     /// Shared newline index (owned by the window controller).
     private let lineIndex: LineIndex
 
+    /// Size used when the client view has no font of its own (never in practice —
+    /// both the editor and the scratchpad set one — but the ruler must still draw).
+    private static let fallbackFontSize: CGFloat = 11
+
+    /// Line numbers follow the text view's size (user report: 18 pt text next to
+    /// 11 pt numbers read as a different document). Read live rather than stored
+    /// so a zoom only has to invalidate, not re-inject anything.
+    private var currentFontSize: CGFloat {
+        (clientView as? NSTextView)?.font?.pointSize ?? Self.fallbackFontSize
+    }
+
     /// Font used for the line numbers.
-    private let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    private var numberFont: NSFont {
+        NSFont.monospacedDigitSystemFont(ofSize: currentFontSize, weight: .regular)
+    }
 
     /// Horizontal padding inside the ruler.
-    private let horizontalPadding: CGFloat = 6
+    private var horizontalPadding: CGFloat { Self.horizontalPadding(forFontSize: currentFontSize) }
+
+    /// Padding scales with the type size instead of being a fixed 6 pt: at the
+    /// old constant a large font left the gutter looking padded, a small one
+    /// left it wider than the numbers needed.
+    private static func horizontalPadding(forFontSize size: CGFloat) -> CGFloat {
+        max(2, (size / 6).rounded())
+    }
 
     /// Width reserved on the left for fold arrows. Widened (12 → 16) so the
     /// solid-triangle controls read clearly at a glance.
-    private let arrowColumnWidth: CGFloat = 16
+    static let arrowColumnWidth: CGFloat = 16
 
     /// Folding layer queried for arrow state and hidden lines. Weak: owned by
     /// the window controller. When `nil` the gutter behaves exactly as before
@@ -46,7 +66,9 @@ public final class GutterView: NSRulerView, TextStorageObserving {
         self.lineIndex = lineIndex
         super.init(scrollView: scrollView, orientation: .verticalRuler)
         clientView = textView
-        ruleThickness = 40
+        // The thickness is derived from the font and the line count (see
+        // `updateThickness`, called at the end of this initializer) — no constant
+        // start value, which is what used to leave a needlessly wide gutter.
         reservedThicknessForMarkers = 0
 
         // Share the single storage-delegate slot via the multiplexer.
@@ -129,13 +151,35 @@ public final class GutterView: NSRulerView, TextStorageObserving {
     /// fold-arrow column when a fold provider is attached.
     private func updateThickness() {
         let digits = max(2, String(lineIndex.lineCount).count)
-        let sample = String(repeating: "8", count: digits) as NSString
-        let width = sample.size(withAttributes: [.font: numberFont]).width
-        let arrowColumn = foldProvider != nil ? arrowColumnWidth : 0
-        let thickness = max(40, ceil(width) + horizontalPadding * 2 + arrowColumn)
+        let thickness = Self.thickness(fontSize: currentFontSize,
+                                       digits: digits,
+                                       hasArrowColumn: foldProvider != nil)
         if abs(thickness - ruleThickness) > 0.5 {
             ruleThickness = thickness
         }
+    }
+
+    /// Ruler width for a given type size and line-number width — the whole
+    /// geometry rule in one pure function, so the sizing can be unit tested
+    /// without a window. There is deliberately no minimum floor any more: the old
+    /// `max(40, …)` kept a two-digit gutter needlessly wide (user report).
+    public static func thickness(fontSize: CGFloat, digits: Int, hasArrowColumn: Bool) -> CGFloat {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
+        // "8" is the widest digit in a proportional face; in a monospaced-digit
+        // one every digit is this wide, so the sample never under-measures.
+        let sample = String(repeating: "8", count: max(1, digits)) as NSString
+        let width = sample.size(withAttributes: [.font: font]).width
+        return ceil(width)
+            + horizontalPadding(forFontSize: fontSize) * 2
+            + (hasArrowColumn ? arrowColumnWidth : 0)
+    }
+
+    /// Re-measures and repaints after the client view's font size changed.
+    /// Without this the gutter only caught up on the next edit or click, so a
+    /// zoom left small numbers beside large text (user report).
+    public func fontDidChange() {
+        updateThickness()
+        needsDisplay = true
     }
 
     // MARK: - Drawing
@@ -225,7 +269,7 @@ public final class GutterView: NSRulerView, TextStorageObserving {
         case .folded:   color = .controlAccentColor
         }
 
-        let cx = arrowColumnWidth / 2
+        let cx = Self.arrowColumnWidth / 2
         let cy = y + height / 2
         // In a flipped ruler +y is downward; keep the visual orientation correct
         // regardless of the view's flip state.
@@ -264,7 +308,7 @@ public final class GutterView: NSRulerView, TextStorageObserving {
             return
         }
         let point = convert(event.locationInWindow, from: nil)
-        guard point.x <= arrowColumnWidth else {
+        guard point.x <= Self.arrowColumnWidth else {
             super.mouseDown(with: event)
             return
         }

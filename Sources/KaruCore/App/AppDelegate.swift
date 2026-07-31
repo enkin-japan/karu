@@ -227,6 +227,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         dump += "panelLevel=\(panel?.level.rawValue ?? -1)\n"
                         dump += "styleMask=\(panel?.styleMask.rawValue ?? 0)\n"
                         dump += "textLen=\((text as NSString).length)\n"
+                        // Proves the pad's font size is its own (T15.3): it must
+                        // follow `scratchpad.fontSize`, not the editor's key.
+                        dump += "fontSize=\(self.scratchpadController.diagnosticTextView?.font?.pointSize ?? -1)\n"
                         dump += "text=\(String(text.prefix(80)))\n"
                         dump += "hotkeyStatus=\(self.hotKeyCenter.lastStatus)\n"
                         dump += "hotkeyDisplay=\(self.hotKeyCenter.displayString)\n"

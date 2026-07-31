@@ -47,6 +47,10 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     private let hotkeyButton = NSButton()
     private let hotkeyResetButton = NSButton()
 
+    // Scratchpad font size (T15.3) — its own setting, not the editor's.
+    private let scratchpadFontStepper = NSStepper()
+    private let scratchpadFontValueLabel = NSTextField(labelWithString: "")
+
     /// The local key monitor installed while recording, or `nil`. Removing it is
     /// mandatory on *every* exit from the recording state (captured, cancelled,
     /// window closed) — a leaked monitor would swallow keystrokes app-wide.
@@ -59,6 +63,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     private let fontRowLabel = NSTextField(labelWithString: "")
     private let uiLanguageRowLabel = NSTextField(labelWithString: "")
     private let hotkeyRowLabel = NSTextField(labelWithString: "")
+    private let scratchpadFontRowLabel = NSTextField(labelWithString: "")
 
     /// Languages offered in the indent-width popup (identifiers match those the
     /// highlighter resolves and `IndentSettings` keys on).
@@ -108,6 +113,13 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
             self,
             selector: #selector(fontSizeDidChangeExternally),
             name: EditorFontSettings.didChangeNotification,
+            object: nil
+        )
+        // Same for the pad's own size, which ⌘+ / ⌘- inside the scratchpad changes.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(scratchpadFontSizeDidChangeExternally),
+            name: ScratchpadStore.fontDidChangeNotification,
             object: nil
         )
     }
@@ -236,13 +248,34 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         hotkeyRow.spacing = 8
         hotkeyRow.alignment = .centerY
 
+        // Scratchpad font size row: same shape as the editor's font row, writing
+        // through `ScratchpadStore` so the pad's size stays independent (T15.3).
+        scratchpadFontStepper.minValue = Double(EditorFontSettings.minFontSize)
+        scratchpadFontStepper.maxValue = Double(EditorFontSettings.maxFontSize)
+        scratchpadFontStepper.increment = 1
+        scratchpadFontStepper.valueWraps = false
+        scratchpadFontStepper.target = self
+        scratchpadFontStepper.action = #selector(scratchpadFontSizeChanged(_:))
+        scratchpadFontValueLabel.alignment = .right
+        scratchpadFontValueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        scratchpadFontValueLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        scratchpadFontRowLabel.stringValue = L10n.t(.prefScratchpadFontSizeLabel)
+        let scratchpadFontRow = NSStackView(views: [
+            scratchpadFontRowLabel,
+            scratchpadFontStepper, scratchpadFontValueLabel,
+        ])
+        scratchpadFontRow.orientation = .horizontal
+        scratchpadFontRow.spacing = 8
+        scratchpadFontRow.alignment = .centerY
+
         let content = NSStackView(views: [
             languageRow,
             separator(),
             modulesHeader, moduleStack,
             separator(),
             editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, autoSaveButton, fontRow,
-            hotkeyRow,
+            hotkeyRow, scratchpadFontRow,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -288,6 +321,9 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         let size = EditorFontSettings().fontSize
         fontStepper.doubleValue = Double(size)
         updateFontLabel()
+
+        scratchpadFontStepper.doubleValue = Double(ScratchpadStore.fontSize())
+        updateScratchpadFontLabel()
     }
 
     /// Selects the popup row matching the stored UI-language override, or "System"
@@ -315,6 +351,10 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
 
     private func updateFontLabel() {
         fontValueLabel.stringValue = "\(Int(fontStepper.doubleValue.rounded())) pt"
+    }
+
+    private func updateScratchpadFontLabel() {
+        scratchpadFontValueLabel.stringValue = "\(Int(scratchpadFontStepper.doubleValue.rounded())) pt"
     }
 
     // MARK: - Actions
@@ -352,6 +392,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         indentRowLabel.stringValue = L10n.t(.prefIndentWidthLabel)
         fontRowLabel.stringValue = L10n.t(.prefFontSizeLabel)
         hotkeyRowLabel.stringValue = L10n.t(.prefScratchpadHotkeyLabel)
+        scratchpadFontRowLabel.stringValue = L10n.t(.prefScratchpadFontSizeLabel)
         hotkeyResetButton.title = L10n.t(.prefHotkeyReset)
         // Keep the "press new shortcut…" prompt when the switch happened mid-record.
         if hotkeyMonitor != nil { hotkeyButton.title = L10n.t(.prefHotkeyRecording) }
@@ -409,12 +450,27 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         updateFontLabel()
     }
 
+    @objc private func scratchpadFontSizeChanged(_ sender: NSStepper) {
+        // Broadcasts `ScratchpadStore.fontDidChangeNotification`; a visible pad
+        // re-applies the size live, a hidden one picks it up when next shown.
+        ScratchpadStore.setFontSize(CGFloat(sender.doubleValue))
+        updateScratchpadFontLabel()
+    }
+
     /// Re-reads the shared font size into the stepper / label after a zoom command
-    /// changed it outside this window.
+    /// changed it outside this window. The scratchpad row follows too: while the
+    /// pad has no size of its own it mirrors the editor's.
     @objc private func fontSizeDidChangeExternally() {
         let size = EditorFontSettings().fontSize
         fontStepper.doubleValue = Double(size)
         updateFontLabel()
+        scratchpadFontSizeDidChangeExternally()
+    }
+
+    /// Re-reads the pad's font size after ⌘+ / ⌘- inside the scratchpad changed it.
+    @objc private func scratchpadFontSizeDidChangeExternally() {
+        scratchpadFontStepper.doubleValue = Double(ScratchpadStore.fontSize())
+        updateScratchpadFontLabel()
     }
 
     // MARK: - Scratchpad hot-key recorder (T15.1)
