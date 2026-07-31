@@ -211,7 +211,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                         let panel = self.scratchpadController.diagnosticPanel
                         let text = self.scratchpadController.diagnosticTextView?.string ?? ""
+                        // Optional pixel proof: the pin-button regression (user
+                        // report: "no pin visible") showed that what the panel
+                        // *contains* and what it *shows* can differ — dump the
+                        // real rendering when a path is given.
+                        if let pngPath = ProcessInfo.processInfo.environment["KARU_SCRATCHTEST_PNG"],
+                           let view = panel?.contentView?.superview ?? panel?.contentView,
+                           let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                            view.cacheDisplay(in: view.bounds, to: rep)
+                            try? rep.representation(using: .png, properties: [:])?
+                                .write(to: URL(fileURLWithPath: pngPath))
+                        }
                         var dump = "panelVisible=\(panel?.isVisible == true)\n"
+                        dump += "titlebarAccessories=\(panel?.titlebarAccessoryViewControllers.count ?? -1)\n"
                         dump += "panelLevel=\(panel?.level.rawValue ?? -1)\n"
                         dump += "styleMask=\(panel?.styleMask.rawValue ?? 0)\n"
                         dump += "textLen=\((text as NSString).length)\n"

@@ -12,8 +12,9 @@ import AppKit
 ///
 /// The text view is a plain `NSTextView`, deliberately *not* `EditorTextView`:
 /// the pad is for prose fragments and pasted snippets, so it carries no
-/// highlighting, completion, folding or gutter. Text that deserves those
-/// graduates into a real file with ⌘S.
+/// highlighting, completion or folding. Line numbers it does get (user request)
+/// — the editor's own `GutterView`, fed by a per-showing `LineIndex`. Text that
+/// deserves the rest graduates into a real file with ⌘S.
 @MainActor
 public final class ScratchpadController: NSObject, NSWindowDelegate {
 
@@ -41,6 +42,10 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     private var textView: NSTextView?
     private var pinButton: NSButton?
     private var flushWork: DispatchWorkItem?
+    /// Retains the storage-delegate hub for the line-number gutter: the text
+    /// storage only holds its delegate weakly, and the gutter (which the scroll
+    /// view retains) reads line numbers through the index this hub updates.
+    private var observerHub: TextStorageObserverHub?
 
     /// Guards against a second ⌘S while the save panel is up: `runModal` spins
     /// its own run loop, so the key equivalent can arrive again mid-save.
@@ -103,6 +108,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         self.panel = nil
         textView = nil
         pinButton = nil
+        observerHub = nil
         panel.orderOut(nil)
     }
 
@@ -164,12 +170,46 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
-        textView.string = store.read()
+        let content = store.read()
+        textView.string = content
         scrollView.documentView = textView
         self.textView = textView
 
-        panel.contentView = scrollView
-        installPinAccessory(on: panel)
+        // Line numbers (user request, T15.2): the editor's own gutter, reused
+        // verbatim — a fresh LineIndex and observer hub are built per showing
+        // and die with the panel, so the pad still costs nothing while hidden.
+        let hub = TextStorageObserverHub()
+        textView.textStorage?.delegate = hub
+        observerHub = hub
+        let gutter = GutterView(scrollView: scrollView,
+                                textView: textView,
+                                lineIndex: LineIndex(text: content),
+                                observerHub: hub)
+        scrollView.verticalRulerView = gutter
+        scrollView.hasVerticalRuler = true
+        scrollView.rulersVisible = true
+
+        // The pin lives *inside* the content, overlaid top-right above the text.
+        // It was born as a titlebar accessory, which a utility panel's compact
+        // title bar registers but never renders (user report: "no pin visible",
+        // confirmed by pixel capture) — so it moved somewhere that provably draws.
+        let container = NSView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(scrollView)
+        let button = makePinButton()
+        button.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(button)
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            button.topAnchor.constraint(equalTo: container.topAnchor, constant: 5),
+            button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -6),
+            button.widthAnchor.constraint(equalToConstant: 24),
+            button.heightAnchor.constraint(equalToConstant: 20),
+        ])
+        panel.contentView = container
 
         NotificationCenter.default.addObserver(
             self,
@@ -186,25 +226,16 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         return panel
     }
 
-    /// Pin toggle in the title bar: on (the default) the pad stays put when it
-    /// loses focus, off it disappears the moment you click away — "jot and go".
-    private func installPinAccessory(on panel: NSPanel) {
+    /// Pin toggle: on (the default) the pad stays put when it loses focus, off
+    /// it disappears the moment you click away — "jot and go".
+    private func makePinButton() -> NSButton {
         let button = NSButton(image: NSImage(), target: self, action: #selector(togglePinned(_:)))
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.setButtonType(.momentaryChange)
-        button.frame = NSRect(x: 0, y: 0, width: 28, height: 22)
         pinButton = button
         updatePinButton()
-
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 34, height: 22))
-        button.frame.origin.x = 3
-        container.addSubview(button)
-
-        let accessory = NSTitlebarAccessoryViewController()
-        accessory.view = container
-        accessory.layoutAttribute = .trailing
-        panel.addTitlebarAccessoryViewController(accessory)
+        return button
     }
 
     private func updatePinButton() {

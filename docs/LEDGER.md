@@ -207,6 +207,8 @@ v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产�
 |---|---|---|---|---|---|
 | T15.1 | 常驻草稿本：全局热键 ⌥D（Carbon RegisterEventHotKey，免辅助功能权限，设置可录制改键+恢复默认）+ 非激活浮动面板（.nonactivatingPanel，唤出不切换活跃 app，隐藏焦点自动归还）；纯文本无格式（有意不用 EditorTextView）；无保存语义（1.5s 防抖落盘，独立于崩溃草稿）；Esc/⌘W/关闭钮=隐藏，图钉切换失焦保留（默认保留）；⌘S 毕业为真文件并转入编辑器窗口（首行建议文件名）；隐藏即整体拆除（undo 栈随拆有意丢弃），常驻仅热键注册+菜单栏项；驻留（用户拍板）：last-window-close 不退出 + NSStatusItem 菜单 + Dock 点击重开窗口；KARU_SCRATCHTEST=show/cycle 真机诊断钩子 | Scratchpad/ScratchpadStore.swift（新）, Scratchpad/ScratchpadController.swift（新）, App/HotKeyCenter.swift（新）, App/AppDelegate.swift, App/MainMenu.swift, Settings/PreferencesWindowController.swift, L10n/* | implementer | 14 新测试 + visual-smoke + 双钩子 dump（panelVisible/hotkeyStatus=0；panelNil=true/落盘内容） | ✅ 688 全绿 |
 
+| T15.2 | 实测反馈：图钉不可见——titlebar accessory 在 utility 面板注册成功（count=1）但小标题栏不渲染（像素快照实证）；改为面板内容右上角叠放按钮。行号（用户请求）：复用 GutterView，每次 show 现建 LineIndex+ObserverHub 随 hide 拆除，隐藏态零常驻不变。show 钩子补 titlebarAccessories 计数 + KARU_SCRATCHTEST_PNG 像素快照（本 bug 即靠它定位） | Scratchpad/ScratchpadController.swift, App/AppDelegate.swift | main | 像素验证行号+图钉可见；cycle 钩子拆除+落盘不回退；688 全绿 + visual-smoke | ✅ |
+
 热键决策记录：⌘D 否决（全局热键抢占式，会废掉 Finder 复制/浏览器书签）；⌘⇧D 被 Mail 发送等占用；
 ⌥D 采纳（英文布局牺牲 ∂ 字符，可忽略）。菜单项落 View 菜单（无 Window 菜单，与命令面板同区），
 不设菜单键等价（Carbon 热键对本 app 同样生效，且改键后菜单键会过期）。
