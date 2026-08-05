@@ -222,6 +222,8 @@ v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产�
 
 | T15.5 | 实测反馈五项：①查找栏遮首行+窄窗按钮不可见——FindBarController 增紧凑双行模式（compact init 参数，编辑器单行不动），草稿本查找栏改回参与布局（onVisibilityChanged 切换 scrollView.top 双约束，显示时推文本下移），contentMinSize 取紧凑条实测 fitting 宽度 max(340,…)；②全屏 Space 输入法候选栏消失——疑似 .moveToActiveSpace 钉死桌面所致，随③一并缓解，待用户实测（若仍复现则判 macOS 27 beta）；③跨桌面：.canJoinAllSpaces 替换 .moveToActiveSpace；④⌘←/→ 逻辑行首行末：ScratchpadTextView 四个 moveToLeft/RightEndOfLine 覆写复用 EditorTextView 静态纯函数；⑤全局删除残影——KARU_GHOSTTEST 两轮复现均 ghostPixels=0（cacheDisplay 全量重绘必然干净）反证缺陷在失效标记而非绘制：收缩腾出的区域从未被标脏，屏幕留旧像素；新增 ShrinkRepaintObserver（编辑器+草稿本共用，删除时把编辑行顶至可视区底的带标脏），像素级验证依赖用户实测 | Search/FindBarController.swift, Scratchpad/ScratchpadController.swift, Editor/ShrinkRepaintObserver.swift（新）, Editor/EditorWindowController.swift, App/AppDelegate.swift | implementer(①③④)+main(⑤+钩子) | 像素验证首行可见+按钮齐全；340 最小宽度；704 全绿 + visual-smoke | ✅ |
 
+| T15.6 | 全屏 Space 输入法候选栏消失——排查终结：实验开关 scratchpad.activateOnShow 真机 A/B（用户执行）证明**激活状态不是关键变量**（程序化激活不跳 Space、焦点归还正常，但候选栏依然不出现；⌘Tab 激活则会被拽离全屏 Space）。app 侧可控变量已穷尽（激活态、Space 归属 canJoinAllSpaces、fullScreenAuxiliary），候选窗能否加入他人全屏 Space 由输入法进程+窗口服务器决定，第三方无公开手段。判定：平台层限制（macOS 27 beta，正式版有修复可能但无保证）。实验代码已 revert，记为已知限制，正式版发布后复测；届时仍复现则提交 Apple Feedback | Scratchpad/ScratchpadController.swift（实验后已还原） | main | 实验结论入档 | ✅ 搁置（平台限制） |
+
 热键决策记录：⌘D 否决（全局热键抢占式，会废掉 Finder 复制/浏览器书签）；⌘⇧D 被 Mail 发送等占用；
 ⌥D 采纳（英文布局牺牲 ∂ 字符，可忽略）。菜单项落 View 菜单（无 Window 菜单，与命令面板同区），
 不设菜单键等价（Carbon 热键对本 app 同样生效，且改键后菜单键会过期）。
