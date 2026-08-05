@@ -87,6 +87,7 @@ extension L10n {
         .statusScratchpad: "Show/Hide Scratchpad",
         .scratchpadTodoTooltip: "To-do List (⇧⌘L)",
         .scratchpadPinTooltip: "Keep on Top (⇧⌘P)",
+        .linkOpenTooltip: "⌘-click to open",
 
         .menuLanguage: "Language",
         .languageAuto: "Auto",
@@ -235,6 +236,7 @@ extension L10n {
         .statusScratchpad: "显示/隐藏草稿本",
         .scratchpadTodoTooltip: "待办清单（⇧⌘L）",
         .scratchpadPinTooltip: "置顶（⇧⌘P）",
+        .linkOpenTooltip: "⌘点击打开",
 
         .menuLanguage: "语言",
         .languageAuto: "自动",
@@ -383,6 +385,7 @@ extension L10n {
         .statusScratchpad: "スクラッチパッドを表示/非表示",
         .scratchpadTodoTooltip: "ToDo リスト（⇧⌘L）",
         .scratchpadPinTooltip: "最前面に固定（⇧⌘P）",
+        .linkOpenTooltip: "⌘クリックで開く",
 
         .menuLanguage: "言語",
         .languageAuto: "自動",

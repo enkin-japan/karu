@@ -39,6 +39,12 @@ public final class LinkDetector: NSObject, TextStorageObserving {
     /// Ranges last detected *and* painted; the ⌘-click hit test reads them.
     private var links: [NSRange] = []
 
+    /// Tool-tip regions registered on the text view — one per enclosing rect of
+    /// each link, so hovering a link says "⌘-click to open" (T15.8, user
+    /// request: the modifier is otherwise undiscoverable). Tracked by tag so
+    /// removal never touches a tip someone else registered.
+    private var toolTipTags: [NSView.ToolTipTag] = []
+
     /// Pending debounced scan, if any.
     private var pending: DispatchWorkItem?
 
@@ -64,9 +70,17 @@ public final class LinkDetector: NSObject, TextStorageObserving {
     public init(textView: NSTextView) {
         self.textView = textView
         super.init()
+        // Re-place the tool-tip rects when the view is resized: a width change
+        // re-wraps the text and moves every link's glyphs without any edit
+        // (`postsFrameChangedNotifications` is already on — the gutter needs it).
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(viewFrameDidChange(_:)),
+                                               name: NSView.frameDidChangeNotification,
+                                               object: textView)
     }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         pending?.cancel()
     }
 
@@ -201,12 +215,62 @@ public final class LinkDetector: NSObject, TextStorageObserving {
                                                 forCharacterRange: range)
         }
         links = ranges
+        addToolTips()
+    }
+
+    // MARK: - Hover tool tips
+
+    /// Registers one tool-tip region per enclosing rect of every painted link.
+    /// Wrapped links get one region per fragment, so the tip shows wherever the
+    /// pointer actually is.
+    private func addToolTips() {
+        guard let textView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return }
+        let origin = textView.textContainerOrigin
+        for range in links {
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(
+                forGlyphRange: glyphRange,
+                withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                in: container
+            ) { rect, _ in
+                let tag = textView.addToolTip(rect.offsetBy(dx: origin.x, dy: origin.y),
+                                              owner: self, userData: nil)
+                self.toolTipTags.append(tag)
+            }
+        }
+    }
+
+    private func removeToolTips() {
+        guard let textView else { toolTipTags = []; return }
+        for tag in toolTipTags { textView.removeToolTip(tag) }
+        toolTipTags = []
+    }
+
+    /// A resize re-wraps without an edit: the link set is unchanged, only the
+    /// rects moved, so the regions are re-registered without a rescan.
+    @objc private func viewFrameDidChange(_ notification: Notification) {
+        guard !links.isEmpty else { return }
+        removeToolTips()
+        addToolTips()
+    }
+
+    /// Informal `NSToolTipOwner` method — every registered region shows the same
+    /// hint: the modifier is the discoverable part, not the URL (which is right
+    /// there in the text).
+    @objc public func view(_ view: NSView,
+                           stringForToolTip tag: NSView.ToolTipTag,
+                           point: NSPoint,
+                           userData data: UnsafeMutableRawPointer?) -> String {
+        L10n.t(.linkOpenTooltip)
     }
 
     /// Removes exactly what this object painted, never a whole-document sweep:
     /// the underline channel is ours, but the ranges we hold may already be
     /// stale after an edit, so anything reaching past the end is skipped.
     private func clearDecoration() {
+        removeToolTips()
         defer { links = [] }
         guard !links.isEmpty, let layoutManager = textView?.layoutManager else { return }
         let length = (textView?.string as NSString?)?.length ?? 0

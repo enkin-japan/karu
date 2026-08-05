@@ -60,8 +60,9 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// cancelled by `hide()` so a hidden pad schedules nothing.
     private var linkDetector: LinkDetector?
 
-    /// Guards against a second ⌘S while the save panel is up: `runModal` spins
-    /// its own run loop, so the key equivalent can arrive again mid-save.
+    /// True while the save sheet is up. Guards against a second ⌘S, against the
+    /// unpinned pad hiding itself when the sheet takes key status, and against
+    /// the hot key tearing the panel down under an open sheet.
     private var isGraduating = false
 
     /// `nonisolated` so the app delegate — which AppKit calls without an actor
@@ -88,6 +89,9 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     // MARK: - Show / hide
 
     @objc public func toggle() {
+        // The hot key must not tear the panel down under an open save sheet —
+        // half a modal session outliving its parent window is a crash waiting.
+        guard !isGraduating else { return }
         if isVisible { hide() } else { show() }
     }
 
@@ -510,29 +514,45 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     ///
     /// Graduating *is* the confirmation — no extra "are you sure": the text does
     /// not vanish, it becomes a document. A cancelled save panel changes nothing.
+    ///
+    /// The save panel runs as a **sheet on the pad**, not application-modal
+    /// (T15.8, two user reports): activation on macOS 14+ is cooperative, so an
+    /// inactive Karu's `runModal` window could end up *behind* the active app's
+    /// windows; and over another app's full-screen Space a modal window opened
+    /// on the normal Space with no automatic switch to it. A sheet is a child of
+    /// the panel — same Space (full screen included), always above the pad, and
+    /// key without activating anything, exactly like the pad itself.
     func graduate() {
-        guard !isGraduating, let textView else { return }
+        guard !isGraduating, let panel, let textView else { return }
         isGraduating = true
-        defer { isGraduating = false }
         cancelFlush()
         flushNow()
 
-        let content = textView.string
-        // The save panel is modal and needs a real activation to come forward;
-        // a non-activating panel's sheet would be stranded behind other apps,
-        // so it runs application-modal instead of attached to the pad.
-        NSApp.activate(ignoringOtherApps: true)
         let savePanel = NSSavePanel()
-        savePanel.nameFieldStringValue = Self.suggestedFileName(for: content)
-        guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+        savePanel.nameFieldStringValue = Self.suggestedFileName(for: textView.string)
+        savePanel.beginSheetModal(for: panel) { [weak self] response in
+            self?.finishGraduation(savePanel: savePanel, response: response)
+        }
+    }
 
+    /// Completion of the save sheet. Reads the text *now*, not at ⌘S time — the
+    /// buffer is authoritative right up to the moment it leaves the pad.
+    private func finishGraduation(savePanel: NSSavePanel, response: NSApplication.ModalResponse) {
+        isGraduating = false
+        guard response == .OK, let url = savePanel.url, let textView else { return }
+        let content = textView.string
         do {
             try Data(content.utf8).write(to: url, options: .atomic)
         } catch {
             // Keep the text: a failed save must not be the moment the pad is
-            // emptied. The user can retry or copy it out.
+            // emptied. The user can retry or copy it out. The alert is a sheet
+            // for the same reason the save panel is.
             let alert = NSAlert(error: error)
-            alert.runModal()
+            if let panel {
+                alert.beginSheetModal(for: panel)
+            } else {
+                alert.runModal()
+            }
             return
         }
 

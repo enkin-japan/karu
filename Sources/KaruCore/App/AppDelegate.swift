@@ -213,6 +213,31 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         try? dump.write(toFile: outPath, atomically: true, encoding: .utf8)
                         NSApp.terminate(nil)
                     }
+                } else if scratchTest == "save" {
+                    // Save-sheet probe (T15.8): the ⌘S dialog used to run
+                    // application-modal, and cooperative activation (macOS 14+)
+                    // could leave it behind the active app's windows — the pad
+                    // now hosts it as its own sheet. Proves the sheet attaches,
+                    // becomes key *without* the app activating, and that the
+                    // pad survives losing key status to it (unpinned hide guard).
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        self.scratchpadController.diagnosticTextView?.string = "save-probe"
+                        self.scratchpadController.graduate()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                            let panel = self.scratchpadController.diagnosticPanel
+                            let sheet = panel?.attachedSheet
+                            var dump = "sheetAttached=\(sheet != nil)\n"
+                            dump += "sheetClass=\(sheet.map { String(describing: type(of: $0)) } ?? "nil")\n"
+                            dump += "sheetIsKey=\(sheet?.isKeyWindow == true)\n"
+                            dump += "sheetFrame=\(sheet?.frame ?? .zero)\n"
+                            dump += "panelVisible=\(panel?.isVisible == true)\n"
+                            dump += "appActive=\(NSApp.isActive)\n"
+                            try? dump.write(toFile: outPath, atomically: true, encoding: .utf8)
+                            // A modal sheet session is pending: `terminate` would
+                            // hang on it (the KARU_GHOSTTEST lesson), exit hard.
+                            exit(0)
+                        }
+                    }
                 } else if scratchTest == "zoom" {
                     // Reproduces the zoom-key routing through the *real* event
                     // path (NSApp.sendEvent → menu / window key-equivalent
