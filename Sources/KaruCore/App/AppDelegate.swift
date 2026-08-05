@@ -192,6 +192,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self else { return }
                 self.scratchpadController.show()
+                // KARU_SCRATCHTEST_FINDBAR=1: also open the find bar, so the
+                // pixel capture can prove its layout (occlusion / clipping are
+                // exactly what unit tests cannot see — T15.5 user reports).
+                if ProcessInfo.processInfo.environment["KARU_SCRATCHTEST_FINDBAR"] == "1" {
+                    self.scratchpadController.showFindBar()
+                }
                 if scratchTest == "cycle" {
                     if let tv = self.scratchpadController.diagnosticTextView {
                         tv.string = "scratch-cycle-proof"
@@ -277,6 +283,84 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         dump += "pinned=\(ScratchpadStore.isPinned())\n"
                         try? dump.write(toFile: outPath, atomically: true, encoding: .utf8)
                         NSApp.terminate(nil)
+                    }
+                }
+            }
+        }
+
+        // Ghost-pixel reproduction hook (T15.5): KARU_GHOSTTEST=<out-path>
+        // reproduces the user's "select-and-delete leaves ghost text behind"
+        // report through real editing — fill the first window with lines,
+        // select a multi-line range, delete it, then scan the rendered bitmap
+        // below the surviving text for pixels that should not be there. Only a
+        // real-app pixel scan can see this class of bug (stale rendering after
+        // shrink), same lesson as KARU_FOLDTEST. Zero cost unset.
+        if let ghostOut = ProcessInfo.processInfo.environment["KARU_GHOSTTEST"] {
+            NSApp.appearance = NSAppearance(named: .aqua)   // deterministic pixels
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let controller = self?.windowControllers.first,
+                      let tv = controller.window?.contentView?.firstSubview(ofType: NSTextView.self)
+                else { return }
+                // Long CJK lines that soft-wrap: the user's ghost was a *wrapped*
+                // line's fragment re-drawn below the document end, so wrapping is
+                // part of the reproduction, and a drag-style selection (the
+                // stillSelecting path) is how the user selects.
+                tv.string = (1...8).map { n in
+                    "第\(n)行" + String(repeating: "这是一段足够长会被软换行折断的中文文本内容，", count: 4)
+                }.joined(separator: "\n")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    let ns = tv.string as NSString
+                    let start = ns.range(of: "第2行").location + 5
+                    let end = ns.range(of: "第6行").location + 8
+                    // Mimic a mouse drag: a burst of growing stillSelecting
+                    // ranges, then the final settled selection.
+                    var mid = start + 10
+                    while mid < end {
+                        tv.setSelectedRanges([NSValue(range: NSRange(location: start, length: mid - start))],
+                                             affinity: .downstream, stillSelecting: true)
+                        mid += (end - start) / 6
+                    }
+                    tv.setSelectedRanges([NSValue(range: NSRange(location: start, length: end - start))],
+                                         affinity: .downstream, stillSelecting: false)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        tv.deleteBackward(nil)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                            guard let content = controller.window?.contentView,
+                                  let view = content.superview ?? content as NSView?,
+                                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+                            else { return }
+                            view.cacheDisplay(in: view.bounds, to: rep)
+                            try? rep.representation(using: .png, properties: [:])?
+                                .write(to: URL(fileURLWithPath: ghostOut + ".png"))
+                            // The document now ends well inside the top half, so
+                            // apart from the status bar at the very bottom the
+                            // lower half must be pure background. Count pixels
+                            // that are clearly not (dark or saturated) — ghost
+                            // glyphs and boxes are both.
+                            var suspect = 0
+                            let width = rep.pixelsWide, height = rep.pixelsHigh
+                            let yStart = Int(Double(height) * 0.55)
+                            let yEnd = height - 60   // keep clear of the status bar
+                            var y = yStart
+                            while y < yEnd {
+                                var x = 10
+                                while x < width - 25 {   // skip scroller edge
+                                    if let c = rep.colorAt(x: x, y: y),
+                                       c.brightnessComponent < 0.85 || c.saturationComponent > 0.3 {
+                                        suspect += 1
+                                    }
+                                    x += 3
+                                }
+                                y += 3
+                            }
+                            let dump = "ghostPixels=\(suspect)\nscanned=[\(yStart)..\(yEnd)]x[10..\(width - 25)]\ntextLen=\((tv.string as NSString).length)\n"
+                            try? dump.write(toFile: ghostOut, atomically: true, encoding: .utf8)
+                            // Hard exit, not NSApp.terminate: the injected text
+                            // makes the window dirty, and a graceful quit would
+                            // hang forever on the unsaved-changes alert (and
+                            // leave crash drafts behind for the next launch).
+                            exit(0)
+                        }
                     }
                 }
             }

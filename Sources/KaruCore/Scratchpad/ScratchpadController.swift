@@ -51,6 +51,9 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// storage only holds its delegate weakly, and the gutter (which the scroll
     /// view retains) reads line numbers through the index this hub updates.
     private var observerHub: TextStorageObserverHub?
+    /// Ghost-pixel guard, same as the editor's (T15.5) — retained because the
+    /// hub holds observers weakly. Dies with the panel like everything here.
+    private var shrinkRepaint: ShrinkRepaintObserver?
 
     /// Guards against a second ⌘S while the save panel is up: `runModal` spins
     /// its own run loop, so the key equivalent can arrive again mid-save.
@@ -122,6 +125,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         gutterView = nil
         findBar = nil
         observerHub = nil
+        shrinkRepaint = nil
         panel.orderOut(nil)
     }
 
@@ -160,10 +164,16 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         )
         panel.title = Self.spacedTitle(L10n.t(.scratchpadTitle))
         panel.level = .floating
-        // Follow the user across Spaces and survive another app going full
+        // Present on *every* Space at once (Tot's behaviour, user request:
+        // "moves along with the desktop"), and alive over another app's full
         // screen — a pad that only exists on the Space it was opened on is not
-        // "always available".
-        panel.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
+        // "always available". `.canJoinAllSpaces` rather than `.moveToActiveSpace`:
+        // the latter only relocates the panel when it is re-shown, so switching
+        // desktop left it behind on the old one. Suspected fix for the second
+        // T15.5 report as well (input-method candidate bar vanishing in a
+        // full-screen Space): the candidate window follows the active Space,
+        // while the panel used to stay pinned to the one that raised it.
+        panel.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
         // Focus loss is handled by the pin toggle below, not by AppKit's
         // hide-on-deactivate, which would ignore the setting.
         panel.hidesOnDeactivate = false
@@ -203,6 +213,10 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         let hub = TextStorageObserverHub()
         textView.textStorage?.delegate = hub
         observerHub = hub
+        // Ghost-pixel guard (T15.5): the pad deletes text like any editor.
+        let repaint = ShrinkRepaintObserver(textView: textView)
+        hub.add(repaint)
+        shrinkRepaint = repaint
         let gutter = GutterView(scrollView: scrollView,
                                 textView: textView,
                                 lineIndex: lineIndex,
@@ -212,21 +226,24 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         scrollView.rulersVisible = true
         gutterView = gutter
 
-        let findBar = FindBarController(textView: textView, lineIndex: lineIndex)
+        // Two rows, not one (T15.5): a single-row bar cannot show its buttons in
+        // a pad-sized window, whatever the layout does with it.
+        let findBar = FindBarController(textView: textView, lineIndex: lineIndex, compact: true)
         self.findBar = findBar
 
-        // The find bar floats *over* the text's top edge instead of joining the
-        // layout (the editor stacks it above the scroll view). In a stack, the
-        // bar's controls chain a ~660 pt required minimum width up through the
-        // stack's fitting constraints onto the window — the pad suddenly could
-        // not be made narrow (T15.4 user report), hidden or not. As an overlay
-        // with a breakable trailing pin it stretches across the pad when it
-        // fits and is clipped on the right when the pad is narrower; the window
-        // minimum is whatever `contentMinSize` says, nothing else.
+        // The bar *joins* the layout — while shown it pushes the text down
+        // instead of covering the first line (T15.5 user report) — but by hand,
+        // never through an NSStackView. A stack chains its arranged views'
+        // ~660 pt required minimum width up through its own fitting constraints
+        // onto the window, and the pad could then not be made narrow at all
+        // (T15.4 user report), hidden or not. Here the bar's only horizontal
+        // pins are a required leading edge and a *breakable* trailing one, so
+        // its minimum width never reaches the window: the window minimum is
+        // whatever `contentMinSize` says, nothing else.
         //
-        // The pin's priority must sit *below* 500: NSWindow resizes itself to
-        // satisfy content constraints above `windowSizeStayPut`, so a 900 pin
-        // plus the bar's minimum actively grew the window back to 682 pt
+        // The trailing pin's priority must sit *below* 500: NSWindow resizes
+        // itself to satisfy content constraints above `windowSizeStayPut`, so a
+        // 900 pin plus the bar's minimum actively grew the window back to 682 pt
         // (measured) instead of breaking — the same bug through a second door.
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         let container = NSView()
@@ -235,8 +252,11 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         container.addSubview(findBar.barView)
         let barTrailing = findBar.barView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
         barTrailing.priority = NSLayoutConstraint.Priority(480)
+        // Exactly one of these is active at a time: the text starts at the top
+        // edge while the bar is hidden, and below the bar while it is shown.
+        let textBelowContainerTop = scrollView.topAnchor.constraint(equalTo: container.topAnchor)
+        let textBelowFindBar = scrollView.topAnchor.constraint(equalTo: findBar.barView.bottomAnchor)
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -244,8 +264,24 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
             findBar.barView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             barTrailing,
         ])
+        // No `self` in the closure: it is owned by the find bar, which this
+        // controller owns — capturing self would be a cycle that outlives
+        // `hide()`. The constraints hold their views weakly, as AppKit does.
+        let applyBarVisibility: (Bool) -> Void = { [weak container] shown in
+            textBelowContainerTop.isActive = false
+            textBelowFindBar.isActive = false
+            if shown { textBelowFindBar.isActive = true } else { textBelowContainerTop.isActive = true }
+            container?.needsLayout = true
+            container?.layoutSubtreeIfNeeded()
+        }
+        applyBarVisibility(findBar.isShown)
+        findBar.onVisibilityChanged = applyBarVisibility
+
         panel.contentView = container
-        panel.contentMinSize = NSSize(width: 280, height: 160)
+        // Wide enough for the compact bar's own controls, measured rather than
+        // guessed: below this the buttons would be clipped by `clipsToBounds`.
+        panel.contentMinSize = NSSize(width: max(340, ceil(findBar.barView.fittingSize.width)),
+                                      height: 160)
 
         // The pin rides in the (standard) title bar's trailing corner.
         let accessory = NSTitlebarAccessoryViewController()
@@ -504,6 +540,41 @@ private final class ScratchpadTextView: NSTextView {
     /// window-level interception would never run.
     override func cancelOperation(_ sender: Any?) {
         controller?.escapePressed()
+    }
+
+    // MARK: Logical line start / end (⌘← / ⌘→)
+
+    // Same four overrides as `EditorTextView` (T14.2), calling the same pure
+    // targets: ⌘←/⌘→ default to the *visual* line ends, so a soft-wrapped line
+    // — which the pad, being narrow and always wrapping, is full of — sends the
+    // caret mid-content depending on the panel's width. VS Code's Home toggle
+    // (first non-whitespace ⇄ column 0) comes along inside `smartLineStart`.
+
+    override func moveToLeftEndOfLine(_ sender: Any?) {
+        let target = EditorTextView.smartLineStart(text: string, caret: selectedRange().location)
+        setSelectedRange(NSRange(location: target, length: 0))
+        scrollRangeToVisible(NSRange(location: target, length: 0))
+    }
+
+    override func moveToRightEndOfLine(_ sender: Any?) {
+        let caret = selectedRange()
+        let target = EditorTextView.smartLineEnd(text: string, caret: caret.location + caret.length)
+        setSelectedRange(NSRange(location: target, length: 0))
+        scrollRangeToVisible(NSRange(location: target, length: 0))
+    }
+
+    override func moveToLeftEndOfLineAndModifySelection(_ sender: Any?) {
+        let selection = selectedRange()
+        let target = EditorTextView.smartLineStart(text: string, caret: selection.location)
+        let upper = selection.location + selection.length
+        setSelectedRange(NSRange(location: min(target, upper), length: max(0, upper - target)))
+    }
+
+    override func moveToRightEndOfLineAndModifySelection(_ sender: Any?) {
+        let selection = selectedRange()
+        let target = EditorTextView.smartLineEnd(text: string, caret: selection.location + selection.length)
+        setSelectedRange(NSRange(location: selection.location,
+                                 length: max(0, target - selection.location)))
     }
 
     /// The pad's key equivalents. None of them arrive through the main menu —

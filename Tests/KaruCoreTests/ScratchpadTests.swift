@@ -263,3 +263,70 @@ private func makeFontDefaults() -> (UserDefaults, () -> Void) {
     #expect(ScratchpadController.spacedTitle("スクラッチパッド") == "スクラッチパッド")
     #expect(ScratchpadController.spacedTitle("A") == "A")
 }
+
+// MARK: - Find bar layout (T15.5)
+//
+// Layout metrics only — no window, no panel. `fittingSize` is exactly the number
+// the scratchpad turns into `contentMinSize`, and it is computable headlessly,
+// so the two user-visible failures (buttons clipped in a narrow pad, first text
+// line covered) are pinned down by the measurements below plus the visibility
+// callback that drives the push-down.
+
+/// A bar built over a throwaway text view, the way both hosts build theirs.
+@MainActor
+private func makeFindBar(compact: Bool) -> FindBarController {
+    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+    textView.string = "alpha\nbeta\n"
+    return FindBarController(textView: textView,
+                             lineIndex: LineIndex(text: textView.string),
+                             compact: compact)
+}
+
+@MainActor
+@Test func compactFindBarIsFarNarrowerThanTheSingleRowOne() {
+    let single = makeFindBar(compact: false).barView.fittingSize
+    let compact = makeFindBar(compact: true).barView.fittingSize
+    // Two rows: much narrower, and correspondingly taller.
+    #expect(compact.width < single.width * 0.75)
+    #expect(compact.height > single.height)
+}
+
+@MainActor
+@Test func compactFindBarFitsThePadsMinimumWidth() {
+    // The pad's `contentMinSize` is max(340, this) — the bar must not push that
+    // minimum up, or a "narrow pad" is impossible again (the T15.4 accident).
+    #expect(makeFindBar(compact: true).barView.fittingSize.width <= 340)
+}
+
+@MainActor
+@Test func singleRowFindBarKeepsItsEditorWidth() {
+    // Guards the editor against this change: one row, ~660 pt of controls.
+    let bar = makeFindBar(compact: false).barView
+    #expect(bar.fittingSize.width > 500)
+    #expect(bar.fittingSize.height < 50)
+}
+
+@MainActor
+@Test func findBarReportsEveryVisibilityChange() {
+    let bar = makeFindBar(compact: true)
+    var seen: [Bool] = []
+    bar.onVisibilityChanged = { seen.append($0) }
+    bar.show()
+    bar.hide()
+    bar.show()
+    #expect(seen == [true, false, true])
+    #expect(bar.isShown)
+}
+
+@MainActor
+@Test func findBarClosingRoutesThroughHideAndNotifies() {
+    // Esc in the search field and the Done button both call `hide()`, so the
+    // scratchpad's text always gets its top edge back.
+    let bar = makeFindBar(compact: true)
+    bar.show()
+    var seen: [Bool] = []
+    bar.onVisibilityChanged = { seen.append($0) }
+    bar.hide()
+    #expect(seen == [false])
+    #expect(!bar.isShown)
+}

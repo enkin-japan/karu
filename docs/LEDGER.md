@@ -220,6 +220,8 @@ v0.8.1 发布（2026-07-22）：T12.18/T12.19 + T12.20 排查结论。三资产�
 
 | T15.4 | 实测反馈四项（自绘 header 被否）：①标题恢复系统标题栏，CJK 短标题加全角空格（"草　稿　本"，纯函数+测试）；②styleMask 弃 .utilityWindow 换标准标题栏→图钉进标题栏 accessory（标准栏可渲染，utility 才是 T15.2 的祸根）+小手光标；③最小宽度暴增修复：查找栏 660pt 固有最小宽度经 stack fitting 约束传导到窗口，改为浮层叠放文本上方+右缘 480 优先级（**必须 <500**：NSWindow 会主动扩窗满足 >windowSizeStayPut 的约束，900 实测被拖回 682），contentMinSize 280×160，窄窗右侧裁剪；④缩放键误改全局字号：菜单键等价匹配抢在视图层之前，AppDelegate zoom 三动作按键窗口路由到草稿本（双保险），合成事件钩子 KARU_SCRATCHTEST=zoom 真实路径复现（editor 13→13，pad 13→14）；show 钩子补 frameW/title/fitting 几何 + KARU_SCRATCHTEST_NARROW 窄宽压测 | Scratchpad/ScratchpadController.swift, App/AppDelegate.swift | main | zoom 钩子 editor 不动 pad 动；窄宽 280 实测；像素验证标题/图钉；699 全绿 + visual-smoke | ✅ |
 
+| T15.5 | 实测反馈五项：①查找栏遮首行+窄窗按钮不可见——FindBarController 增紧凑双行模式（compact init 参数，编辑器单行不动），草稿本查找栏改回参与布局（onVisibilityChanged 切换 scrollView.top 双约束，显示时推文本下移），contentMinSize 取紧凑条实测 fitting 宽度 max(340,…)；②全屏 Space 输入法候选栏消失——疑似 .moveToActiveSpace 钉死桌面所致，随③一并缓解，待用户实测（若仍复现则判 macOS 27 beta）；③跨桌面：.canJoinAllSpaces 替换 .moveToActiveSpace；④⌘←/→ 逻辑行首行末：ScratchpadTextView 四个 moveToLeft/RightEndOfLine 覆写复用 EditorTextView 静态纯函数；⑤全局删除残影——KARU_GHOSTTEST 两轮复现均 ghostPixels=0（cacheDisplay 全量重绘必然干净）反证缺陷在失效标记而非绘制：收缩腾出的区域从未被标脏，屏幕留旧像素；新增 ShrinkRepaintObserver（编辑器+草稿本共用，删除时把编辑行顶至可视区底的带标脏），像素级验证依赖用户实测 | Search/FindBarController.swift, Scratchpad/ScratchpadController.swift, Editor/ShrinkRepaintObserver.swift（新）, Editor/EditorWindowController.swift, App/AppDelegate.swift | implementer(①③④)+main(⑤+钩子) | 像素验证首行可见+按钮齐全；340 最小宽度；704 全绿 + visual-smoke | ✅ |
+
 热键决策记录：⌘D 否决（全局热键抢占式，会废掉 Finder 复制/浏览器书签）；⌘⇧D 被 Mail 发送等占用；
 ⌥D 采纳（英文布局牺牲 ∂ 字符，可忽略）。菜单项落 View 菜单（无 Window 菜单，与命令面板同区），
 不设菜单键等价（Carbon 热键对本 app 同样生效，且改键后菜单键会过期）。

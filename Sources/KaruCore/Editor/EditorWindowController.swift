@@ -22,6 +22,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// its delegate weakly.
     private let observerHub = TextStorageObserverHub()
     private var highlightEngine: HighlightEngine!
+    /// Retained here because the hub only holds observers weakly (T15.5).
+    private var shrinkRepaint: ShrinkRepaintObserver?
 
     /// Adapts `allowsNonContiguousLayout` to the document size (eager layout for
     /// small files → smooth scrolling; noncontiguous for large files → memory
@@ -190,6 +192,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let engine = HighlightEngine(textView: textView, scrollView: scrollView)
         observerHub.add(engine)
         self.highlightEngine = engine
+
+        // Ghost-pixel guard (T15.5): repaint the band below shrinking edits —
+        // the compositor does not reliably invalidate the vacated area, leaving
+        // deleted lines visible on screen. The hub holds observers weakly, so
+        // this controller retains it.
+        let shrinkRepaint = ShrinkRepaintObserver(textView: textView)
+        observerHub.add(shrinkRepaint)
+        self.shrinkRepaint = shrinkRepaint
 
         // Adaptive layout mode: a fresh window is an empty (small) document, so
         // it starts with eager/contiguous layout. `load(url:)` re-pins it before

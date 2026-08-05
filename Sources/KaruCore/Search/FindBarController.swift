@@ -19,8 +19,16 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     /// Whether the bar is currently visible.
     public private(set) var isShown = false
 
+    /// Fires on every visibility change (both `show()` and `hide()`, including
+    /// the close button and Esc, which route through them). The scratchpad uses
+    /// it to push its text down instead of letting the bar cover the first line.
+    public var onVisibilityChanged: ((Bool) -> Void)?
+
     private weak var textView: NSTextView?
     private let lineIndex: LineIndex
+    /// Two-row layout for narrow hosts (the scratchpad panel). The editor's
+    /// window is wide by construction and keeps the original single row.
+    private let compact: Bool
 
     // Controls
     private let searchField = NSSearchField()
@@ -40,9 +48,12 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
 
     private let matchHighlight = NSColor.systemYellow.withAlphaComponent(0.35)
 
-    public init(textView: NSTextView, lineIndex: LineIndex) {
+    /// - Parameter compact: lays the controls out in two rows instead of one, so
+    ///   the whole bar (buttons included) fits a ~340 pt wide window.
+    public init(textView: NSTextView, lineIndex: LineIndex, compact: Bool = false) {
         self.textView = textView
         self.lineIndex = lineIndex
+        self.compact = compact
         super.init()
         buildBar()
         barView.isHidden = true
@@ -100,18 +111,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         replaceField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let stack = NSStackView(views: [
-            searchField, regexToggle, caseToggle,
-            prevButton, nextButton,
-            replaceField, replaceButton, replaceAllButton,
-            countLabel, closeButton,
-        ])
-        stack.orientation = .horizontal
-        // 8 pt grid; the option toggles hug into a tighter group of their own.
-        stack.spacing = 8
-        stack.setCustomSpacing(4, after: regexToggle)
-        stack.setCustomSpacing(4, after: prevButton)
-        stack.alignment = .centerY
+        let stack = compact ? makeCompactStack() : makeSingleRowStack()
         stack.translatesAutoresizingMaskIntoConstraints = false
         barView.addSubview(stack)
 
@@ -129,10 +129,62 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
             stack.trailingAnchor.constraint(equalTo: barView.trailingAnchor, constant: -8),
             stack.topAnchor.constraint(equalTo: barView.topAnchor, constant: 6),
             stack.bottomAnchor.constraint(equalTo: barView.bottomAnchor, constant: -6),
-            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
-            replaceField.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
-            countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
+            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 100 : 140),
+            replaceField.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 100 : 120),
+            countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 60 : 90),
         ])
+    }
+
+    /// The editor's bar: everything on one line, unchanged since T7.
+    private func makeSingleRowStack() -> NSStackView {
+        let stack = NSStackView(views: [
+            searchField, regexToggle, caseToggle,
+            prevButton, nextButton,
+            replaceField, replaceButton, replaceAllButton,
+            countLabel, closeButton,
+        ])
+        stack.orientation = .horizontal
+        // 8 pt grid; the option toggles hug into a tighter group of their own.
+        stack.spacing = 8
+        stack.setCustomSpacing(4, after: regexToggle)
+        stack.setCustomSpacing(4, after: prevButton)
+        stack.alignment = .centerY
+        return stack
+    }
+
+    /// Two rows — find on top, replace below — so the bar's minimum width is
+    /// roughly halved and no button is clipped in a narrow window (T15.5 user
+    /// report: the scratchpad's find bar lost its right-hand buttons).
+    private func makeCompactStack() -> NSStackView {
+        let findRow = NSStackView(views: [
+            searchField, regexToggle, caseToggle,
+            prevButton, nextButton, closeButton,
+        ])
+        findRow.orientation = .horizontal
+        findRow.spacing = 8
+        findRow.setCustomSpacing(4, after: regexToggle)
+        findRow.setCustomSpacing(4, after: prevButton)
+        findRow.alignment = .centerY
+
+        let replaceRow = NSStackView(views: [
+            replaceField, replaceButton, replaceAllButton, countLabel,
+        ])
+        replaceRow.orientation = .horizontal
+        replaceRow.spacing = 8
+        replaceRow.alignment = .centerY
+
+        let column = NSStackView(views: [findRow, replaceRow])
+        column.orientation = .vertical
+        column.spacing = 4
+        column.alignment = .leading
+        // Width equality rather than leading+trailing pins: it says "both rows
+        // are as wide as the bar" without adding a second horizontal-position
+        // constraint on top of the stack's own alignment.
+        NSLayoutConstraint.activate([
+            findRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+            replaceRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+        ])
+        return column
     }
 
     private func configureToggle(_ button: NSButton, title: String, tooltip: String, action: Selector) {
@@ -172,6 +224,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         recomputeMatches(moveToFirst: true)
         barView.window?.makeFirstResponder(searchField)
         searchField.selectText(nil)
+        onVisibilityChanged?(true)
     }
 
     /// Hides the bar, clears highlights, and returns focus to the editor.
@@ -182,6 +235,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         matches = []
         currentIndex = -1
         if let textView { textView.window?.makeFirstResponder(textView) }
+        onVisibilityChanged?(false)
     }
 
     /// Re-pulls every string after a UI-language change. Refreshes placeholders,
