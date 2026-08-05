@@ -25,6 +25,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// Retained here because the hub only holds observers weakly (T15.5).
     private var shrinkRepaint: ShrinkRepaintObserver?
 
+    /// URL underlining + ⌘-click (T15.6). Retained for the same reason; its
+    /// decoration lives in temporary attributes only, so nothing it draws can
+    /// reach the document.
+    private var linkDetector: LinkDetector?
+
     /// Adapts `allowsNonContiguousLayout` to the document size (eager layout for
     /// small files → smooth scrolling; noncontiguous for large files → memory
     /// budget). Registered on the observer hub so edits that cross the threshold
@@ -200,6 +205,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let shrinkRepaint = ShrinkRepaintObserver(textView: textView)
         observerHub.add(shrinkRepaint)
         self.shrinkRepaint = shrinkRepaint
+
+        // URL recognition (T15.6): debounced, temporary-attribute only, and the
+        // ⌘-click target. A freshly built window is empty; `load(url:)` edits the
+        // storage, which is what triggers the first scan.
+        let linkDetector = LinkDetector(textView: textView)
+        observerHub.add(linkDetector)
+        (textView as? EditorTextView)?.linkDetector = linkDetector
+        self.linkDetector = linkDetector
 
         // Adaptive layout mode: a fresh window is an empty (small) document, so
         // it starts with eager/contiguous layout. `load(url:)` re-pins it before

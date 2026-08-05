@@ -41,6 +41,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var textView: NSTextView?
     private var pinButton: NSButton?
+    private var todoButton: NSButton?
     private var gutterView: GutterView?
     /// Find / replace over the pad's text (T15.3), the editor's own bar reused:
     /// it needs nothing but an `NSTextView` and a `LineIndex`, both of which the
@@ -54,6 +55,10 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// Ghost-pixel guard, same as the editor's (T15.5) — retained because the
     /// hub holds observers weakly. Dies with the panel like everything here.
     private var shrinkRepaint: ShrinkRepaintObserver?
+    /// URL underlining + ⌘-click (T15.6), the editor's own detector reused.
+    /// Retained for the same reason as the guard above; its pending scan is
+    /// cancelled by `hide()` so a hidden pad schedules nothing.
+    private var linkDetector: LinkDetector?
 
     /// Guards against a second ⌘S while the save panel is up: `runModal` spins
     /// its own run loop, so the key equivalent can arrive again mid-save.
@@ -122,10 +127,13 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         self.panel = nil
         textView = nil
         pinButton = nil
+        todoButton = nil
         gutterView = nil
         findBar = nil
         observerHub = nil
         shrinkRepaint = nil
+        linkDetector?.cancel()
+        linkDetector = nil
         panel.orderOut(nil)
     }
 
@@ -217,6 +225,14 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         let repaint = ShrinkRepaintObserver(textView: textView)
         hub.add(repaint)
         shrinkRepaint = repaint
+        // URL underlining (T15.6). The restored content was assigned before the
+        // hub took the delegate slot, so nothing would notify the detector about
+        // it — the first scan is kicked off by hand.
+        let links = LinkDetector(textView: textView)
+        hub.add(links)
+        textView.linkDetector = links
+        linkDetector = links
+        links.scan()
         let gutter = GutterView(scrollView: scrollView,
                                 textView: textView,
                                 lineIndex: lineIndex,
@@ -283,13 +299,21 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         panel.contentMinSize = NSSize(width: max(340, ceil(findBar.barView.fittingSize.width)),
                                       height: 160)
 
-        // The pin rides in the (standard) title bar's trailing corner.
+        // The to-do toggle and the pin ride in the (standard) title bar's
+        // trailing corner, in that order — the pin stays where users already
+        // reach for it, and the new button grows the strip leftward.
         let accessory = NSTitlebarAccessoryViewController()
-        let pinContainer = NSView(frame: NSRect(x: 0, y: 0, width: 34, height: 24))
+        // 62 pt, not 58: the pin keeps its original 7 pt gap to the window edge,
+        // so widening the strip moves the new button in beside it rather than
+        // shifting the pin the user already knows the position of.
+        let buttons = NSView(frame: NSRect(x: 0, y: 0, width: 62, height: 24))
+        let todo = makeTodoButton()
+        todo.frame = NSRect(x: 3, y: 2, width: 24, height: 20)
+        buttons.addSubview(todo)
         let pin = makePinButton()
-        pin.frame = NSRect(x: 3, y: 2, width: 24, height: 20)
-        pinContainer.addSubview(pin)
-        accessory.view = pinContainer
+        pin.frame = NSRect(x: 31, y: 2, width: 24, height: 20)
+        buttons.addSubview(pin)
+        accessory.view = buttons
         accessory.layoutAttribute = .trailing
         panel.addTitlebarAccessoryViewController(accessory)
 
@@ -331,10 +355,11 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// Pin toggle: on (the default) the pad stays put when it loses focus, off
     /// it disappears the moment you click away — "jot and go".
     private func makePinButton() -> NSButton {
-        let button = ScratchpadPinButton(image: NSImage(), target: self, action: #selector(togglePinned(_:)))
+        let button = ScratchpadTitlebarButton(image: NSImage(), target: self, action: #selector(togglePinned(_:)))
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.setButtonType(.momentaryChange)
+        button.toolTip = L10n.t(.scratchpadPinTooltip)
         pinButton = button
         updatePinButton()
         return button
@@ -347,9 +372,39 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         pinButton?.contentTintColor = pinned ? .controlAccentColor : .secondaryLabelColor
     }
 
-    @objc private func togglePinned(_ sender: Any?) {
+    /// Pin toggle action. `fileprivate` rather than `private` so ⇧⌘P — which the
+    /// text view claims, the pad having no menu of its own — runs exactly the
+    /// same code path as the button.
+    @objc fileprivate func togglePinned(_ sender: Any?) {
         UserDefaults.standard.set(!ScratchpadStore.isPinned(), forKey: ScratchpadStore.pinnedKey)
         updatePinButton()
+    }
+
+    /// To-do toggle: the same three-state cycle ⇧⌘L performs, for people who
+    /// would rather click. The glyph falls back to a literal ballot box on a
+    /// system that has no "checklist" symbol.
+    private func makeTodoButton() -> NSButton {
+        let button = ScratchpadTitlebarButton(image: NSImage(), target: self, action: #selector(toggleTodo(_:)))
+        button.isBordered = false
+        button.setButtonType(.momentaryChange)
+        button.toolTip = L10n.t(.scratchpadTodoTooltip)
+        button.contentTintColor = .secondaryLabelColor
+        if let symbol = NSImage(systemSymbolName: "checklist", accessibilityDescription: nil) {
+            button.imagePosition = .imageOnly
+            button.image = symbol
+        } else {
+            button.imagePosition = .noImage
+            button.title = "☑"
+        }
+        todoButton = button
+        return button
+    }
+
+    /// Cycles the selected lines through the three to-do states. Routed into the
+    /// text view so the edit goes through the same undo-aware path the keyboard
+    /// shortcut uses (and so a click on the button cannot bypass the undo group).
+    @objc private func toggleTodo(_ sender: Any?) {
+        (textView as? ScratchpadTextView)?.cycleTodoList()
     }
 
     // MARK: - Font size (T15.3)
@@ -531,9 +586,14 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
 
 /// The pad's text view. Adds a handful of behaviours to a plain `NSTextView`:
 /// Esc closes the find bar or hides the panel, ⌘S graduates the text into a
-/// file, ⌘F opens find / replace, and the zoom keys resize the pad alone.
+/// file, ⌘F opens find / replace, the zoom keys resize the pad alone, and
+/// (T15.6) ⇧⌘L cycles to-do markers, ⏎ continues a list, a click on a check box
+/// ticks it and ⌘-click opens a URL.
 private final class ScratchpadTextView: NSTextView {
     weak var controller: ScratchpadController?
+
+    /// URL cache for ⌘-click. Weak: owned by the controller, gone with the panel.
+    weak var linkDetector: LinkDetector?
 
     /// Esc has to be caught here rather than in the panel's `keyDown`: the text
     /// view sees the key first and turns it into `cancelOperation(_:)`, so a
@@ -595,6 +655,22 @@ private final class ScratchpadTextView: NSTextView {
                 break
             }
         }
+        // ⇧⌘L / ⇧⌘P — the two title-bar buttons' actions. Claimed here for the
+        // same reason as the pair above: the pad has no menu of its own, and the
+        // main menu's ⇧⌘P (the editor's command palette) must not win while the
+        // pad is key.
+        if modifiers == [.command, .shift] {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "l":
+                cycleTodoList()
+                return true
+            case "p":
+                controller?.togglePinned(nil)
+                return true
+            default:
+                break
+            }
+        }
         if let zoom = ScratchpadController.zoomCommand(
             modifiers: event.modifierFlags,
             charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
@@ -603,11 +679,140 @@ private final class ScratchpadTextView: NSTextView {
         }
         return super.performKeyEquivalent(with: event)
     }
+
+    // MARK: To-do lists (T15.6)
+
+    /// ⇧⌘L / the title-bar button: cycles every line the selection touches
+    /// through plain → `- [ ] ` → `- [x] ` (moved to the bottom) → plain.
+    func cycleTodoList() {
+        apply(TodoEngine.cycleTodo(text: string, selection: selectedRange()))
+    }
+
+    /// A click inside a check box ticks it (and moves the line where its new
+    /// state belongs); anything else is an ordinary click. ⌘-click on a URL
+    /// opens it and never moves the caret.
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           let url = linkDetector?.url(atPoint: point) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        if let index = checkBoxCharacterIndex(at: point),
+           let result = TodoEngine.flipChecked(text: string,
+                                               lineAt: index,
+                                               selection: selectedRange()) {
+            apply(result)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// The character index of a check box hit by `point`, or `nil` when the
+    /// click landed anywhere else. The three box characters (`[`, the state,
+    /// `]`) are the hit target; the index alone is not enough (a click past the
+    /// end of a line maps to its last character), so the box's own glyph rect
+    /// has to contain the point.
+    private func checkBoxCharacterIndex(at point: NSPoint) -> Int? {
+        guard let layoutManager, let container = textContainer else { return nil }
+        let origin = textContainerOrigin
+        let inContainer = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+        var fraction: CGFloat = 0
+        let glyph = layoutManager.glyphIndex(for: inContainer, in: container,
+                                             fractionOfDistanceThroughGlyph: &fraction)
+        let index = layoutManager.characterIndexForGlyph(at: glyph)
+
+        let ns = string as NSString
+        guard ns.length > 0 else { return nil }
+        let lineRange = ns.lineRange(for: NSRange(location: min(index, ns.length - 1), length: 0))
+        var contentsEnd = 0
+        ns.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: lineRange)
+        let content = ns.substring(with: NSRange(location: lineRange.location,
+                                                 length: contentsEnd - lineRange.location))
+        guard let box = TodoEngine.boxRange(inLine: content) else { return nil }
+
+        let absolute = NSRange(location: lineRange.location + box.location, length: box.length)
+        guard NSLocationInRange(index, absolute) else { return nil }
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: absolute, actualCharacterRange: nil)
+        let rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: container)
+        guard rect.offsetBy(dx: origin.x, dy: origin.y).contains(point) else { return nil }
+        return absolute.location
+    }
+
+    /// ⏎ continues the list the caret is on (see `TodoEngine.continuation`).
+    /// Anything else — a caret inside the prefix, a non-list line, an active
+    /// selection, a half-typed input-method composition — falls straight through
+    /// to AppKit's own newline.
+    override func insertNewline(_ sender: Any?) {
+        let selection = selectedRange()
+        let ns = string as NSString
+        guard selection.length == 0, !hasMarkedText(), ns.length > 0,
+              selection.location <= ns.length else {
+            super.insertNewline(sender)
+            return
+        }
+        let lineRange = ns.lineRange(for: NSRange(location: min(selection.location, ns.length - 1),
+                                                  length: 0))
+        var contentsEnd = 0
+        ns.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: lineRange)
+        let content = ns.substring(with: NSRange(location: lineRange.location,
+                                                 length: contentsEnd - lineRange.location))
+        let caretInLine = selection.location - lineRange.location
+        guard caretInLine >= 0, caretInLine <= (content as NSString).length,
+              let continuation = TodoEngine.continuation(line: content,
+                                                         caretOffsetInLine: caretInLine) else {
+            super.insertNewline(sender)
+            return
+        }
+
+        switch continuation {
+        case .insert(let prefix):
+            let inserted = "\n" + prefix
+            replace(range: selection, with: inserted,
+                    selection: NSRange(location: selection.location + (inserted as NSString).length,
+                                       length: 0))
+        case .exit(let lineRelative):
+            let target = NSRange(location: lineRange.location + lineRelative.location,
+                                 length: lineRelative.length)
+            replace(range: target, with: "",
+                    selection: NSRange(location: target.location, length: 0))
+        }
+    }
+
+    /// Applies a whole-document result from `TodoEngine` as **one** edit: the
+    /// marker change and the line move differ from the current text in a single
+    /// span, so `minimalEdit` narrows the rewrite to it and ⌘Z restores both the
+    /// marker and the position in one go. The explicit undo group makes that
+    /// atomicity independent of AppKit's typing coalescing.
+    private func apply(_ result: (text: String, selection: NSRange)) {
+        guard let edit = TodoEngine.minimalEdit(from: string, to: result.text) else {
+            setSelectedRange(result.selection)
+            return
+        }
+        undoManager?.beginUndoGrouping()
+        defer { undoManager?.endUndoGrouping() }
+        replace(range: edit.range, with: edit.replacement, selection: result.selection)
+    }
+
+    /// The one mutation channel: undo-aware, notification-emitting (so the
+    /// controller's debounced write to disk still fires), and carrying the
+    /// typing attributes so an edit at the start of an empty pad keeps the pad's
+    /// font instead of the layout manager's default.
+    private func replace(range: NSRange, with text: String, selection: NSRange) {
+        guard shouldChangeText(in: range, replacementString: text) else { return }
+        textStorage?.replaceCharacters(in: range,
+                                       with: NSAttributedString(string: text,
+                                                                attributes: typingAttributes))
+        didChangeText()
+        setSelectedRange(selection)
+        scrollRangeToVisible(selection)
+    }
 }
 
-/// Pin toggle with a pointing-hand cursor: it sits in the title bar, which is
-/// otherwise a drag handle, so the cursor is the only thing that says "button".
-private final class ScratchpadPinButton: NSButton {
+/// Title-bar button with a pointing-hand cursor: these sit in the title bar,
+/// which is otherwise a drag handle, so the cursor is the only thing that says
+/// "button". Shared by the to-do toggle and the pin.
+private final class ScratchpadTitlebarButton: NSButton {
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .pointingHand)
     }

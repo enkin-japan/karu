@@ -59,6 +59,9 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuFoldCurrent, menuUnfoldCurrent, menuFoldAll, menuUnfoldAll
     // Scratchpad (T15.1): panel title + status-bar menu entry.
     case scratchpadTitle, statusScratchpad
+    // Scratchpad title-bar buttons (T15.6): to-do cycle + pin, both carrying
+    // their key equivalent in the tooltip (the pad has no menu to show it in).
+    case scratchpadTodoTooltip, scratchpadPinTooltip
     // Language menu.
     case menuLanguage, languageAuto
     // Toolbar labels / tooltips.

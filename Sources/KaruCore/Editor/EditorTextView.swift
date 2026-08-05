@@ -213,6 +213,11 @@ public final class EditorTextView: NSTextView {
     /// cost beyond a nil / bool check.
     public weak var completionKeyHandler: CompletionKeyHandler?
 
+    /// URL cache consulted on ⌘-click (T15.6). Weak: owned by the window
+    /// controller, which registers it on the text storage observer hub. When
+    /// `nil` a ⌘-click is just a click.
+    public weak var linkDetector: LinkDetector?
+
     /// Fired for each in-progress selection change while the mouse is still
     /// dragging. AppKit tracks a drag via `stillSelecting: true`, which
     /// suppresses `NSTextView.didChangeSelectionNotification` until mouse-up —
@@ -769,9 +774,17 @@ public final class EditorTextView: NSTextView {
                                  length: max(0, target - selection.location)))
     }
 
-    /// Clicking in the text dismisses an open completion popup.
+    /// Clicking in the text dismisses an open completion popup — and a ⌘-click
+    /// that lands on a detected URL opens it instead of moving the caret
+    /// (T15.6). Every other click, ⌘ or not, behaves exactly as before: the
+    /// detector only answers for a point inside a link's own glyphs.
     public override func mouseDown(with event: NSEvent) {
         completionKeyHandler?.dismissCompletion()
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           let url = linkDetector?.url(atPoint: convert(event.locationInWindow, from: nil)) {
+            NSWorkspace.shared.open(url)
+            return
+        }
         super.mouseDown(with: event)
     }
 
