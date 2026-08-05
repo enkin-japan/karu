@@ -127,7 +127,6 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         observerHub = nil
         shrinkRepaint = nil
         panel.orderOut(nil)
-        restorePreviousAppIfNeeded()
     }
 
     /// Writes the current text right now if the panel is up. Called while the
@@ -138,46 +137,14 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         flushNow()
     }
 
-    /// Experiment flag (T15.6): when set, summoning the pad *activates* Karu
-    /// (and hiding it hands focus back to the previous app).
-    ///
-    /// Why it exists: over another app's full-screen Space the input method's
-    /// candidate bar never appears in the pad — the candidate window attaches
-    /// to the *active* app's input focus, and a non-activating panel keeps Karu
-    /// inactive by design. Whether a programmatic activate fixes the candidates
-    /// without yanking the user off the full-screen Space (the way ⌘Tab does —
-    /// an app *switch* follows the app's windows to their Space, an in-place
-    /// activate should not, since the key panel is already on every Space) can
-    /// only be answered with a real input method on a real full-screen Space,
-    /// so it ships as a flag for that field test before becoming behaviour.
-    public static let activateOnShowKey = "scratchpad.activateOnShow"
-
-    /// The app that was frontmost before the pad activated Karu (experiment
-    /// flag above); focus is handed back to it on hide.
-    private var previousApp: NSRunningApplication?
-
     /// A non-activating panel can become key *without* activating Karu, which is
     /// what makes the pad feel like an overlay: type into it, hide it, and the
     /// app you were in still has focus. `orderFrontRegardless` is needed because
     /// an inactive app's `orderFront` is otherwise deferred until it activates.
     private func presentPanel(_ panel: NSPanel) {
-        if UserDefaults.standard.bool(forKey: Self.activateOnShowKey), !NSApp.isActive {
-            previousApp = NSWorkspace.shared.frontmostApplication
-            NSApp.activate(ignoringOtherApps: true)
-        }
         panel.orderFrontRegardless()
         panel.makeKey()
         if let textView { panel.makeFirstResponder(textView) }
-    }
-
-    /// Undoes the experiment's activation: Karu got focus only to host the pad,
-    /// so hiding the pad returns focus to where the user actually was.
-    private func restorePreviousAppIfNeeded() {
-        guard let previousApp else { return }
-        self.previousApp = nil
-        if NSApp.isActive {
-            previousApp.activate()
-        }
     }
 
     // MARK: - Construction
