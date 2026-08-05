@@ -1,6 +1,12 @@
 import Foundation
 
-/// Three-state to-do lists for the scratchpad (T15.6), as pure logic.
+/// To-do lists for the scratchpad (T15.6), as pure logic.
+///
+/// The feature is **two orthogonal switches**, not one cycle: ⇧⌘L answers "is
+/// this line a to-do?" and never moves anything, ⇧⌘U answers "is it done?" and
+/// moves the line where its new state belongs. Pressing the same key twice
+/// always undoes itself; neither key can turn a finished item back into prose
+/// behind the user's back.
 ///
 /// Every entry point takes the document string plus the current selection and
 /// returns the whole new text together with the selection that must follow it;
@@ -19,7 +25,8 @@ public enum TodoEngine {
 
     // MARK: - Line state
 
-    /// The three states a line cycles through.
+    /// The three states a line can be in — the product of the two switches
+    /// (`plain` collapses both "not a to-do" cases into one).
     public enum LineState: Equatable, Sendable {
         case plain
         case unchecked
@@ -93,21 +100,25 @@ public enum TodoEngine {
         return NSRange(location: parsed.indentLength + 2, length: 3)
     }
 
-    // MARK: - Three-state cycle (⇧⌘L)
+    // MARK: - "Is this a to-do?" (⇧⌘L)
 
-    /// Cycles every line the selection touches through plain → unchecked →
-    /// checked → plain, as a batch:
+    /// Turns every line the selection touches into a to-do item, or — when they
+    /// all are one already — back into prose. **Nothing ever moves**: this
+    /// switch is about the marker only, so the lines stay exactly where the user
+    /// is looking at them.
     ///
-    /// - any line still plain → **all** of them become `- [ ] `, in place;
-    /// - otherwise any line unchecked → **all** become `- [x] ` and move to the
-    ///   end of the document, keeping their relative order;
-    /// - otherwise (everything already checked) → **all** lose their marker, in
-    ///   place.
+    /// - any target still plain → those plain lines get `- [ ] `, in place;
+    ///   lines that already carry a box (ticked or not) are left **untouched**,
+    ///   so extending a list over a finished item cannot un-finish it;
+    /// - otherwise (every target already marked) → **all** lose their marker, in
+    ///   place. A checked line becomes ordinary prose in one step: the user is
+    ///   explicitly saying "this is not a to-do", and discarding the done flag
+    ///   with the box is what they asked for.
     ///
     /// Blank lines inside a multi-line selection are left alone (they are
     /// neither counted for the decision nor marked) — unless every covered line
     /// is blank, which is the "press ⇧⌘L on an empty line to start a list" case.
-    public static func cycleTodo(text: String, selection: NSRange) -> (text: String, selection: NSRange) {
+    public static func toggleTodo(text: String, selection: NSRange) -> (text: String, selection: NSRange) {
         let lines = splitLines(text)
         let starts = lineStarts(lines)
         let span = lineSpan(selection: selection, lines: lines, starts: starts)
@@ -120,14 +131,49 @@ public enum TodoEngine {
             return rewriteInPlace(lines: lines, starts: starts, targets: targets,
                                   selection: selection, transform: markUnchecked)
         }
+        return rewriteInPlace(lines: lines, starts: starts, targets: targets,
+                              selection: selection, transform: stripMarker)
+    }
+
+    // MARK: - "Is it done?" (⇧⌘U)
+
+    /// Ticks every to-do line the selection touches, or unticks them when they
+    /// are all done already — the batch counterpart of clicking a check box, and
+    /// the only entry point that moves lines:
+    ///
+    /// - any target unchecked → **all** become `- [x] ` and travel to the end of
+    ///   the document as one block, keeping their relative order;
+    /// - otherwise (everything already checked) → **all** become `- [ ] ` again
+    ///   and travel back as one block, to the same place a single un-ticked line
+    ///   returns to (`uncheckReturnIndex`, computed over the lines that stay).
+    ///
+    /// Plain lines never take part: they are neither marked nor moved. A
+    /// selection holding nothing but prose is a no-op — ⇧⌘U on ordinary text
+    /// must not silently turn it into a list; that is ⇧⌘L's job.
+    public static func toggleChecked(text: String, selection: NSRange) -> (text: String, selection: NSRange) {
+        let lines = splitLines(text)
+        let starts = lineStarts(lines)
+        let span = lineSpan(selection: selection, lines: lines, starts: starts)
+
+        let targets = span.filter { state(ofLine: lines[$0]) != .plain }
+        guard !targets.isEmpty else { return (text, selection) }
+        let states = targets.map { state(ofLine: lines[$0]) }
+
         if states.contains(.unchecked) {
             let contents = targets.map { checkedContent(of: lines[$0]) }
             return relocate(lines: lines, starts: starts, targets: targets,
                             newContents: contents, selection: selection,
                             destination: { documentEndIndex(of: $0) })
         }
-        return rewriteInPlace(lines: lines, starts: starts, targets: targets,
-                              selection: selection, transform: stripMarker)
+        // The block comes back where its *first* line used to be when the
+        // document holds no other item — that slot survives the lift-out, every
+        // other moved line sitting below it.
+        let contents = targets.map { uncheckedContent(of: lines[$0]) }
+        return relocate(lines: lines, starts: starts, targets: targets,
+                        newContents: contents, selection: selection,
+                        destination: { remaining in
+                            uncheckReturnIndex(in: remaining, original: targets[0])
+                        })
     }
 
     // MARK: - Single-line flip (check-box click)
@@ -163,10 +209,10 @@ public enum TodoEngine {
                         destination: { remaining in uncheckReturnIndex(in: remaining, original: index) })
     }
 
-    /// Where an unchecked-again line goes back to: after the last remaining
-    /// `- [ ] ` line, else in front of the first remaining `- [x] ` line, else
-    /// straight back where it came from (`original`, which — the line having
-    /// been lifted out — is its own old slot in `remaining`).
+    /// Where an unchecked-again line (or block of them) goes back to: after the
+    /// last remaining `- [ ] ` line, else in front of the first remaining
+    /// `- [x] ` line, else straight back where it came from (`original`, which
+    /// — the line having been lifted out — is its own old slot in `remaining`).
     static func uncheckReturnIndex(in remaining: [String], original: Int) -> Int {
         if let last = remaining.lastIndex(where: { state(ofLine: $0) == .unchecked }) {
             return last + 1
@@ -356,22 +402,19 @@ public enum TodoEngine {
         }
     }
 
+    /// Gives a plain line an unchecked box. A line that already has one — box
+    /// ticked or not — is returned verbatim: ⇧⌘L adds markers, it never resets
+    /// the state of an item that is already on the list.
     private static func markUnchecked(_ line: String) -> LineRewrite {
         let ns = line as NSString
         let parsed = parse(line: line)
-        switch parsed.state {
-        case .unchecked:
-            return LineRewrite(content: line, column: 0, delta: 0)
-        case .checked:
-            return LineRewrite(content: uncheckedContent(of: line), column: 0, delta: 0)
-        case .plain:
-            let content = ns.substring(to: parsed.indentLength)
-                + uncheckedMarker
-                + ns.substring(from: parsed.indentLength)
-            return LineRewrite(content: content,
-                               column: parsed.indentLength,
-                               delta: (uncheckedMarker as NSString).length)
-        }
+        guard parsed.state == .plain else { return LineRewrite(content: line, column: 0, delta: 0) }
+        let content = ns.substring(to: parsed.indentLength)
+            + uncheckedMarker
+            + ns.substring(from: parsed.indentLength)
+        return LineRewrite(content: content,
+                           column: parsed.indentLength,
+                           delta: (uncheckedMarker as NSString).length)
     }
 
     private static func stripMarker(_ line: String) -> LineRewrite {

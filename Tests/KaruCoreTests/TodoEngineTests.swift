@@ -2,14 +2,16 @@ import Foundation
 import Testing
 @testable import KaruCore
 
-// T15.6 — the scratchpad's three-state to-do lists, as pure logic.
+// T15.6 — the scratchpad's to-do lists, as pure logic.
 //
-// Everything the feature does to text lives in `TodoEngine`: the state machine,
-// the batch rules, where a ticked line goes, where an un-ticked one comes back
-// to, how the caret follows a line that moved, and how ⏎ continues a list. The
-// text view is a wrapper around these functions, so the rules are pinned here
-// rather than through a panel (which is unreliable headless — see
-// ScratchpadTests for that reasoning).
+// The feature is two orthogonal switches: ⇧⌘L (`toggleTodo`) says whether a line
+// is a to-do and never moves anything, ⇧⌘U (`toggleChecked`) says whether it is
+// done and moves it accordingly. Everything they do to text lives in
+// `TodoEngine`: the batch rules, where a ticked line goes, where an un-ticked
+// one comes back to, how the caret follows a line that moved, and how ⏎
+// continues a list. The text view is a wrapper around these functions, so the
+// rules are pinned here rather than through a panel (which is unreliable
+// headless — see ScratchpadTests for that reasoning).
 
 // MARK: - Line state recognition
 
@@ -40,110 +42,179 @@ import Testing
     #expect(TodoEngine.boxRange(inLine: "milk") == nil)
 }
 
-// MARK: - Three-state cycle: single line
+// MARK: - "Is this a to-do?" (⇧⌘L): single line
 
-@Test func cycleTakesOneLineThroughAllThreeStates() {
+@Test func todoToggleTurnsAPlainLineIntoAnItemAndBackAgain() {
     let plain = "milk"
-    let unchecked = TodoEngine.cycleTodo(text: plain, selection: NSRange(location: 0, length: 0))
-    #expect(unchecked.text == "- [ ] milk")
+    let marked = TodoEngine.toggleTodo(text: plain, selection: NSRange(location: 0, length: 0))
+    #expect(marked.text == "- [ ] milk")
 
-    let checked = TodoEngine.cycleTodo(text: unchecked.text, selection: unchecked.selection)
-    #expect(checked.text == "- [x] milk")
-
-    let back = TodoEngine.cycleTodo(text: checked.text, selection: checked.selection)
+    // Pressing it again undoes exactly what it did — the switch is symmetric.
+    let back = TodoEngine.toggleTodo(text: marked.text, selection: marked.selection)
     #expect(back.text == "milk")
 }
 
-@Test func cycleOnAnEmptyPadStartsAList() {
-    let result = TodoEngine.cycleTodo(text: "", selection: NSRange(location: 0, length: 0))
+@Test func todoToggleOnAnEmptyPadStartsAList() {
+    let result = TodoEngine.toggleTodo(text: "", selection: NSRange(location: 0, length: 0))
     #expect(result.text == "- [ ] ")
     // The caret ends up where the first character of the item will go.
     #expect(result.selection == NSRange(location: 6, length: 0))
 }
 
-@Test func cyclePreservesIndentation() {
-    let marked = TodoEngine.cycleTodo(text: "    nested", selection: NSRange(location: 0, length: 0))
+@Test func todoToggleOnABlankLineInsideADocumentStartsAList() {
+    // Same "start a list here" case, but with text around it: the blank line is
+    // the only covered line, so the blank-line filter must not empty the batch.
+    let text = "notes\n\nmore\n"
+    let result = TodoEngine.toggleTodo(text: text, selection: NSRange(location: 6, length: 0))
+    #expect(result.text == "notes\n- [ ] \nmore\n")
+}
+
+@Test func todoTogglePreservesIndentation() {
+    let marked = TodoEngine.toggleTodo(text: "    nested", selection: NSRange(location: 0, length: 0))
     #expect(marked.text == "    - [ ] nested")
-    let ticked = TodoEngine.cycleTodo(text: marked.text, selection: NSRange(location: 0, length: 0))
-    #expect(ticked.text == "    - [x] nested")
-    let stripped = TodoEngine.cycleTodo(text: ticked.text, selection: NSRange(location: 0, length: 0))
+    let stripped = TodoEngine.toggleTodo(text: marked.text, selection: NSRange(location: 0, length: 0))
     #expect(stripped.text == "    nested")
 }
 
-// MARK: - Three-state cycle: batches
+@Test func todoToggleClearsACheckedLineInOneStep() {
+    // "This is not a to-do at all" — the done flag goes with the box, which is
+    // what the user explicitly asked for by pressing ⇧⌘L on a finished item.
+    let result = TodoEngine.toggleTodo(text: "- [x] milk", selection: NSRange(location: 8, length: 0))
+    #expect(result.text == "milk")
+}
 
-@Test func cycleMarksEveryLineWhenAnyOfThemIsStillPlain() {
-    // One plain line in the batch means "mark them all" — including the checked
-    // one, which comes back unchecked, in place.
+// MARK: - "Is this a to-do?" (⇧⌘L): batches
+
+@Test func todoToggleMarksOnlyThePlainLinesAndLeavesMarkedOnesUntouched() {
+    // One plain line in the batch means "mark what is not marked yet". The
+    // checked line keeps its box *and* its tick: extending a list over a
+    // finished item must never un-finish it.
     let text = "- [ ] a\nb\n- [x] c\n"
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 0, length: 17))
-    #expect(result.text == "- [ ] a\n- [ ] b\n- [ ] c\n")
+    let result = TodoEngine.toggleTodo(text: text, selection: NSRange(location: 0, length: 17))
+    #expect(result.text == "- [ ] a\n- [ ] b\n- [x] c\n")
 }
 
-@Test func cycleTicksAndSinksTheWholeBatchKeepingItsOrder() {
-    let text = "- [ ] a\n- [ ] b\nnotes\n"
-    // Select the first two lines only.
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 0, length: 15))
-    #expect(result.text == "notes\n- [x] a\n- [x] b\n")
-}
-
-@Test func cycleClearsAWholeBatchOfCheckedLinesInPlace() {
-    let text = "- [x] a\n- [x] b\n"
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 0, length: 15))
+@Test func todoToggleClearsAWholeBatchOfMarkedLinesInPlace() {
+    // Every target carries a box — ticked or not — so the switch flips the other
+    // way and all of them lose it, checked ones included.
+    let text = "- [x] a\n- [ ] b\n"
+    let result = TodoEngine.toggleTodo(text: text, selection: NSRange(location: 0, length: 15))
     #expect(result.text == "a\nb\n")
 }
 
-@Test func cycleIncludesAPartlySelectedLine() {
+@Test func todoToggleNeverMovesALine() {
+    // The old three-state cycle sank this batch to the bottom. The ⇧⌘L switch
+    // does not move anything, ever — in either direction.
+    let unmark = TodoEngine.toggleTodo(text: "- [ ] a\n- [ ] b\nnotes\n",
+                                       selection: NSRange(location: 0, length: 15))
+    #expect(unmark.text == "a\nb\nnotes\n")
+
+    let mark = TodoEngine.toggleTodo(text: "a\nb\nnotes\n",
+                                     selection: NSRange(location: 0, length: 3))
+    #expect(mark.text == "- [ ] a\n- [ ] b\nnotes\n")
+
+    // A checked line stays exactly where it is while its neighbour is marked.
+    let mixed = TodoEngine.toggleTodo(text: "- [x] done\nchore\nnotes\n",
+                                      selection: NSRange(location: 0, length: 16))
+    #expect(mixed.text == "- [x] done\n- [ ] chore\nnotes\n")
+}
+
+@Test func todoToggleIncludesAPartlySelectedLine() {
     // The selection touches the middle of both lines; both are still marked.
     let text = "alpha\nbeta\n"
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 3, length: 4))
+    let result = TodoEngine.toggleTodo(text: text, selection: NSRange(location: 3, length: 4))
     #expect(result.text == "- [ ] alpha\n- [ ] beta\n")
 }
 
-@Test func cycleIgnoresALineTheSelectionOnlyEndsAt() {
+@Test func todoToggleIgnoresALineTheSelectionOnlyEndsAt() {
     // Dragging down to the next line's left edge selects the lines above it,
     // not one more (the classic off-by-one line operation).
     let text = "alpha\nbeta\n"
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 0, length: 6))
+    let result = TodoEngine.toggleTodo(text: text, selection: NSRange(location: 0, length: 6))
     #expect(result.text == "- [ ] alpha\nbeta\n")
 }
 
-@Test func cycleLeavesBlankLinesInsideASelectionAlone() {
+@Test func todoToggleLeavesBlankLinesInsideASelectionAlone() {
     let text = "a\n\nb\n"
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 0, length: 5))
+    let result = TodoEngine.toggleTodo(text: text, selection: NSRange(location: 0, length: 5))
     #expect(result.text == "- [ ] a\n\n- [ ] b\n")
 }
 
-// MARK: - Moving a ticked line
+// MARK: - "Is it done?" (⇧⌘U): ticking
 
 @Test func checkingSinksTheLineToTheBottomOfTheDocument() {
     let text = "- [ ] a\n- [ ] b\n- [ ] c\n"
     // Tick the middle one.
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 8, length: 0))
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 8, length: 0))
     #expect(result.text == "- [ ] a\n- [ ] c\n- [x] b\n")
+}
+
+@Test func checkingAMixedBatchTicksAllOfItAndSinksItAsOneBlock() {
+    // Any unchecked target means "finish them all"; the already-checked one
+    // travels along, keeping the block's relative order.
+    let text = "- [x] a\n- [ ] b\nnotes\n"
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 0, length: 15))
+    #expect(result.text == "notes\n- [x] a\n- [x] b\n")
+}
+
+@Test func checkingLeavesPlainLinesInTheSelectionWhereTheyAre() {
+    // The prose line is neither marked nor moved — it is simply not involved.
+    let text = "- [ ] a\nnotes\n"
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 0, length: 13))
+    #expect(result.text == "notes\n- [x] a\n")
+}
+
+@Test func checkingAPlainOnlySelectionDoesNothingAtAll() {
+    let text = "notes\nmore\n"
+    let selection = NSRange(location: 0, length: 10)
+    let result = TodoEngine.toggleChecked(text: text, selection: selection)
+    #expect(result.text == text)
+    #expect(result.selection == selection)
 }
 
 @Test func movingALineNeitherAddsNorSwallowsALine() {
     // A document *without* a trailing newline must not gain one, and one *with*
     // a trailing newline must keep exactly one.
     let noNewline = "- [ ] a\n- [ ] b"
-    let sunk = TodoEngine.cycleTodo(text: noNewline, selection: NSRange(location: 0, length: 0))
+    let sunk = TodoEngine.toggleChecked(text: noNewline, selection: NSRange(location: 0, length: 0))
     #expect(sunk.text == "- [ ] b\n- [x] a")
 
     let trailing = "- [ ] a\n- [ ] b\n"
-    let sunk2 = TodoEngine.cycleTodo(text: trailing, selection: NSRange(location: 0, length: 0))
+    let sunk2 = TodoEngine.toggleChecked(text: trailing, selection: NSRange(location: 0, length: 0))
     #expect(sunk2.text == "- [ ] b\n- [x] a\n")
 
     // Trailing blank lines stay at the bottom rather than being jumped over.
     let blanks = "- [ ] a\nnotes\n\n"
-    let sunk3 = TodoEngine.cycleTodo(text: blanks, selection: NSRange(location: 0, length: 0))
+    let sunk3 = TodoEngine.toggleChecked(text: blanks, selection: NSRange(location: 0, length: 0))
     #expect(sunk3.text == "notes\n- [x] a\n\n")
 }
 
 @Test func checkingTheLastLineLeavesItWhereItIs() {
     let text = "notes\n- [ ] a"
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 6, length: 0))
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 6, length: 0))
     #expect(result.text == "notes\n- [x] a")
+}
+
+// MARK: - "Is it done?" (⇧⌘U): un-ticking
+
+@Test func unCheckingABatchReturnsItBelowTheLastOpenItem() {
+    let text = "- [ ] a\n- [x] b\n- [x] c\nnotes\n"
+    // Un-tick "b" and "c" together: both go back right after "- [ ] a".
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 8, length: 15))
+    #expect(result.text == "- [ ] a\n- [ ] b\n- [ ] c\nnotes\n")
+}
+
+@Test func unCheckingABatchWithNoOpenItemsGoesAboveTheDoneOnes() {
+    let text = "notes\n- [x] c\n- [x] d\n- [x] e\n"
+    // Un-tick "d" and "e": they land in front of the still-done "c".
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 14, length: 15))
+    #expect(result.text == "notes\n- [ ] d\n- [ ] e\n- [x] c\n")
+}
+
+@Test func unCheckingABatchWithNothingToReturnToStaysPut() {
+    let text = "notes\n- [x] a\n- [x] b\nmore\n"
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 6, length: 15))
+    #expect(result.text == "notes\n- [ ] a\n- [ ] b\nmore\n")
 }
 
 // MARK: - Caret following
@@ -151,7 +222,7 @@ import Testing
 @Test func theCaretRidesAlongWithTheLineItSitsOn() {
     let text = "- [ ] alpha\n- [ ] beta\n"
     // Caret two characters into the word: "- [ ] al|pha".
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 8, length: 0))
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 8, length: 0))
     #expect(result.text == "- [ ] beta\n- [x] alpha\n")
     // Same offset within the line, now 11 characters further down the document.
     #expect(result.selection == NSRange(location: 19, length: 0))
@@ -160,23 +231,23 @@ import Testing
 @Test func theCaretStaysWithItsCharacterWhenAMarkerIsInserted() {
     // Caret at the start of the word: after marking it is still at the start of
     // the word, i.e. past the six-character marker.
-    let result = TodoEngine.cycleTodo(text: "milk", selection: NSRange(location: 0, length: 0))
+    let result = TodoEngine.toggleTodo(text: "milk", selection: NSRange(location: 0, length: 0))
     #expect(result.selection == NSRange(location: 6, length: 0))
 
     // ... and mid-word it keeps its distance from the word start.
-    let mid = TodoEngine.cycleTodo(text: "milk", selection: NSRange(location: 2, length: 0))
+    let mid = TodoEngine.toggleTodo(text: "milk", selection: NSRange(location: 2, length: 0))
     #expect(mid.selection == NSRange(location: 8, length: 0))
 }
 
 @Test func aCaretInsideAStrippedMarkerLandsAtTheLineStart() {
-    let result = TodoEngine.cycleTodo(text: "- [x] milk", selection: NSRange(location: 3, length: 0))
+    let result = TodoEngine.toggleTodo(text: "- [x] milk", selection: NSRange(location: 3, length: 0))
     #expect(result.text == "milk")
     #expect(result.selection == NSRange(location: 0, length: 0))
 }
 
 @Test func aSelectionSurvivesTheBatchItTriggered() {
     let text = "- [ ] a\n- [ ] b\nnotes\n"
-    let result = TodoEngine.cycleTodo(text: text, selection: NSRange(location: 6, length: 9))
+    let result = TodoEngine.toggleChecked(text: text, selection: NSRange(location: 6, length: 9))
     #expect(result.text == "notes\n- [x] a\n- [x] b\n")
     // "a\n- [ ] b" → the same two offsets on the same two (moved) lines.
     let ns = result.text as NSString
@@ -291,7 +362,7 @@ import Testing
 
 @Test func minimalEditRoundTripsForAMovedLine() {
     let old = "- [ ] a\n- [ ] b\n- [ ] c\n"
-    let new = TodoEngine.cycleTodo(text: old, selection: NSRange(location: 0, length: 0)).text
+    let new = TodoEngine.toggleChecked(text: old, selection: NSRange(location: 0, length: 0)).text
     let edit = TodoEngine.minimalEdit(from: old, to: new)!
     let rebuilt = (old as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
     #expect(rebuilt == new)

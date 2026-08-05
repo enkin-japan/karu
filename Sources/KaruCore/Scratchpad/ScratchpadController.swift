@@ -384,8 +384,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         updatePinButton()
     }
 
-    /// To-do toggle: the same three-state cycle ⇧⌘L performs, for people who
-    /// would rather click. The glyph falls back to a literal ballot box on a
+    /// To-do toggle: the same "is this a to-do?" switch ⇧⌘L performs, for people
+    /// who would rather click. The glyph falls back to a literal ballot box on a
     /// system that has no "checklist" symbol.
     private func makeTodoButton() -> NSButton {
         let button = ScratchpadTitlebarButton(image: NSImage(), target: self, action: #selector(toggleTodo(_:)))
@@ -404,11 +404,11 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         return button
     }
 
-    /// Cycles the selected lines through the three to-do states. Routed into the
+    /// Marks the selected lines as to-dos (or unmarks them). Routed into the
     /// text view so the edit goes through the same undo-aware path the keyboard
     /// shortcut uses (and so a click on the button cannot bypass the undo group).
     @objc private func toggleTodo(_ sender: Any?) {
-        (textView as? ScratchpadTextView)?.cycleTodoList()
+        (textView as? ScratchpadTextView)?.toggleTodoList()
     }
 
     // MARK: - Font size (T15.3)
@@ -607,8 +607,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
 /// The pad's text view. Adds a handful of behaviours to a plain `NSTextView`:
 /// Esc closes the find bar or hides the panel, ⌘S graduates the text into a
 /// file, ⌘F opens find / replace, the zoom keys resize the pad alone, and
-/// (T15.6) ⇧⌘L cycles to-do markers, ⏎ continues a list, a click on a check box
-/// ticks it and ⌘-click opens a URL.
+/// (T15.6) ⇧⌘L marks lines as to-dos while ⇧⌘U ticks them off, ⏎ continues a
+/// list, a click on a check box ticks it and ⌘-click opens a URL.
 private final class ScratchpadTextView: NSTextView {
     weak var controller: ScratchpadController?
 
@@ -675,14 +675,17 @@ private final class ScratchpadTextView: NSTextView {
                 break
             }
         }
-        // ⇧⌘L / ⇧⌘P — the two title-bar buttons' actions. Claimed here for the
-        // same reason as the pair above: the pad has no menu of its own, and the
-        // main menu's ⇧⌘P (the editor's command palette) must not win while the
-        // pad is key.
+        // ⇧⌘L / ⇧⌘U / ⇧⌘P — the title-bar buttons' actions plus the check-off
+        // switch. Claimed here for the same reason as the pair above: the pad has
+        // no menu of its own, and the main menu's ⇧⌘P (the editor's command
+        // palette) must not win while the pad is key.
         if modifiers == [.command, .shift] {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "l":
-                cycleTodoList()
+                toggleTodoList()
+                return true
+            case "u":
+                toggleTodoChecked()
                 return true
             case "p":
                 controller?.togglePinned(nil)
@@ -702,10 +705,17 @@ private final class ScratchpadTextView: NSTextView {
 
     // MARK: To-do lists (T15.6)
 
-    /// ⇧⌘L / the title-bar button: cycles every line the selection touches
-    /// through plain → `- [ ] ` → `- [x] ` (moved to the bottom) → plain.
-    func cycleTodoList() {
-        apply(TodoEngine.cycleTodo(text: string, selection: selectedRange()))
+    /// ⇧⌘L / the title-bar button: makes every line the selection touches a
+    /// to-do item — or, when they all are one already, plain text again. Never
+    /// moves a line.
+    func toggleTodoList() {
+        apply(TodoEngine.toggleTodo(text: string, selection: selectedRange()))
+    }
+
+    /// ⇧⌘U: ticks the selected to-do lines (which sink to the bottom) or unticks
+    /// them (which come back up). Plain lines are ignored.
+    func toggleTodoChecked() {
+        apply(TodoEngine.toggleChecked(text: string, selection: selectedRange()))
     }
 
     /// A click inside a check box ticks it (and moves the line where its new
