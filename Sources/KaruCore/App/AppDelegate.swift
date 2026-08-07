@@ -441,13 +441,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Indent-rainbow seam probe (T15.10): KARU_INDENTTEST=<out-path>
-        // reproduces "random gaps between adjacent lines' indent fills" — the
-        // fill used glyph bounds, which fall short of fractional line heights
-        // (CJK at 18 pt), leaving hairline background rows between lines. Scans
-        // the indent band column of a run of indented CJK lines for rows that
-        // are pure background while the rows above *and* below are tinted.
-        // Zero cost unset.
+        // Indent-rainbow dot probe (T15.10, final form): KARU_INDENTTEST=<out>
+        // verifies the level-coloured indent dots render — one saturated dot
+        // per leading whitespace character. (The band fills this probe once
+        // scanned for seams are gone: the rainbow moved into the dots.) Zero
+        // cost unset.
         if let indentOut = ProcessInfo.processInfo.environment["KARU_INDENTTEST"] {
             NSApp.appearance = NSAppearance(named: .aqua)   // deterministic pixels
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
@@ -484,31 +482,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     let firstFrag = layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
 
                     let scale = CGFloat(rep.pixelsWide) / tv.bounds.width
-                    // Sample three columns inside the band, clear of the space
-                    // characters' centre dots and of the 1px separator edge.
-                    let xs = [band.minX + 2, band.minX + band.width * 0.35, band.maxX - 4]
-                        .map { Int(($0 + origin.x) * scale) }
-                    let yTop = Int((firstFrag.minY + origin.y + 2) * scale)
-                    let yBottom = Int((lastFrag.maxY + origin.y - 2) * scale)
-
-                    // A row is "background" when every sampled column is pure
-                    // white (no yellow tint, no dot); a seam is a background
-                    // row strictly between two non-background rows.
-                    func isBackground(_ y: Int) -> Bool {
-                        xs.allSatisfy { x in
-                            guard let c = rep.colorAt(x: x, y: y) else { return true }
-                            return c.saturationComponent < 0.05 && c.brightnessComponent > 0.95
+                    // Scan the whole indent-column area for saturated pixels:
+                    // every leading whitespace char must contribute one
+                    // coloured dot (40 lines × 2 spaces → 80 dots).
+                    let x0 = Int((band.minX + origin.x) * scale)
+                    let x1 = Int((band.maxX + origin.x) * scale)
+                    let yTop = Int((firstFrag.minY + origin.y) * scale)
+                    let yBottom = Int((lastFrag.maxY + origin.y) * scale)
+                    var dotPixels = 0
+                    for y in yTop..<yBottom {
+                        for x in x0...x1 {
+                            if let c = rep.colorAt(x: x, y: y), c.saturationComponent > 0.3 {
+                                dotPixels += 1
+                            }
                         }
                     }
-                    var seams = 0, tinted = 0
-                    var y = yTop + 1
-                    while y < yBottom - 1 {
-                        let bg = isBackground(y)
-                        if bg, !isBackground(y - 1), !isBackground(y + 1) { seams += 1 }
-                        if !bg { tinted += 1 }
-                        y += 1
-                    }
-                    let dump = "seams=\(seams)\ntintedRows=\(tinted)\nscannedRows=\(yBottom - yTop - 2)\n"
+                    let dump = "dotPixels=\(dotPixels)\n"
                         + "band=\(band) firstFrag=\(firstFrag) lastFrag=\(lastFrag)\n"
                     try? dump.write(toFile: indentOut, atomically: true, encoding: .utf8)
                     exit(0)

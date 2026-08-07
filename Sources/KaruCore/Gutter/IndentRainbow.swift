@@ -117,6 +117,13 @@ public enum IndentRainbow {
         NSColor.secondaryLabelColor.withAlphaComponent(0.45)
     }
 
+    /// Colour of one indent dot for `level` (T15.10, final form): the rainbow
+    /// moved from background fills into the dots themselves. A dot is tiny, so
+    /// it carries the palette at a much higher alpha than the old area fill.
+    public static func dotColor(forLevel level: Int) -> NSColor {
+        baseColor(forLevel: level).withAlphaComponent(0.7)
+    }
+
     /// Base alpha used for the fill of each indent block.
     private static let fillAlpha: CGFloat = 0.16
 

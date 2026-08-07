@@ -301,15 +301,15 @@ public final class EditorTextView: NSTextView {
         super.viewWillDraw()
     }
 
-    /// Draws indent-rainbow blocks behind the visible text. Viewport-only: only
-    /// the lines intersecting `rect` are recomputed and painted (nothing is
-    /// stored per line). Layout queries in every draw helper use the
+    /// Draws the indent-rainbow dots behind the visible text. Viewport-only:
+    /// only the lines intersecting `rect` are recomputed and painted (nothing
+    /// is stored per line). Layout queries in every draw helper use the
     /// `WithoutAdditionalLayout` variants: triggering layout *inside* a draw
     /// pass can shift fragments that were already painted this cycle without
-    /// AppKit knowing to repaint them — one source of the stale-band patchwork
-    /// above (and documented TextKit guidance). By the time any of them runs,
-    /// `viewWillDraw` has completed layout for the whole drawable area, so the
-    /// lazy queries are complete *and* nothing can shift mid-draw.
+    /// AppKit knowing to repaint them (documented TextKit guidance). By the
+    /// time any of them runs, `viewWillDraw` has completed layout for the whole
+    /// drawable area, so the lazy queries are complete *and* nothing can shift
+    /// mid-draw.
     public override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         // Fold highlights draw independently of the indent rainbow toggle.
@@ -345,51 +345,23 @@ public final class EditorTextView: NSTextView {
             log("dirty=\(rect) boundsY=\(boundsY) lazy=\(charRange) forced=\(fChars) equal=\(NSEqualRanges(charRange, fChars))")
         }
 
-        // Adjacent lines with the same indent are filled as ONE rectangle per
-        // vertical run, not one per line (T15.10, round two): a shared edge
-        // between two per-line fills can be rasterized by two different
-        // dirty-rect passes, and any sub-pixel disagreement between those
-        // passes shows as a hairline gap — the user's gaps *moved* with
-        // scrolling, the signature of a cross-pass artifact, and pixel-aligning
-        // the per-line rects only reduced it. A merged run has no interior
-        // edges, so there is nothing for two passes to disagree about.
-        struct IndentRun {
-            var rect: NSRect       // container coords + origin, unaligned
-            var level: Int
-            var separator: Bool    // full indent unit → 1px right-edge line
-        }
-        // Keyed by the block's starting column; runs for different indent
-        // levels accumulate independently.
-        var pendingRuns: [Int: IndentRun] = [:]
-        // Dots are painted *after* every fill has landed (they sit on top of
-        // the rainbow), so they are collected during the line walk.
-        var dotRects: [NSRect] = []
-
-        let scale = window?.backingScaleFactor ?? 1
-        let separatorWidth = max(1, scale) / scale
-        func flushRun(forKey key: Int) {
-            guard let run = pendingRuns.removeValue(forKey: key) else { return }
-            let aligned = backingAlignedRect(run.rect, options: .alignAllEdgesNearest)
-            IndentRainbow.color(forLevel: run.level).setFill()
-            aligned.fill()
-            // The 1px separator at the right edge of full indent units, over
-            // the run's whole height, so the width of "one indent" is easy to
-            // count. Partial (remainder) blocks keep their fill-only treatment.
-            if run.separator {
-                var separatorRect = aligned
-                separatorRect.origin.x = aligned.maxX - separatorWidth
-                separatorRect.size.width = separatorWidth
-                IndentRainbow.separatorColor(forLevel: run.level).setFill()
-                separatorRect.fill()
-            }
-        }
-
+        // Level-coloured indent dots — the rainbow's final form (T15.10, user
+        // decision after four rounds against background fills). An area fill
+        // spans the whole line fragment, including the leading rows *between*
+        // glyph areas — exactly the region AppKit's invalidation machinery
+        // does not guarantee to repaint in step with the text, which is where
+        // every generation of hairline gap came from. A dot lives inside its
+        // own glyph's cell: same region, same invalidation, same redraw as the
+        // text itself, so the entire artifact class is structurally gone.
+        // Every leading whitespace character gets one dot in its level's
+        // colour — spaces *and* tabs (tabs used to rely on the fill alone).
+        let diameter = IndentRainbow.dotDiameter
         var loc = ns.lineRange(for: NSRange(location: min(charRange.location, ns.length - 1), length: 0)).location
         while loc <= endChar {
             let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
             // Folded-away lines collapse to zero-height fragments; painting
-            // their rainbow blocks / indent dots would squeeze stray marks onto
-            // the fold boundary row.
+            // their indent dots would squeeze stray marks onto the fold
+            // boundary row.
             if let foldProvider, let lineIndex,
                foldProvider.isLineHidden(lineIndex.lineNumber(forOffset: loc)) {
                 let next = lineRange.location + lineRange.length
@@ -398,70 +370,25 @@ public final class EditorTextView: NSTextView {
                 continue
             }
             let lineString = ns.substring(with: lineRange)
-            let blocks = IndentRainbow.blocks(forLine: lineString, indentWidth: width)
-            for block in blocks {
-                let absolute = NSRange(location: loc + block.columnRange.lowerBound,
-                                       length: block.columnRange.count)
-                let gRange = layoutManager.glyphRange(forCharacterRange: absolute, actualCharacterRange: nil)
-                var blockRect = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
-                // Vertical extent from the *line fragment*, not the glyphs:
-                // fragment rects tile the container edge-to-edge, while glyph
-                // bounds can fall short of fractional line heights.
-                let fragRect = layoutManager.lineFragmentRect(forGlyphAt: gRange.location,
-                                                              effectiveRange: nil)
-                blockRect.origin.y = fragRect.origin.y
-                blockRect.size.height = fragRect.height
-                blockRect.origin.x += origin.x
-                blockRect.origin.y += origin.y
-
-                let key = block.columnRange.lowerBound
-                let separator = block.columnRange.count == width
-                if var run = pendingRuns[key],
-                   run.level == block.level,
-                   run.separator == separator,
-                   abs(run.rect.minX - blockRect.minX) < 0.01,
-                   abs(run.rect.width - blockRect.width) < 0.01,
-                   abs(run.rect.maxY - blockRect.minY) < 0.01 {
-                    // Same column, same level, vertically adjacent (a wrapped
-                    // line's continuation row breaks adjacency, ending the run
-                    // exactly where the band visibly ends today): extend.
-                    run.rect.size.height = blockRect.maxY - run.rect.minY
-                    pendingRuns[key] = run
-                } else {
-                    flushRun(forKey: key)
-                    pendingRuns[key] = IndentRun(rect: blockRect, level: block.level, separator: separator)
-                }
-            }
-
-            // VS Code-style indent dots: a small dot at the centre of each
-            // leading space so the number of spaces is countable at a glance.
-            // Tabs get none. Collected now, painted after the fills — nothing
-            // is stored per line beyond this draw pass.
-            let spaceColumns = IndentRainbow.leadingSpaceColumns(forLine: lineString)
-            if !spaceColumns.isEmpty {
-                let diameter = IndentRainbow.dotDiameter
-                for column in spaceColumns {
+            for block in IndentRainbow.blocks(forLine: lineString, indentWidth: width) {
+                IndentRainbow.dotColor(forLevel: block.level).setFill()
+                for column in block.columnRange {
                     let charRange = NSRange(location: loc + column, length: 1)
                     let gRange = layoutManager.glyphRange(forCharacterRange: charRange,
                                                           actualCharacterRange: nil)
                     var charRect = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
                     charRect.origin.x += origin.x
                     charRect.origin.y += origin.y
-                    dotRects.append(NSRect(x: charRect.midX - diameter / 2,
-                                           y: charRect.midY - diameter / 2,
-                                           width: diameter, height: diameter))
+                    let dotRect = NSRect(x: charRect.midX - diameter / 2,
+                                         y: charRect.midY - diameter / 2,
+                                         width: diameter, height: diameter)
+                    NSBezierPath(ovalIn: dotRect).fill()
                 }
             }
 
             let next = lineRange.location + lineRange.length
             if next <= loc { break } // guard against zero-length final line
             loc = next
-        }
-        for key in Array(pendingRuns.keys) { flushRun(forKey: key) }
-
-        if !dotRects.isEmpty {
-            IndentRainbow.dotColor().setFill()
-            for dotRect in dotRects { NSBezierPath(ovalIn: dotRect).fill() }
         }
     }
 
