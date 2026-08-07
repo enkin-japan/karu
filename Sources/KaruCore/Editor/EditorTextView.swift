@@ -287,6 +287,45 @@ public final class EditorTextView: NSTextView {
         let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
         let endChar = min(charRange.location + charRange.length, ns.length)
 
+        // Adjacent lines with the same indent are filled as ONE rectangle per
+        // vertical run, not one per line (T15.10, round two): a shared edge
+        // between two per-line fills can be rasterized by two different
+        // dirty-rect passes, and any sub-pixel disagreement between those
+        // passes shows as a hairline gap — the user's gaps *moved* with
+        // scrolling, the signature of a cross-pass artifact, and pixel-aligning
+        // the per-line rects only reduced it. A merged run has no interior
+        // edges, so there is nothing for two passes to disagree about.
+        struct IndentRun {
+            var rect: NSRect       // container coords + origin, unaligned
+            var level: Int
+            var separator: Bool    // full indent unit → 1px right-edge line
+        }
+        // Keyed by the block's starting column; runs for different indent
+        // levels accumulate independently.
+        var pendingRuns: [Int: IndentRun] = [:]
+        // Dots are painted *after* every fill has landed (they sit on top of
+        // the rainbow), so they are collected during the line walk.
+        var dotRects: [NSRect] = []
+
+        let scale = window?.backingScaleFactor ?? 1
+        let separatorWidth = max(1, scale) / scale
+        func flushRun(forKey key: Int) {
+            guard let run = pendingRuns.removeValue(forKey: key) else { return }
+            let aligned = backingAlignedRect(run.rect, options: .alignAllEdgesNearest)
+            IndentRainbow.color(forLevel: run.level).setFill()
+            aligned.fill()
+            // The 1px separator at the right edge of full indent units, over
+            // the run's whole height, so the width of "one indent" is easy to
+            // count. Partial (remainder) blocks keep their fill-only treatment.
+            if run.separator {
+                var separatorRect = aligned
+                separatorRect.origin.x = aligned.maxX - separatorWidth
+                separatorRect.size.width = separatorWidth
+                IndentRainbow.separatorColor(forLevel: run.level).setFill()
+                separatorRect.fill()
+            }
+        }
+
         var loc = ns.lineRange(for: NSRange(location: min(charRange.location, ns.length - 1), length: 0)).location
         while loc <= endChar {
             let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
@@ -307,47 +346,42 @@ public final class EditorTextView: NSTextView {
                                        length: block.columnRange.count)
                 let gRange = layoutManager.glyphRange(forCharacterRange: absolute, actualCharacterRange: nil)
                 var blockRect = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
-                // Vertical extent from the *line fragment*, not the glyphs, and
-                // snapped to backing pixels (T15.10). Fragment rects tile the
-                // container edge-to-edge, and pixel-aligned edges rasterize
-                // identically in every partial redraw — the user's hairline
-                // gaps between adjacent lines' fills were fractional-edge
-                // antialiasing composed across separate dirty-rect passes
-                // (full-render probes show no seam, the GHOSTTEST lesson), so
-                // the fix is to leave nothing fractional to compose.
+                // Vertical extent from the *line fragment*, not the glyphs:
+                // fragment rects tile the container edge-to-edge, while glyph
+                // bounds can fall short of fractional line heights.
                 let fragRect = layoutManager.lineFragmentRect(forGlyphAt: gRange.location,
                                                               effectiveRange: nil)
                 blockRect.origin.y = fragRect.origin.y
                 blockRect.size.height = fragRect.height
                 blockRect.origin.x += origin.x
                 blockRect.origin.y += origin.y
-                blockRect = backingAlignedRect(blockRect, options: .alignAllEdgesNearest)
-                IndentRainbow.color(forLevel: block.level).setFill()
-                blockRect.fill()
 
-                // Draw a 1px separator at the right edge of full indent units
-                // so the width of "one indent" is easy to count at a glance.
-                // Partial (remainder) blocks keep their existing fill-only
-                // treatment.
-                if block.columnRange.count == width {
-                    let scale = window?.backingScaleFactor ?? 1
-                    let lineWidth = max(1, scale) / scale
-                    var separatorRect = blockRect
-                    separatorRect.origin.x = blockRect.maxX - lineWidth
-                    separatorRect.size.width = lineWidth
-                    IndentRainbow.separatorColor(forLevel: block.level).setFill()
-                    separatorRect.fill()
+                let key = block.columnRange.lowerBound
+                let separator = block.columnRange.count == width
+                if var run = pendingRuns[key],
+                   run.level == block.level,
+                   run.separator == separator,
+                   abs(run.rect.minX - blockRect.minX) < 0.01,
+                   abs(run.rect.width - blockRect.width) < 0.01,
+                   abs(run.rect.maxY - blockRect.minY) < 0.01 {
+                    // Same column, same level, vertically adjacent (a wrapped
+                    // line's continuation row breaks adjacency, ending the run
+                    // exactly where the band visibly ends today): extend.
+                    run.rect.size.height = blockRect.maxY - run.rect.minY
+                    pendingRuns[key] = run
+                } else {
+                    flushRun(forKey: key)
+                    pendingRuns[key] = IndentRun(rect: blockRect, level: block.level, separator: separator)
                 }
             }
 
             // VS Code-style indent dots: a small dot at the centre of each
             // leading space so the number of spaces is countable at a glance.
-            // Tabs get none. Painted live over the rainbow fill for visible
-            // lines only — nothing is stored per line.
+            // Tabs get none. Collected now, painted after the fills — nothing
+            // is stored per line beyond this draw pass.
             let spaceColumns = IndentRainbow.leadingSpaceColumns(forLine: lineString)
             if !spaceColumns.isEmpty {
                 let diameter = IndentRainbow.dotDiameter
-                IndentRainbow.dotColor().setFill()
                 for column in spaceColumns {
                     let charRange = NSRange(location: loc + column, length: 1)
                     let gRange = layoutManager.glyphRange(forCharacterRange: charRange,
@@ -355,16 +389,21 @@ public final class EditorTextView: NSTextView {
                     var charRect = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
                     charRect.origin.x += origin.x
                     charRect.origin.y += origin.y
-                    let dotRect = NSRect(x: charRect.midX - diameter / 2,
-                                         y: charRect.midY - diameter / 2,
-                                         width: diameter, height: diameter)
-                    NSBezierPath(ovalIn: dotRect).fill()
+                    dotRects.append(NSRect(x: charRect.midX - diameter / 2,
+                                           y: charRect.midY - diameter / 2,
+                                           width: diameter, height: diameter))
                 }
             }
 
             let next = lineRange.location + lineRange.length
             if next <= loc { break } // guard against zero-length final line
             loc = next
+        }
+        for key in Array(pendingRuns.keys) { flushRun(forKey: key) }
+
+        if !dotRects.isEmpty {
+            IndentRainbow.dotColor().setFill()
+            for dotRect in dotRects { NSBezierPath(ovalIn: dotRect).fill() }
         }
     }
 
