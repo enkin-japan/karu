@@ -313,6 +313,166 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Link-recursion reproduction hook (T15.10): KARU_LINKTEST=<out-path>
+        // reproduces the deterministic crash on a link-rich medium file — the
+        // tool-tip refresh re-entered layout from the frame-change notification
+        // until the stack overflowed. Fills the first window with ~250 KB of
+        // linked lines, lets the detector scan, then resizes the window (the
+        // notification storm). The un-fixed build dies before the dump exists;
+        // a written dump *is* the pass. Zero cost unset.
+        if let linkOut = ProcessInfo.processInfo.environment["KARU_LINKTEST"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                // ~260 KB on disk, through the *real* open path — the crash
+                // needs the incremental layout a `load(url:)` document gets,
+                // not a synchronously laid-out injected string.
+                let path = NSTemporaryDirectory() + "karu-linktest.md"
+                // Sized to *guarantee* layout holes at the 0.3 s scan: past the
+                // 512 K noncontiguous threshold (a smaller file can finish
+                // laying out before the debounce fires and dodge the bug), and
+                // 1 900 links — under the detector's 2 000-link guard, which a
+                // first attempt tripped, inadvertently disarming the crash.
+                let filler = String(repeating: "中文正文内容一二三四五六七八九十", count: 20)
+                let content = (1...1900).map { n in
+                    "第\(n)行 https://example.com/page\(n) \(filler)"
+                }.joined(separator: "\n")
+                try? content.write(toFile: path, atomically: true, encoding: .utf8)
+                self.openFromFinder(URL(fileURLWithPath: path))
+                // 3 s: past the 0.3 s scan debounce, the tool-tip pass and the
+                // layout that pass forces. The un-fixed build never gets here.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    let tv = self.windowControllers.first?.window?.contentView?
+                        .firstSubview(ofType: NSTextView.self)
+                    var dump = "alive=true\n"
+                    dump += "windows=\(self.windowControllers.count)\n"
+                    dump += "textLen=\((tv?.string as NSString?)?.length ?? -1)\n"
+                    let counts = (tv as? EditorTextView)?.linkDetector?.diagnosticCounts
+                    dump += "links=\(counts?.links ?? -1)\n"
+                    dump += "toolTipRegions=\(counts?.toolTipRegions ?? -1)\n"
+                    dump += "postsFrameNotifications=\(tv?.postsFrameChangedNotifications ?? false)\n"
+                    try? dump.write(toFile: linkOut, atomically: true, encoding: .utf8)
+                    exit(0)
+                }
+            }
+        }
+
+        // Session-ghost reproduction hook (T15.10): KARU_SESSIONTEST=<out-path>
+        // reproduces "hand-closed windows return after a crash restore" — the
+        // closing window's resign-key notification used to re-record the entry
+        // `windowWillClose` had just removed. Opens two files, closes the *key*
+        // window by hand (the will-close → resign-key order is the bug), then
+        // exits crash-style (no clean-exit marker) and dumps the surviving
+        // session entries: the closed file must not be among them. Zero cost
+        // unset.
+        if let sessionOut = ProcessInfo.processInfo.environment["KARU_SESSIONTEST"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                let dir = NSTemporaryDirectory()
+                let pathA = dir + "karu-sessiontest-a.txt"
+                let pathB = dir + "karu-sessiontest-b.txt"
+                try? "content A".write(toFile: pathA, atomically: true, encoding: .utf8)
+                try? "content B".write(toFile: pathB, atomically: true, encoding: .utf8)
+                self.openFromFinder(URL(fileURLWithPath: pathA))
+                self.openFromFinder(URL(fileURLWithPath: pathB))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    // B was opened last, so its window is key — exactly the
+                    // window whose close used to resurrect its own entry.
+                    let windowsBefore = self.windowControllers.count
+                    let target = NSApp.keyWindow
+                        ?? self.windowControllers.last?.window
+                    let targetWasKey = target?.isKeyWindow == true
+                    target?.performClose(nil)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        let paths = self.sessionStore.entries().map(\.path)
+                        var dump = "entries=\(paths.count)\n"
+                        dump += "windowsBefore=\(windowsBefore) after=\(self.windowControllers.count)\n"
+                        dump += "targetWasKey=\(targetWasKey)\n"
+                        dump += "closedStillRecorded=\(paths.contains { $0.hasSuffix("karu-sessiontest-b.txt") })\n"
+                        dump += "openStillRecorded=\(paths.contains { $0.hasSuffix("karu-sessiontest-a.txt") })\n"
+                        try? dump.write(toFile: sessionOut, atomically: true, encoding: .utf8)
+                        // Crash-style exit: the clean-exit marker stays false,
+                        // so the next launch would restore from these entries.
+                        exit(0)
+                    }
+                }
+            }
+        }
+
+        // Indent-rainbow seam probe (T15.10): KARU_INDENTTEST=<out-path>
+        // reproduces "random gaps between adjacent lines' indent fills" — the
+        // fill used glyph bounds, which fall short of fractional line heights
+        // (CJK at 18 pt), leaving hairline background rows between lines. Scans
+        // the indent band column of a run of indented CJK lines for rows that
+        // are pure background while the rows above *and* below are tinted.
+        // Zero cost unset.
+        if let indentOut = ProcessInfo.processInfo.environment["KARU_INDENTTEST"] {
+            NSApp.appearance = NSAppearance(named: .aqua)   // deterministic pixels
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let controller = self?.windowControllers.first,
+                      let tv = controller.window?.contentView?.firstSubview(ofType: NSTextView.self)
+                else { return }
+                tv.font = .monospacedSystemFont(ofSize: 18, weight: .regular)
+                // Every third line is indent-only ("  ") — the user's gaps sat
+                // at content/blank boundaries; a blank's glyph metrics are the
+                // ASCII spaces' own, shorter than the CJK neighbours' fragments.
+                tv.string = (1...40).map { $0 % 3 == 0 ? "  " : "  第\($0)行中文内容" }
+                    .joined(separator: "\n")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    guard let layoutManager = tv.layoutManager,
+                          let container = tv.textContainer,
+                          let rep = tv.bitmapImageRepForCachingDisplay(in: tv.bounds)
+                    else { return }
+                    tv.cacheDisplay(in: tv.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?
+                        .write(to: URL(fileURLWithPath: indentOut + ".png"))
+
+                    let origin = tv.textContainerOrigin
+                    // The indent band: glyph bounds of the two leading spaces
+                    // of line 1 (x extent only — y comes from the fragments).
+                    let band = layoutManager.boundingRect(
+                        forGlyphRange: layoutManager.glyphRange(
+                            forCharacterRange: NSRange(location: 0, length: 2),
+                            actualCharacterRange: nil),
+                        in: container)
+                    let ns = tv.string as NSString
+                    let lastFrag = layoutManager.lineFragmentRect(
+                        forGlyphAt: layoutManager.glyphIndexForCharacter(at: ns.length - 1),
+                        effectiveRange: nil)
+                    let firstFrag = layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+
+                    let scale = CGFloat(rep.pixelsWide) / tv.bounds.width
+                    // Sample three columns inside the band, clear of the space
+                    // characters' centre dots and of the 1px separator edge.
+                    let xs = [band.minX + 2, band.minX + band.width * 0.35, band.maxX - 4]
+                        .map { Int(($0 + origin.x) * scale) }
+                    let yTop = Int((firstFrag.minY + origin.y + 2) * scale)
+                    let yBottom = Int((lastFrag.maxY + origin.y - 2) * scale)
+
+                    // A row is "background" when every sampled column is pure
+                    // white (no yellow tint, no dot); a seam is a background
+                    // row strictly between two non-background rows.
+                    func isBackground(_ y: Int) -> Bool {
+                        xs.allSatisfy { x in
+                            guard let c = rep.colorAt(x: x, y: y) else { return true }
+                            return c.saturationComponent < 0.05 && c.brightnessComponent > 0.95
+                        }
+                    }
+                    var seams = 0, tinted = 0
+                    var y = yTop + 1
+                    while y < yBottom - 1 {
+                        let bg = isBackground(y)
+                        if bg, !isBackground(y - 1), !isBackground(y + 1) { seams += 1 }
+                        if !bg { tinted += 1 }
+                        y += 1
+                    }
+                    let dump = "seams=\(seams)\ntintedRows=\(tinted)\nscannedRows=\(yBottom - yTop - 2)\n"
+                        + "band=\(band) firstFrag=\(firstFrag) lastFrag=\(lastFrag)\n"
+                    try? dump.write(toFile: indentOut, atomically: true, encoding: .utf8)
+                    exit(0)
+                }
+            }
+        }
+
         // Ghost-pixel reproduction hook (T15.5): KARU_GHOSTTEST=<out-path>
         // reproduces the user's "select-and-delete leaves ghost text behind"
         // report through real editing — fill the first window with lines,

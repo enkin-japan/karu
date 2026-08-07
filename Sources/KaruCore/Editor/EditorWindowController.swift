@@ -95,6 +95,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// standard domain.
     var sessionStore = SessionStore()
 
+    /// Set at the top of `windowWillClose` and never cleared: the resign-key
+    /// notification a closing window still emits must not re-run the focus-loss
+    /// bookkeeping (T15.10 — it resurrected the just-removed session entry, so
+    /// hand-closed windows returned after a crash restore).
+    private var isClosing = false
+
     /// Crash-draft backup for this window's unsaved content (T14.11). Injected
     /// by `AppDelegate` so every window shares one store (and tests can point it
     /// at a temporary directory); a standalone window falls back to the real
@@ -1331,6 +1337,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// *not* named `windowDidResignKey` — that is an `NSWindowDelegate`
     /// requirement, and AppKit would then call it a second time.
     @objc private func handleResignKey(_ note: Notification) {
+        // A closing window also resigns key — after `windowWillClose` has done
+        // its bookkeeping. Recording here would undo the close's session-entry
+        // removal, and auto-saving here would betray a "Don't Save" (T15.10).
+        guard !isClosing else { return }
         recordSessionState()
         autoSaveOnFocusLoss()
     }
@@ -1454,6 +1464,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     }
 
     public func windowWillClose(_ notification: Notification) {
+        // From here on the window is going away: the resign-key notification
+        // that fires as it leaves the screen must not run the focus-loss
+        // bookkeeping (T15.10) — `recordSessionState` would resurrect the
+        // session entry removed below (invisible after a clean quit's clear(),
+        // but every hand-closed window came back after a crash), and the
+        // focus-loss auto-save would silently write out changes the user just
+        // answered "Don't Save" about.
+        isClosing = true
         // Session bookkeeping (T14.8). Closing a window *by hand* is the user
         // saying "I'm done with this file" — it drops out of the restore list.
         // A close that is only a side effect of quitting keeps its entry, with

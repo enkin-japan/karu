@@ -307,8 +307,21 @@ public final class EditorTextView: NSTextView {
                                        length: block.columnRange.count)
                 let gRange = layoutManager.glyphRange(forCharacterRange: absolute, actualCharacterRange: nil)
                 var blockRect = layoutManager.boundingRect(forGlyphRange: gRange, in: container)
+                // Vertical extent from the *line fragment*, not the glyphs, and
+                // snapped to backing pixels (T15.10). Fragment rects tile the
+                // container edge-to-edge, and pixel-aligned edges rasterize
+                // identically in every partial redraw — the user's hairline
+                // gaps between adjacent lines' fills were fractional-edge
+                // antialiasing composed across separate dirty-rect passes
+                // (full-render probes show no seam, the GHOSTTEST lesson), so
+                // the fix is to leave nothing fractional to compose.
+                let fragRect = layoutManager.lineFragmentRect(forGlyphAt: gRange.location,
+                                                              effectiveRange: nil)
+                blockRect.origin.y = fragRect.origin.y
+                blockRect.size.height = fragRect.height
                 blockRect.origin.x += origin.x
                 blockRect.origin.y += origin.y
+                blockRect = backingAlignedRect(blockRect, options: .alignAllEdgesNearest)
                 IndentRainbow.color(forLevel: block.level).setFill()
                 blockRect.fill()
 

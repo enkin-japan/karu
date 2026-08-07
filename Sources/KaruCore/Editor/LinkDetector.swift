@@ -40,13 +40,21 @@ public final class LinkDetector: NSObject, TextStorageObserving {
     private var links: [NSRange] = []
 
     /// Tool-tip regions registered on the text view — one per enclosing rect of
-    /// each link, so hovering a link says "⌘-click to open" (T15.8, user
-    /// request: the modifier is otherwise undiscoverable). Tracked by tag so
-    /// removal never touches a tip someone else registered.
+    /// each *visible* link, so hovering a link says "⌘-click to open" (T15.8,
+    /// user request: the modifier is otherwise undiscoverable). Tracked by tag
+    /// so removal never touches a tip someone else registered.
     private var toolTipTags: [NSView.ToolTipTag] = []
+
+    /// Pending coalesced tool-tip refresh, if any.
+    private var toolTipRefresh: DispatchWorkItem?
 
     /// Pending debounced scan, if any.
     private var pending: DispatchWorkItem?
+
+    /// Diagnostics for the KARU_LINKTEST hook: what the last scan produced.
+    public var diagnosticCounts: (links: Int, toolTipRegions: Int) {
+        (links.count, toolTipTags.count)
+    }
 
     /// Delay between the last edit and the rescan. Long enough that a burst of
     /// typing scans once, short enough that a pasted URL underlines itself
@@ -70,18 +78,28 @@ public final class LinkDetector: NSObject, TextStorageObserving {
     public init(textView: NSTextView) {
         self.textView = textView
         super.init()
-        // Re-place the tool-tip rects when the view is resized: a width change
-        // re-wraps the text and moves every link's glyphs without any edit
-        // (`postsFrameChangedNotifications` is already on — the gutter needs it).
+        // Re-place the tool-tip rects when the geometry changes: a width change
+        // re-wraps the text (frame notification, already on — the gutter needs
+        // it), and a scroll brings different links into view (bounds
+        // notification on the clip view). Both handlers only *schedule* — see
+        // `scheduleToolTipRefresh` for why they must never work synchronously.
         NotificationCenter.default.addObserver(self,
-                                               selector: #selector(viewFrameDidChange(_:)),
+                                               selector: #selector(viewGeometryDidChange(_:)),
                                                name: NSView.frameDidChangeNotification,
                                                object: textView)
+        if let clipView = textView.enclosingScrollView?.contentView {
+            clipView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self,
+                                                   selector: #selector(viewGeometryDidChange(_:)),
+                                                   name: NSView.boundsDidChangeNotification,
+                                                   object: clipView)
+        }
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
         pending?.cancel()
+        toolTipRefresh?.cancel()
     }
 
     // MARK: - Pure helpers (unit-testable)
@@ -135,10 +153,12 @@ public final class LinkDetector: NSObject, TextStorageObserving {
         scheduleScan()
     }
 
-    /// Cancels any pending scan (call from the owner's teardown).
+    /// Cancels any pending scan and tool-tip refresh (owner's teardown).
     public func cancel() {
         pending?.cancel()
         pending = nil
+        toolTipRefresh?.cancel()
+        toolTipRefresh = nil
     }
 
     /// TextStorageObserving: a character edit shifts every range after it, so
@@ -215,20 +235,52 @@ public final class LinkDetector: NSObject, TextStorageObserving {
                                                 forCharacterRange: range)
         }
         links = ranges
-        addToolTips()
+        scheduleToolTipRefresh()
     }
 
     // MARK: - Hover tool tips
 
-    /// Registers one tool-tip region per enclosing rect of every painted link.
-    /// Wrapped links get one region per fragment, so the tip shows wherever the
-    /// pointer actually is.
-    private func addToolTips() {
-        guard let textView,
+    /// Coalesces a tool-tip refresh onto the *next* run-loop turn.
+    ///
+    /// This deferral is load-bearing, not a nicety (T15.10 crash): the
+    /// frame-change notification arrives **synchronously inside a layout pass**
+    /// (`_resizeTextViewForTextContainer` → `setFrameSize`), and the refresh
+    /// asks the layout manager for glyph rects, which forces more layout, which
+    /// grows the text view again, which posts the notification again —
+    /// re-entrant recursion until the stack overflows, deterministically, on any
+    /// link-bearing file still holding layout holes when the scan lands. Working
+    /// only from a fresh dispatch breaks the cycle by construction.
+    private func scheduleToolTipRefresh() {
+        guard toolTipRefresh == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.toolTipRefresh = nil
+            self.refreshToolTips()
+        }
+        toolTipRefresh = item
+        DispatchQueue.main.async(execute: item)
+    }
+
+    /// Registers one tool-tip region per enclosing rect of every **visible**
+    /// link (wrapped links get one region per fragment). Restricting to the
+    /// viewport keeps this from forcing layout of the whole document — the
+    /// visible range is laid out already, so asking for its rects is free; a
+    /// scroll or resize simply schedules another pass for the new viewport.
+    private func refreshToolTips() {
+        removeToolTips()
+        guard !links.isEmpty,
+              let textView,
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
+
         let origin = textView.textContainerOrigin
-        for range in links {
+        let visible = textView.visibleRect.offsetBy(dx: -origin.x, dy: -origin.y)
+        guard !visible.isEmpty else { return }
+        let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: visible, in: container)
+        let visibleChars = layoutManager.characterRange(forGlyphRange: visibleGlyphs,
+                                                        actualGlyphRange: nil)
+
+        for range in links where NSIntersectionRange(range, visibleChars).length > 0 {
             let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
             layoutManager.enumerateEnclosingRects(
                 forGlyphRange: glyphRange,
@@ -248,12 +300,12 @@ public final class LinkDetector: NSObject, TextStorageObserving {
         toolTipTags = []
     }
 
-    /// A resize re-wraps without an edit: the link set is unchanged, only the
-    /// rects moved, so the regions are re-registered without a rescan.
-    @objc private func viewFrameDidChange(_ notification: Notification) {
+    /// A resize re-wraps without an edit and a scroll changes which links are
+    /// on screen; either way the regions are re-registered — next turn, never
+    /// from inside the notification (see `scheduleToolTipRefresh`).
+    @objc private func viewGeometryDidChange(_ notification: Notification) {
         guard !links.isEmpty else { return }
-        removeToolTips()
-        addToolTips()
+        scheduleToolTipRefresh()
     }
 
     /// Informal `NSToolTipOwner` method — every registered region shows the same
