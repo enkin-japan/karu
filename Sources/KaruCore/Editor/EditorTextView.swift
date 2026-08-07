@@ -260,9 +260,28 @@ public final class EditorTextView: NSTextView {
 
     // MARK: Indent rainbow drawing
 
+    /// A frame-size change means the layout geometry moved underneath pixels
+    /// that were painted for the previous geometry (T15.10, round three): the
+    /// user's screen held indent bands at one line pitch and text at another —
+    /// two layout generations composited together. TextKit re-invalidates the
+    /// *glyph* regions after a layout shift, but background decorations painted
+    /// outside them (the rainbow's leading-area rows) are not covered, so any
+    /// geometry change now repaints the whole visible area. Cheap: AppKit only
+    /// ever draws the visible portion, and a height change is a low-frequency
+    /// event (an added line, a re-wrap) that already redraws most of it.
+    public override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize != frame.size
+        super.setFrameSize(newSize)
+        if changed { needsDisplay = true }
+    }
+
     /// Draws indent-rainbow blocks behind the visible text. Viewport-only: only
     /// the lines intersecting `rect` are recomputed and painted (nothing is
-    /// stored per line).
+    /// stored per line). Layout queries in every draw helper use the
+    /// `WithoutAdditionalLayout` variants: triggering layout *inside* a draw
+    /// pass can shift fragments that were already painted this cycle without
+    /// AppKit knowing to repaint them — one source of the stale-band patchwork
+    /// above (and documented TextKit guidance).
     public override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         // Fold highlights draw independently of the indent rainbow toggle.
@@ -283,7 +302,7 @@ public final class EditorTextView: NSTextView {
         let origin = textContainerOrigin
 
         // Character range covering the dirty rect, expanded to whole lines.
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+        let glyphRange = layoutManager.glyphRange(forBoundingRectWithoutAdditionalLayout: rect, in: container)
         let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
         let endChar = min(charRange.location + charRange.length, ns.length)
 
@@ -484,7 +503,7 @@ public final class EditorTextView: NSTextView {
         let ns = string as NSString
         guard ns.length > 0 else { return }
 
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+        let glyphRange = layoutManager.glyphRange(forBoundingRectWithoutAdditionalLayout: rect, in: container)
         let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
         let hits = UnicodeAlert.scan(text: string, range: charRange)
         guard !hits.isEmpty else { return }
@@ -523,7 +542,7 @@ public final class EditorTextView: NSTextView {
         let ns = string as NSString
         guard ns.length > 0 else { return }
 
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+        let glyphRange = layoutManager.glyphRange(forBoundingRectWithoutAdditionalLayout: rect, in: container)
         let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
         let matches = ColorDecorator.colorMatches(in: string, range: charRange)
         guard !matches.isEmpty else { return }
