@@ -179,6 +179,10 @@ public enum IndentEngine {
 /// through the undo-aware `insertText(_:replacementRange:)` path; the view
 /// itself holds no indent logic beyond dispatching to `IndentEngine`.
 public final class EditorTextView: NSTextView {
+    /// Diagnostics tap for the KARU_SCROLLTEST hook (see `drawBackground`).
+    /// Always nil in production.
+    public static var scrollProbeLog: ((String) -> Void)?
+
     /// Indentation configuration source (per-language widths, spaces vs tabs).
     public var indentSettings = IndentSettings()
 
@@ -275,13 +279,37 @@ public final class EditorTextView: NSTextView {
         if changed { needsDisplay = true }
     }
 
+    /// Completes layout for everything about to be drawn *before* any draw pass
+    /// reads it (T15.10, round four). The KARU_SCROLLTEST probe caught draw
+    /// passes running while the dirty region's layout was still incomplete: the
+    /// lazy (`WithoutAdditionalLayout`) walk then paints the band short of what
+    /// the text will occupy, and the shortfall is never repainted — the user's
+    /// "perfect on open, gaps appear as I scroll, they move with more
+    /// scrolling". `viewWillDraw` is the sanctioned place to perform layout;
+    /// covering the prepared-content overdraw region keeps layer tiles honest
+    /// too.
+    public override func viewWillDraw() {
+        if let layoutManager, let container = textContainer {
+            // Expanded by a generous margin: `ensureLayout(forBoundingRect:)`
+            // stops at the rect's edge, while the draw pass includes the line
+            // *straddling* it — the probe measured exactly that one-line
+            // shortfall. 200 pt ≈ eight lines of slack; layout clamps to the
+            // text end, so over-asking costs nothing.
+            let target = preparedContentRect.union(visibleRect).insetBy(dx: 0, dy: -200)
+            layoutManager.ensureLayout(forBoundingRect: target, in: container)
+        }
+        super.viewWillDraw()
+    }
+
     /// Draws indent-rainbow blocks behind the visible text. Viewport-only: only
     /// the lines intersecting `rect` are recomputed and painted (nothing is
     /// stored per line). Layout queries in every draw helper use the
     /// `WithoutAdditionalLayout` variants: triggering layout *inside* a draw
     /// pass can shift fragments that were already painted this cycle without
     /// AppKit knowing to repaint them — one source of the stale-band patchwork
-    /// above (and documented TextKit guidance).
+    /// above (and documented TextKit guidance). By the time any of them runs,
+    /// `viewWillDraw` has completed layout for the whole drawable area, so the
+    /// lazy queries are complete *and* nothing can shift mid-draw.
     public override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         // Fold highlights draw independently of the indent rainbow toggle.
@@ -305,6 +333,17 @@ public final class EditorTextView: NSTextView {
         let glyphRange = layoutManager.glyphRange(forBoundingRectWithoutAdditionalLayout: rect, in: container)
         let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
         let endChar = min(charRange.location + charRange.length, ns.length)
+
+        // Scroll-probe instrumentation (KARU_SCROLLTEST): compares what this
+        // pass can see without triggering layout against what full layout would
+        // give — a mismatch during a scroll strip means the band is painted
+        // short. Nil in production; costs one optional check.
+        if let log = EditorTextView.scrollProbeLog {
+            let forcing = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+            let fChars = layoutManager.characterRange(forGlyphRange: forcing, actualGlyphRange: nil)
+            let boundsY = enclosingScrollView?.contentView.bounds.origin.y ?? -1
+            log("dirty=\(rect) boundsY=\(boundsY) lazy=\(charRange) forced=\(fChars) equal=\(NSEqualRanges(charRange, fChars))")
+        }
 
         // Adjacent lines with the same indent are filled as ONE rectangle per
         // vertical run, not one per line (T15.10, round two): a shared edge

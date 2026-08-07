@@ -398,6 +398,49 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Scroll-strip probe (T15.10, round four): KARU_SCROLLTEST=<out-path>
+        // opens the user's gap-reproducing file, page-jumps, then does a series
+        // of small scrolls — logging, for every background draw pass, the lazy
+        // (`WithoutAdditionalLayout`) versus forced glyph coverage of the dirty
+        // rect. Any `equal=false` line is a pass that painted the band short of
+        // what the text will occupy. Zero cost unset.
+        if let scrollOut = ProcessInfo.processInfo.environment["KARU_SCROLLTEST"] {
+            var lines: [String] = []
+            EditorTextView.scrollProbeLog = { lines.append($0) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                self.openFromFinder(URL(fileURLWithPath: "/Volumes/enkin/project/TinyEditor/debug/test.md"))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    guard let controller = self.windowControllers.first,
+                          let tv = controller.window?.contentView?.firstSubview(ofType: NSTextView.self),
+                          let scrollView = tv.enclosingScrollView else { return }
+                    tv.font = .monospacedSystemFont(ofSize: 20, weight: .regular)
+                    let clip = scrollView.contentView
+                    var step = 0
+                    func scrollOnce() {
+                        let page = step == 0 ? clip.bounds.height : 37.0
+                        let target = NSPoint(x: 0, y: clip.bounds.origin.y + page)
+                        lines.append("--- scroll step \(step) to y=\(target.y)")
+                        clip.scroll(to: target)
+                        scrollView.reflectScrolledClipView(clip)
+                        step += 1
+                        if step <= 6 {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: scrollOnce)
+                        } else {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                let mismatches = lines.filter { $0.contains("equal=false") }.count
+                                var dump = "passes=\(lines.filter { $0.hasPrefix("dirty=") }.count) mismatches=\(mismatches)\n"
+                                dump += lines.joined(separator: "\n")
+                                try? dump.write(toFile: scrollOut, atomically: true, encoding: .utf8)
+                                exit(0)
+                            }
+                        }
+                    }
+                    scrollOnce()
+                }
+            }
+        }
+
         // Indent-rainbow seam probe (T15.10): KARU_INDENTTEST=<out-path>
         // reproduces "random gaps between adjacent lines' indent fills" — the
         // fill used glyph bounds, which fall short of fractional line heights
