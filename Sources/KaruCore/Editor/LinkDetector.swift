@@ -51,6 +51,10 @@ public final class LinkDetector: NSObject, TextStorageObserving {
     /// Pending debounced scan, if any.
     private var pending: DispatchWorkItem?
 
+    /// Pending coalesced decoration clear, if any (see
+    /// `textStorageDidProcessEditing` for why clearing must be deferred).
+    private var decorationClear: DispatchWorkItem?
+
     /// Diagnostics for the KARU_LINKTEST hook: what the last scan produced.
     public var diagnosticCounts: (links: Int, toolTipRegions: Int) {
         (links.count, toolTipTags.count)
@@ -100,6 +104,7 @@ public final class LinkDetector: NSObject, TextStorageObserving {
         NotificationCenter.default.removeObserver(self)
         pending?.cancel()
         toolTipRefresh?.cancel()
+        decorationClear?.cancel()
     }
 
     // MARK: - Pure helpers (unit-testable)
@@ -159,17 +164,28 @@ public final class LinkDetector: NSObject, TextStorageObserving {
         pending = nil
         toolTipRefresh?.cancel()
         toolTipRefresh = nil
+        decorationClear?.cancel()
+        decorationClear = nil
     }
 
     /// TextStorageObserving: a character edit shifts every range after it, so
-    /// the painted decoration is dropped at once and recomputed on the debounce.
+    /// the painted decoration is dropped and recomputed on the debounce.
     /// Attribute-only edits change no text and are ignored.
+    ///
+    /// The drop is deferred to the next run-loop turn, never done here: this
+    /// observer runs inside `processEditing`, *before* the layout manager has
+    /// been told about the edit, so the storage holds the new text while the
+    /// layout manager still maps glyphs against the old one. Removing a
+    /// temporary attribute in that window makes the display-invalidation path
+    /// resolve paragraph bounds through the stale mapping and throw
+    /// `NSRangeException` — an in-bounds range check on our side cannot
+    /// prevent it (deterministic crash: backspace right after links painted).
     public func textStorageDidProcessEditing(editedMask: NSTextStorageEditActions,
                                              editedRange: NSRange,
                                              changeInLength delta: Int,
                                              textStorage: NSTextStorage) {
         guard editedMask.contains(.editedCharacters) else { return }
-        clearDecoration()
+        scheduleDecorationClear()
         scheduleScan()
     }
 
@@ -217,6 +233,20 @@ public final class LinkDetector: NSObject, TextStorageObserving {
         let item = DispatchWorkItem { [weak self] in self?.scanAndPaint() }
         pending = item
         DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: item)
+    }
+
+    /// Coalesces the post-edit decoration drop onto the next run-loop turn,
+    /// where storage and layout manager agree again. Runs before the debounced
+    /// rescan by construction (async now vs. +0.3 s).
+    private func scheduleDecorationClear() {
+        guard decorationClear == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.decorationClear = nil
+            self.clearDecoration()
+        }
+        decorationClear = item
+        DispatchQueue.main.async(execute: item)
     }
 
     private func scanAndPaint() {
