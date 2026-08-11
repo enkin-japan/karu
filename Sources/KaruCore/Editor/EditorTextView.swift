@@ -359,7 +359,7 @@ public final class EditorTextView: NSTextView {
         // text itself, so the entire artifact class is structurally gone.
         // Every leading whitespace character gets one dot in its level's
         // colour — spaces *and* tabs (tabs used to rely on the fill alone).
-        let diameter = IndentRainbow.dotDiameter
+        let diameter = IndentRainbow.dotDiameter(forFontSize: font?.pointSize ?? NSFont.systemFontSize)
         var loc = ns.lineRange(for: NSRange(location: min(charRange.location, ns.length - 1), length: 0)).location
         // `<` is load-bearing (T15.12): with `<=`, a document without a trailing
         // newline gets one extra iteration at loc == ns.length, where lineRange

@@ -87,9 +87,13 @@ public enum IndentRainbow {
 
     // MARK: - Indent space dots (VS Code style)
 
-    /// Diameter, in points, of the small dot drawn at the centre of each leading
-    /// space so the space count is countable at a glance.
-    public static let dotDiameter: CGFloat = 7
+    /// Diameter, in points, of the dot drawn at the centre of each leading
+    /// space, as a function of the editor font size so the dots track zoom.
+    /// User-calibrated anchors: 12 pt font → 4 pt dot, 18 pt font → 6 pt dot —
+    /// a straight `fontSize / 3` line through both.
+    public static func dotDiameter(forFontSize fontSize: CGFloat) -> CGFloat {
+        fontSize / 3
+    }
 
     /// Column offsets (relative to the line start) of every leading *space*
     /// character. Tabs are deliberately excluded — they carry no dot — and the
