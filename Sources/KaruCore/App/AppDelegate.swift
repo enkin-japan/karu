@@ -441,6 +441,49 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Stray-dot probe (T15.12): KARU_DOTTEST=<out> + KARU_DOTTEST_FILE=<doc>
+        // opens the document, forces a full redraw, and dumps the provenance of
+        // every indent dot painted (via `EditorTextView.dotProbeLog`) plus the
+        // document's own line/indent map, so painted dots can be diffed against
+        // what the text actually contains. Zero cost unset.
+        if let dotOut = ProcessInfo.processInfo.environment["KARU_DOTTEST"],
+           let dotFile = ProcessInfo.processInfo.environment["KARU_DOTTEST_FILE"] {
+            var dotLines: [String] = []
+            EditorTextView.dotProbeLog = { dotLines.append($0) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                self.openFromFinder(URL(fileURLWithPath: dotFile))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    guard let controller = self.windowControllers.first,
+                          let tv = controller.window?.contentView?.firstSubview(ofType: NSTextView.self)
+                    else { return }
+                    dotLines.append("--- full redraw pass")
+                    tv.needsDisplay = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        let ns = tv.string as NSString
+                        var dump = "docLength=\(ns.length)\n"
+                        var loc = 0
+                        while loc < ns.length {
+                            let lr = ns.lineRange(for: NSRange(location: loc, length: 0))
+                            let line = ns.substring(with: lr)
+                            let spaces = line.prefix(while: { $0 == " " }).count
+                            dump += "line lineStart=\(lr.location) len=\(lr.length) leadingSpaces=\(spaces) text=\(line.trimmingCharacters(in: .newlines).prefix(40))\n"
+                            if lr.length == 0 { break }
+                            loc = lr.location + lr.length
+                        }
+                        dump += dotLines.joined(separator: "\n") + "\n"
+                        try? dump.write(toFile: dotOut, atomically: true, encoding: .utf8)
+                        if let rep = tv.bitmapImageRepForCachingDisplay(in: tv.bounds) {
+                            tv.cacheDisplay(in: tv.bounds, to: rep)
+                            try? rep.representation(using: .png, properties: [:])?
+                                .write(to: URL(fileURLWithPath: dotOut + ".png"))
+                        }
+                        exit(0)
+                    }
+                }
+            }
+        }
+
         // Indent-rainbow dot probe (T15.10, final form): KARU_INDENTTEST=<out>
         // verifies the level-coloured indent dots render — one saturated dot
         // per leading whitespace character. (The band fills this probe once

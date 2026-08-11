@@ -183,6 +183,10 @@ public final class EditorTextView: NSTextView {
     /// Always nil in production.
     public static var scrollProbeLog: ((String) -> Void)?
 
+    /// Diagnostics tap for the KARU_DOTTEST hook: one line per indent dot the
+    /// draw pass paints, with its provenance. Always nil in production.
+    public static var dotProbeLog: ((String) -> Void)?
+
     /// Indentation configuration source (per-language widths, spaces vs tabs).
     public var indentSettings = IndentSettings()
 
@@ -357,7 +361,12 @@ public final class EditorTextView: NSTextView {
         // colour — spaces *and* tabs (tabs used to rely on the fill alone).
         let diameter = IndentRainbow.dotDiameter
         var loc = ns.lineRange(for: NSRange(location: min(charRange.location, ns.length - 1), length: 0)).location
-        while loc <= endChar {
+        // `<` is load-bearing (T15.12): with `<=`, a document without a trailing
+        // newline gets one extra iteration at loc == ns.length, where lineRange
+        // re-resolves to the last line but `loc + column` reaches past the end —
+        // the glyph mapping clamps those ranges to the final character, stacking
+        // every indent column's dot right after the last glyph as one stray dot.
+        while loc < endChar {
             let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
             // Folded-away lines collapse to zero-height fragments; painting
             // their indent dots would squeeze stray marks onto the fold
@@ -382,6 +391,9 @@ public final class EditorTextView: NSTextView {
                     let dotRect = NSRect(x: charRect.midX - diameter / 2,
                                          y: charRect.midY - diameter / 2,
                                          width: diameter, height: diameter)
+                    if let log = EditorTextView.dotProbeLog {
+                        log("dot lineStart=\(lineRange.location) col=\(column) level=\(block.level) rect=\(dotRect)")
+                    }
                     NSBezierPath(ovalIn: dotRect).fill()
                 }
             }

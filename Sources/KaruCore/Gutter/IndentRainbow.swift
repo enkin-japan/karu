@@ -89,7 +89,7 @@ public enum IndentRainbow {
 
     /// Diameter, in points, of the small dot drawn at the centre of each leading
     /// space so the space count is countable at a glance.
-    public static let dotDiameter: CGFloat = 3.5
+    public static let dotDiameter: CGFloat = 7
 
     /// Column offsets (relative to the line start) of every leading *space*
     /// character. Tabs are deliberately excluded — they carry no dot — and the
@@ -122,7 +122,7 @@ public enum IndentRainbow {
     /// together — a larger, paler dot reads at a glance without competing with
     /// the text (small+dense was tiring, large+saturated was overpowering).
     public static func dotColor(forLevel level: Int) -> NSColor {
-        baseColor(forLevel: level).withAlphaComponent(0.45)
+        baseColor(forLevel: level).withAlphaComponent(0.40)
     }
 
     /// Base alpha used for the fill of each indent block.
