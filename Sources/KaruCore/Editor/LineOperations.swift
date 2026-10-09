@@ -232,7 +232,7 @@ public enum LineOperations {
 
     private static func endsWithNewline(_ text: String) -> Bool {
         guard let last = text.last else { return false }
-        return last == "\n" || last == "\r"
+        return last == "\n" || last == "\r" || last == "\r\n"
     }
 
     private static func precedingTerminatorLength(_ ns: NSString, before loc: Int) -> Int {

@@ -667,33 +667,16 @@ public final class EditorTextView: NSTextView {
 
     /// Whether the ⌘K fold-chord prefix is currently armed. Transient (a single
     /// Bool), reset the moment the next key resolves the chord.
-    private var foldChordPrefixActive = false
+    private let shortcutRouter = ShortcutRouter()
 
-    /// Runs one event through the fold-chord machine. Returns `true` when the
-    /// event was consumed (prefix armed, chord fired, or Esc dismissed an armed
-    /// prefix); `false` means normal handling should proceed.
-    private func handleFoldChord(_ event: NSEvent) -> Bool {
-        switch Self.chordStep(prefixActive: foldChordPrefixActive,
-                              modifiers: event.modifierFlags,
-                              charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
-        case .enterPrefix:
-            foldChordPrefixActive = true
-            return true // swallow ⌘K
-        case .foldAll:
-            foldChordPrefixActive = false
-            NSApp.sendAction(#selector(EditorWindowController.foldAll(_:)), to: nil, from: self)
-            return true
-        case .unfoldAll:
-            foldChordPrefixActive = false
-            NSApp.sendAction(#selector(EditorWindowController.unfoldAllFolds(_:)), to: nil, from: self)
-            return true
-        case .cancelAndSwallow:
-            foldChordPrefixActive = false
-            return true // swallow Esc that dismissed the armed prefix
-        case .cancelAndHandle:
-            foldChordPrefixActive = false // proceed with normal handling
-            return false
-        }
+    public override func resignFirstResponder() -> Bool {
+        shortcutRouter.reset()
+        return super.resignFirstResponder()
+    }
+
+    private func handleFoldChord(_ event: NSEvent, preferMenu: Bool = false) -> Bool {
+        guard !hasMarkedText() else { return false }
+        return shortcutRouter.handle(event, scope: .editor, sender: self, preferMenu: preferMenu)
     }
 
     /// The chord's second key, ⌘0, doubles as View ▸ Actual Size's menu key
@@ -707,7 +690,7 @@ public final class EditorTextView: NSTextView {
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         // Only when the editor itself has focus — a ⌘K typed into the find bar
         // must not arm the fold prefix.
-        if window?.firstResponder === self, handleFoldChord(event) {
+        if window?.firstResponder === self, handleFoldChord(event, preferMenu: true) {
             return true
         }
         return super.performKeyEquivalent(with: event)
@@ -719,43 +702,9 @@ public final class EditorTextView: NSTextView {
     /// let the normal input path run and notify the popup of the keystroke so it
     /// can open / refilter / dismiss. Zero overhead when no handler is attached.
     public override func keyDown(with event: NSEvent) {
-        // Intercept ⌥⇧F before it can be inserted as a literal "Ï": route it to
-        // the Format Document action (which self-gates on module/language).
-        if Self.isFormatDocumentChord(modifiers: event.modifierFlags,
-                                      charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
-            NSApp.sendAction(#selector(EditorWindowController.formatDocument(_:)), to: nil, from: self)
-            return
-        }
-        // ⌘K fold-chord prefix (VS Code parity): ⌘K then ⌘0 (fold all) / ⌘J
-        // (unfold all). ⌘-bearing steps are normally consumed in
-        // `performKeyEquivalent` (they must beat the menu — see above); this
-        // copy handles what never enters that pass, chiefly the plain Esc that
-        // dismisses an armed prefix.
-        if handleFoldChord(event) { return }
         if let handler = completionKeyHandler,
-           handler.isCompletionActive,
-           handler.handleCompletionKeyDown(event) {
-            return
-        }
-        // Line-operation chords (⌥↑ / ⌥↓ / ⌥⇧↑ / ⌥⇧↓). Skipped while a completion
-        // popup is open so the keystroke dismisses the popup (via super.keyDown)
-        // rather than moving lines underneath it.
-        if completionKeyHandler?.isCompletionActive != true,
-           let selector = Self.lineOperationChord(
-               modifiers: event.modifierFlags,
-               charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
-            NSApp.sendAction(selector, to: nil, from: self)
-            return
-        }
-        // ⌘⏎ inserts a fresh line below regardless of caret column (VS Code
-        // parity). Same completion guard as the line-operation chords.
-        if completionKeyHandler?.isCompletionActive != true,
-           Self.isInsertLineBelowChord(
-               modifiers: event.modifierFlags,
-               charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
-            NSApp.sendAction(#selector(EditorWindowController.insertLineBelow(_:)), to: nil, from: self)
-            return
-        }
+           handler.isCompletionActive, handler.handleCompletionKeyDown(event) { return }
+        if handleFoldChord(event) { return }
         super.keyDown(with: event)
         completionKeyHandler?.textViewDidInsertKey(event)
     }

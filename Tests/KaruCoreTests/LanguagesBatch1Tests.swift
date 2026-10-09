@@ -93,7 +93,8 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func pythonFStringCommentAndDecorator() {
     let py = PythonLanguage.make()
     let pairs = spans(py, #"s = f"hi {name}"  # note"#)
-    #expect(kind(of: #"f"hi {name}""#, in: pairs) == .string)
+    #expect(kind(of: #"f"hi "#, in: pairs) == .string)
+    #expect(kind(of: "name", in: pairs) == .symbolVariable)
     #expect(kind(of: "# note", in: pairs) == .comment)
 
     let deco = spans(py, "@app.route")

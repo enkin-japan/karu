@@ -27,6 +27,7 @@ public final class WordOccurrenceHighlighter: NSObject, TextStorageObserving {
 
     /// Pending debounced scan, if any.
     private var pending: DispatchWorkItem?
+    private var pendingClear: DispatchWorkItem?
 
     /// Debounce interval for the occurrence scan.
     private let debounceInterval: TimeInterval = 0.2
@@ -51,6 +52,7 @@ public final class WordOccurrenceHighlighter: NSObject, TextStorageObserving {
 
     deinit {
         pending?.cancel()
+        pendingClear?.cancel()
     }
 
     // MARK: - Pure helpers (unit-testable)
@@ -138,13 +140,31 @@ public final class WordOccurrenceHighlighter: NSObject, TextStorageObserving {
     }
 
     /// TextStorageObserving: on a character edit the painted ranges are stale, so
-    /// clear immediately and reschedule. Attribute-only edits are ignored.
+    /// defer cleanup until storage finishes processing, then reschedule. Attribute-only edits are ignored.
     public func textStorageDidProcessEditing(editedMask: NSTextStorageEditActions,
                                              editedRange: NSRange,
                                              changeInLength delta: Int,
                                              textStorage: NSTextStorage) {
         guard editedMask.contains(.editedCharacters) else { return }
-        clearHighlights()
+        // Track the ranges as storage shifts them; never mutate layout while
+        // it still has the pre-edit glyph mapping.
+        let oldEnd = editedRange.location + editedRange.length - delta
+        paintedRanges = paintedRanges.map { range in
+            let end = NSMaxRange(range)
+            if end <= editedRange.location { return range }
+            if range.location >= oldEnd {
+                return NSRange(location: range.location + delta, length: range.length)
+            }
+            let start = min(range.location, editedRange.location)
+            return NSRange(location: start, length: max(NSMaxRange(editedRange), end + delta) - start)
+        }
+        pendingClear?.cancel()
+        let clear = DispatchWorkItem { [weak self] in
+            self?.pendingClear = nil
+            self?.clearHighlights()
+        }
+        pendingClear = clear
+        DispatchQueue.main.async(execute: clear)
         scheduleScan()
     }
 
@@ -152,6 +172,8 @@ public final class WordOccurrenceHighlighter: NSObject, TextStorageObserving {
     public func cancel() {
         pending?.cancel()
         pending = nil
+        pendingClear?.cancel()
+        pendingClear = nil
     }
 
     private func scheduleScan() {

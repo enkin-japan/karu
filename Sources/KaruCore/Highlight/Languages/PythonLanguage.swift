@@ -1,18 +1,9 @@
 import Foundation
 
-/// Python definition (v1, line-based).
-///
-/// Triple-quoted strings *are* handled across lines: the rules below colour the
-/// same-line and open-to-end-of-line forms, and `multilineStringDelimiters`
-/// makes the engine carry the open/closed state from line to line, so a block's
-/// body and its closing line are coloured as string rather than as code
-/// (T14.7). See `HighlightEngine.tokens(inLine:language:openDelimiter:)` for
-/// the approximation that state scan accepts (`# """` flips it).
-///
-/// Line-approximation trade-offs accepted for v1:
-/// - Prefixed strings (f / r / b / u, and their combinations) are treated the
-///   same as plain strings; f-string interpolations `{…}` are not tokenized
-///   separately.
+/// Python lexical categories. `PythonTokenizer` handles string prefixes,
+/// nested f-string expressions, escaped braces and streamed triple-quoted
+/// strings; these regex rules classify code outside strings and inside fields.
+/// This is lexical highlighting, not a Python parser or language server.
 public enum PythonLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0

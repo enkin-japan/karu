@@ -29,13 +29,13 @@ public enum XMLFormatter {
     ///
     /// The top level may contain an XML declaration, a DOCTYPE, any number
     /// of comments, and exactly one root element, in any order. Elements
-    /// that contain only text (no child elements) are kept on a single
-    /// line, which is what keeps plist output such as
-    /// `<key>CFBundleName</key>` readable.
+    /// containing character data retain their exact inner source, including
+    /// whitespace-only and mixed content. Elements without character data are
+    /// expanded with indentation; no schema is assumed to discard whitespace.
     public static func prettyPrint(_ text: String, indentWidth: Int = 2) throws -> String {
         let scanner = Scanner(text)
         let topLevel = try parseDocument(scanner)
-        return render(topLevel, indentWidth: indentWidth)
+        return render(topLevel, indentWidth: indentWidth, source: scanner.chars)
     }
 
     // MARK: - AST
@@ -49,9 +49,9 @@ public enum XMLFormatter {
         case comment(String)
         /// Raw content between `<![CDATA[` and `]]>`, kept exactly as written.
         case cdata(String)
-        /// Raw text between tags, outer whitespace trimmed, entities undecoded.
+        /// Raw text between tags, whitespace preserved, entities undecoded.
         case text(String)
-        case element(name: String, attributes: String, children: [Node], selfClosing: Bool)
+        case element(name: String, attributes: String, children: [Node], selfClosing: Bool, innerRange: Range<Int>)
     }
 
     // MARK: - Scanner
@@ -76,7 +76,7 @@ public enum XMLFormatter {
         func advance() -> Character {
             let c = chars[i]
             i += 1
-            if c == "\n" { line += 1 }
+            if c == "\n" || c == "\r\n" || c == "\r" { line += 1 }
             return c
         }
 
@@ -95,7 +95,7 @@ public enum XMLFormatter {
         }
 
         func skipWhitespace() {
-            while let c = peek(), c == " " || c == "\t" || c == "\r" || c == "\n" {
+            while let c = peek(), c == " " || c == "\t" || c == "\r" || c == "\n" || c == "\r\n" {
                 advance()
             }
         }
@@ -238,17 +238,15 @@ public enum XMLFormatter {
         let (attributes, selfClosing) = try scanTagRemainder(s, startLine: startLine, tagName: name)
 
         if selfClosing {
-            return .element(name: name, attributes: attributes, children: [], selfClosing: true)
+            return .element(name: name, attributes: attributes, children: [], selfClosing: true, innerRange: 0..<0)
         }
 
+        let innerStart = s.i
         var children: [Node] = []
         var textBuffer = ""
 
         func flushText() {
-            let trimmed = textBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                children.append(.text(trimmed))
-            }
+            if !textBuffer.isEmpty { children.append(.text(textBuffer)) }
             textBuffer = ""
         }
 
@@ -273,6 +271,7 @@ public enum XMLFormatter {
                 }
                 if s.match("</") {
                     flushText()
+                    let innerRange = innerStart..<s.i
                     let endLine = s.line
                     s.consume("</")
                     guard let endName = scanName(s) else {
@@ -288,7 +287,7 @@ public enum XMLFormatter {
                             message: "mismatched closing tag: expected </\(name)> but found </\(endName)>"
                         )
                     }
-                    return .element(name: name, attributes: attributes, children: children, selfClosing: false)
+                    return .element(name: name, attributes: attributes, children: children, selfClosing: false, innerRange: innerRange)
                 }
                 flushText()
                 children.append(try parseElement(s))
@@ -356,16 +355,16 @@ public enum XMLFormatter {
 
     // MARK: - Rendering
 
-    private static func render(_ nodes: [Node], indentWidth: Int) -> String {
+    private static func render(_ nodes: [Node], indentWidth: Int, source: [Character]) -> String {
         var out = ""
         for (idx, node) in nodes.enumerated() {
             if idx > 0 { out += "\n" }
-            renderNode(node, level: 0, indentWidth: indentWidth, into: &out)
+            renderNode(node, level: 0, indentWidth: indentWidth, source: source, into: &out)
         }
         return out
     }
 
-    private static func renderNode(_ node: Node, level: Int, indentWidth: Int, into out: inout String) {
+    private static func renderNode(_ node: Node, level: Int, indentWidth: Int, source: [Character], into out: inout String) {
         let indent = String(repeating: " ", count: level * indentWidth)
 
         switch node {
@@ -379,7 +378,7 @@ public enum XMLFormatter {
             out += indent + "<![CDATA[" + content + "]]>"
         case .text(let content):
             out += indent + content
-        case .element(let name, let attributes, let children, let selfClosing):
+        case .element(let name, let attributes, let children, let selfClosing, let innerRange):
             let openTag = "<" + name + (attributes.isEmpty ? "" : " " + attributes)
 
             if selfClosing {
@@ -390,19 +389,26 @@ public enum XMLFormatter {
                 out += indent + openTag + "></" + name + ">"
                 return
             }
-            if children.count == 1, case .text(let textContent) = children[0] {
-                out += indent + openTag + ">" + textContent + "</" + name + ">"
-                return
+            // Without a DTD/schema, whitespace between child elements can
+            // itself be meaningful mixed content. Preserve all existing
+            // character data, not just nonblank text or xml:space values.
+            let hasCharacterData = children.contains {
+                switch $0 {
+                case .text, .cdata: return true
+                default: return false
+                }
             }
-            if children.count == 1, case .cdata(let cdataContent) = children[0] {
-                out += indent + openTag + "><![CDATA[" + cdataContent + "]]></" + name + ">"
+            let preservesSpace = attributes.range(of: #"xml:space\s*=\s*["']preserve["']"#,
+                                                   options: .regularExpression) != nil
+            if hasCharacterData || preservesSpace {
+                out += indent + openTag + ">" + String(source[innerRange]) + "</" + name + ">"
                 return
             }
 
             out += indent + openTag + ">"
             for child in children {
                 out += "\n"
-                renderNode(child, level: level + 1, indentWidth: indentWidth, into: &out)
+                renderNode(child, level: level + 1, indentWidth: indentWidth, source: source, into: &out)
             }
             out += "\n" + indent + "</" + name + ">"
         }

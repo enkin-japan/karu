@@ -13,9 +13,9 @@ import AppKit
 /// asked that band to be drawn again.
 ///
 /// This observer asks. On every character edit that shrinks the text it marks
-/// the visible rect from the top of the edited line downward as needing
-/// display. Growth needs no help (new text dirties its own rect), and the cost
-/// is one partial repaint per deletion — no state is kept, per the
+/// the visible rect as needing display, without querying layout during storage
+/// processing. Growth needs no help (new text dirties its own rect), and the cost
+/// is one coalesced viewport repaint — no state is kept, per the
 /// resident-memory rule (ARCHITECTURE.md §3.4).
 ///
 /// Shared by the editor window and the scratchpad: both register it on their
@@ -37,26 +37,9 @@ final class ShrinkRepaintObserver: TextStorageObserving {
         let visible = textView.visibleRect
         guard !visible.isEmpty else { return }
 
-        let length = (textView.string as NSString).length
-        guard length > 0, editedRange.location < length,
-              let layoutManager = textView.layoutManager else {
-            // Document emptied (or edit at the very end): repaint the whole
-            // viewport rather than reason about a line that no longer exists.
-            textView.setNeedsDisplay(visible)
-            return
-        }
-
-        // From the top of the line that received the edit down to the bottom of
-        // the viewport: everything below the edit may have moved up.
-        let glyphIndex = layoutManager.glyphIndexForCharacter(at: editedRange.location)
-        let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
-        let top = fragment.minY + textView.textContainerOrigin.y
-        let band = NSRect(x: visible.minX,
-                          y: min(top, visible.maxY),
-                          width: visible.width,
-                          height: max(0, visible.maxY - min(top, visible.maxY)))
-        if !band.isEmpty {
-            textView.setNeedsDisplay(band)
-        }
+        // Querying line fragments here can re-enter TextKit with stale glyph
+        // mappings. Invalidating the viewport needs no layout and coalesces
+        // with the edit's own repaint before the next display pass.
+        textView.setNeedsDisplay(visible)
     }
 }

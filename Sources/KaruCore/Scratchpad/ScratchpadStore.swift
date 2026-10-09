@@ -88,16 +88,16 @@ public struct ScratchpadStore: Sendable {
         return text
     }
 
-    /// Replaces the stored text. Best-effort by design, like `DraftStore.write`:
-    /// a failing backup must never interrupt typing, so I/O errors are swallowed
-    /// — the panel keeps its content in memory either way.
-    public func write(_ content: String) {
+    /// Reports persistence failure so the owner can keep the only live copy.
+    @discardableResult
+    public func write(_ content: String) -> Result<Void, Error> {
         do {
             try FileManager.default.createDirectory(at: directory,
                                                     withIntermediateDirectories: true)
             try Data(content.utf8).write(to: contentURL, options: .atomic)
+            return .success(())
         } catch {
-            // Ignored on purpose (see above).
+            return .failure(error)
         }
     }
 

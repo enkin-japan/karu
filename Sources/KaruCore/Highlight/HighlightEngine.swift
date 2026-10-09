@@ -104,6 +104,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// dropped together with `language` when the module is switched off, so it
     /// is part of the `isRuntimeStateReleased` guarantee.
     private var symbolTable: WordIndex.SymbolTable?
+    // One bounded lexical checkpoint, placed behind the viewport. It avoids
+    // rescanning a large file on every nearby scroll; never a per-line index.
+    private var pythonCheckpoint: (offset: Int, state: PythonTokenizer.State)?
 
     /// A single compiled identifier matcher, reused across every symbol pass.
     // swiftlint:disable:next force_try
@@ -189,6 +192,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     deinit {
         NotificationCenter.default.removeObserver(self)
         appearanceObservation?.invalidate()
+        pendingViewport?.cancel()
         pendingHighlight?.cancel()
     }
 
@@ -245,9 +249,12 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// compiled definition, but only while the module is enabled. Clears the
     /// definition otherwise.
     private func rebuildLanguage() {
+        pythonCheckpoint = nil
         // Language change (either `setLanguage` entry, and module re-enable which
         // also routes through here) invalidates the painted band.
-        paintedRange = nil
+        pendingHighlight?.cancel()
+        pendingHighlight = nil
+        removeAllForegroundColour()
         guard moduleEnabled else {
             language = nil
             symbolTable = nil
@@ -294,8 +301,16 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
 
     // MARK: - Notifications
 
+    private var pendingViewport: DispatchWorkItem?
+
     @objc private func viewportChanged() {
-        scheduleHighlight(debounced: false)
+        pendingViewport?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.pendingViewport = nil
+            self?.scheduleHighlight(debounced: false)
+        }
+        pendingViewport = item
+        DispatchQueue.main.async(execute: item)
     }
 
     @objc private func moduleSettingsChanged(_ note: Notification) {
@@ -313,6 +328,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
 
     /// Releases all runtime state and clears painted colour.
     private func tearDown() {
+        pythonCheckpoint = nil
         pendingHighlight?.cancel()
         pendingHighlight = nil
         language = nil
@@ -327,6 +343,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
                                              changeInLength delta: Int,
                                              textStorage: NSTextStorage) {
         guard editedMask.contains(.editedCharacters) else { return }
+        pythonCheckpoint = nil
         // Editing may have changed content anywhere in (or shifted) the painted
         // band, so it can no longer be trusted to short-circuit a scroll.
         paintedRange = nil
@@ -579,16 +596,35 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         // no delimiters short-circuit to `nil` without scanning anything. Typing
         // a delimiter invalidates `paintedRange` like any other edit, so the
         // state is re-resolved and the lines below repaint.
-        var openDelimiter = Self.openMultilineDelimiter(in: ns, at: start,
-                                                        delimiters: language.multilineStringDelimiters)
+        var openDelimiter = language.identifier == "python" ? nil : Self.openMultilineDelimiter(
+            in: ns, at: start, delimiters: language.multilineStringDelimiters)
 
+        var pythonState = PythonTokenizer.State()
+        if language.identifier == "python" {
+            let desiredAnchor = ns.lineRange(for: NSRange(location: max(0, start - 131_072), length: 0)).location
+            if pythonCheckpoint == nil || pythonCheckpoint!.offset > start {
+                pythonCheckpoint = (desiredAnchor, PythonTokenizer.state(in: ns, before: desiredAnchor, language: language))
+            } else if start - pythonCheckpoint!.offset > 262_144 {
+                let old = pythonCheckpoint!
+                pythonCheckpoint = (desiredAnchor, PythonTokenizer.state(in: ns, before: desiredAnchor,
+                    language: language, from: old.offset, initial: old.state))
+            }
+            let checkpoint = pythonCheckpoint!
+            pythonState = PythonTokenizer.state(in: ns, before: start, language: language,
+                                                from: checkpoint.offset, initial: checkpoint.state)
+        }
         var loc = start
         while loc < end {
             let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
             let lineString = ns.substring(with: lineRange)
-            let (tokens, nextOpen) = Self.tokens(inLine: lineString, language: language,
-                                                 openDelimiter: openDelimiter)
-            openDelimiter = nextOpen
+            let tokens: [(range: NSRange, kind: TokenKind)]
+            if language.identifier == "python" {
+                tokens = PythonTokenizer.scan(lineString, language: language, state: &pythonState)
+            } else {
+                let pass = Self.tokens(inLine: lineString, language: language, openDelimiter: openDelimiter)
+                tokens = pass.tokens
+                openDelimiter = pass.openDelimiter
+            }
             for token in tokens {
                 guard let color = theme.color(for: token.kind) else { continue }
                 let absolute = NSRange(location: lineRange.location + token.range.location,

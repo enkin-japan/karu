@@ -4,7 +4,7 @@ import Foundation
 /// structure mandated by the architecture (see ARCHITECTURE.md §3.3).
 ///
 /// It stores, for every logical line, the UTF-16 (NSString) offset at which
-/// that line begins. A line boundary is created immediately after each `\n`.
+/// that line begins. LF, CRLF, and CR each create one line boundary.
 /// A trailing `\n` therefore produces a final empty line, matching how editors
 /// present `"a\n"` as line 1 (`a`) plus an empty line 2.
 ///
@@ -79,28 +79,28 @@ public final class LineIndex {
             return
         }
 
-        let first = Self.lastIndex(in: starts, lessThanOrEqualTo: a)
+        let first = Self.lastIndex(in: starts, lessThanOrEqualTo: max(0, a - 1))
         let regionStart = starts[first]
 
         // First existing boundary strictly after the edited region; it and
         // everything past it survive unchanged (only shifted by `delta`).
-        let afterIdx = Self.lastIndex(in: starts, lessThanOrEqualTo: oldEnd) + 1
+        let afterIdx = Self.lastIndex(in: starts, lessThanOrEqualTo: min(length, oldEnd + 1)) + 1
         let hasTail = afterIdx < starts.count
         let regionEndNew = hasTail ? starts[afterIdx] + delta : newLen
 
         // Prefix: boundaries at/before the region start are untouched.
         var newStarts = Array(starts[0...first])
 
-        // Middle: rescan the affected span in the new text. When a tail exists,
-        // stop before its terminator (regionEndNew - 1) so we don't duplicate
-        // the boundary the tail already provides.
-        let scanEnd = hasTail ? regionEndNew - 1 : regionEndNew
+        // Include both sides of the edit: inserting/removing either half of
+        // CRLF can merge or split a boundary. The surviving tail is added below.
         var i = regionStart
-        while i < scanEnd {
-            if ns.character(at: i) == 0x0A {
-                newStarts.append(i + 1)
-            }
+        while i < regionEndNew {
+            let unit = ns.character(at: i)
             i += 1
+            if unit == 0x0D, i < newLen, ns.character(at: i) == 0x0A { i += 1 }
+            if (unit == 0x0D || unit == 0x0A), (!hasTail || i < regionEndNew) {
+                newStarts.append(i)
+            }
         }
 
         // Tail: shift surviving boundaries.
@@ -121,10 +121,10 @@ public final class LineIndex {
         let len = ns.length
         var i = 0
         while i < len {
-            if ns.character(at: i) == 0x0A {
-                s.append(i + 1)
-            }
+            let unit = ns.character(at: i)
             i += 1
+            if unit == 0x0D, i < len, ns.character(at: i) == 0x0A { i += 1 }
+            if unit == 0x0D || unit == 0x0A { s.append(i) }
         }
         starts = s
         length = len

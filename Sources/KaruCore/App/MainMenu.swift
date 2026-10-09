@@ -1,7 +1,8 @@
 import AppKit
 
+@MainActor
 enum MainMenu {
-    static func build() -> NSMenu {
+    static func build(applyShortcuts: Bool = true) -> NSMenu {
         let mainMenu = NSMenu()
 
         let appMenuItem = NSMenuItem()
@@ -256,6 +257,7 @@ enum MainMenu {
             item.representedObject = identifier
         }
 
+        if applyShortcuts { ShortcutSettings.shared.apply(to: mainMenu) }
         return mainMenu
     }
 }

@@ -1,0 +1,5 @@
+# 项目只配置委派容量；模型、推理强度和权限继承当前会话/用户设置。
+[agents]
+enabled = true
+# 不含主会话；共享代码与构建产物的串行约束见 AGENTS.md。
+max_concurrent_threads_per_session = 2

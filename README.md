@@ -39,6 +39,12 @@ rules say they must.
 - `karu` CLI: open files from the terminal
 - One-click in-app updates (Sparkle, from v0.7.0)
 
+- Ordered scratchpad lists renumber following sibling items when inserting a line, with one-step undo.
+- Python f-strings highlight interpolation expressions and nested format fields.
+- Settings → Keyboard Shortcuts: search, record, clear, restore defaults, and detect conflicts within Karu, including the global scratchpad binding.
+
+XML/plist formatting preserves text values, mixed content, and `xml:space="preserve"`. Crash recovery also runs when opening a file from Finder or the command line. If the scratchpad cannot be saved, it stays open and quitting is cancelled so you can retry or save the text elsewhere.
+
 ## The budget (enforced, not aspirational)
 
 | Metric | Ceiling |

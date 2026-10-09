@@ -20,8 +20,14 @@ public final class HotKeyCenter {
     /// Posted (object: nil) after the stored hot key changes, so the app delegate
     /// can re-register it and relabel the status-bar menu.
     public static let didChangeNotification = Notification.Name("KaruHotKeyDidChange")
+    static let recordingDidChange = Notification.Name("KaruShortcutRecordingDidChange")
 
     /// UserDefaults keys holding the override. Absent = the ⌥D default.
+    public static let enabledKey = "scratchpad.hotkey.enabled"
+    public static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: enabledKey) == nil || defaults.bool(forKey: enabledKey)
+    }
+
     public static let keyCodeDefaultsKey = "scratchpad.hotkey.keyCode"
     public static let modifiersDefaultsKey = "scratchpad.hotkey.modifiers"
 
@@ -42,6 +48,8 @@ public final class HotKeyCenter {
     private let defaults: UserDefaults
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
+    private var recordingObserver: NSObjectProtocol?
+    private var suspendedForRecording = false
 
     /// What a press runs. Retained for the app's lifetime — that closure and the
     /// registration are the whole resident footprint of this type.
@@ -52,6 +60,7 @@ public final class HotKeyCenter {
     }
 
     deinit {
+        if let recordingObserver { NotificationCenter.default.removeObserver(recordingObserver) }
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
         if let eventHandler { RemoveEventHandler(eventHandler) }
     }
@@ -63,6 +72,14 @@ public final class HotKeyCenter {
     /// registration is replaced.
     public func start(handler: @escaping () -> Void) {
         self.handler = handler
+        if recordingObserver == nil {
+            recordingObserver = NotificationCenter.default.addObserver(
+                forName: Self.recordingDidChange, object: nil, queue: .main) { [weak self] note in
+                    guard let self else { return }
+                    self.suspendedForRecording = note.object as? Bool ?? false
+                    self.register()
+                }
+        }
         installEventHandlerIfNeeded()
         register()
     }
@@ -80,6 +97,7 @@ public final class HotKeyCenter {
             UnregisterEventHotKey(hotKeyRef)
             self.hotKeyRef = nil
         }
+        guard Self.isEnabled(in: defaults), !suspendedForRecording else { lastStatus = noErr; return }
         let id = EventHotKeyID(signature: Self.signature, id: 1)
         var ref: EventHotKeyRef?
         lastStatus = RegisterEventHotKey(storedKeyCode, storedModifiers, id,
@@ -113,7 +131,8 @@ public final class HotKeyCenter {
 
     /// The current binding rendered for a menu title, e.g. "⌥D".
     public var displayString: String {
-        Self.displayString(keyCode: storedKeyCode, carbonModifiers: storedModifiers)
+        guard Self.isEnabled(in: defaults) else { return L10n.t(.shortcutNone) }
+        return Self.displayString(keyCode: storedKeyCode, carbonModifiers: storedModifiers)
     }
 
     public static func storedKeyCode(in defaults: UserDefaults = .standard) -> UInt32 {
@@ -130,12 +149,16 @@ public final class HotKeyCenter {
     /// can post once after writing both halves.
     public static func store(keyCode: UInt32, carbonModifiers: UInt32,
                              in defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: enabledKey)
+        defaults.removeObject(forKey: "scratchpad.hotkey.character")
         defaults.set(Int(keyCode), forKey: keyCodeDefaultsKey)
         defaults.set(Int(carbonModifiers), forKey: modifiersDefaultsKey)
     }
 
     /// Drops the override so the ⌥D default applies again.
     public static func resetToDefault(in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: enabledKey)
+        defaults.removeObject(forKey: "scratchpad.hotkey.character")
         defaults.removeObject(forKey: keyCodeDefaultsKey)
         defaults.removeObject(forKey: modifiersDefaultsKey)
     }

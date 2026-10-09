@@ -113,6 +113,10 @@ public struct LanguageDefinition {
     /// (they keep the default text colour); this is a pure function with no
     /// AppKit dependency.
     public func tokenize(line: String) -> [(range: NSRange, kind: TokenKind)] {
+        if identifier == "python" {
+            var state = PythonTokenizer.State()
+            return PythonTokenizer.scan(line, language: self, state: &state)
+        }
         let ns = line as NSString
         var tokens: [(range: NSRange, kind: TokenKind)] = []
         var location = 0

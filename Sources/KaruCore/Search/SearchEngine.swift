@@ -90,8 +90,14 @@ public enum SearchEngine {
                                        pattern: String,
                                        options: SearchOptions,
                                        template: String) -> Result<String, SearchError> {
-        makeRegex(pattern: pattern, options: options).flatMap { regex in
-            guard let match = regex.firstMatch(in: text, options: [], range: matchRange) else {
+        let length = (text as NSString).length
+        guard matchRange.location >= 0, matchRange.location <= length,
+              matchRange.length >= 0, matchRange.length <= length - matchRange.location else {
+            return .failure(SearchError(description: "The match is no longer in the document."))
+        }
+        return makeRegex(pattern: pattern, options: options).flatMap { regex in
+            guard let match = regex.firstMatch(in: text, options: [.withTransparentBounds, .withoutAnchoringBounds], range: matchRange),
+                  match.range == matchRange else {
                 return .failure(SearchError(description: "No match at the given range."))
             }
             let replacement = regex.replacementString(for: match,

@@ -57,6 +57,15 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         super.init()
         buildBar()
         barView.isHidden = true
+        NotificationCenter.default.addObserver(self, selector: #selector(editorTextChanged),
+                                               name: NSText.didChangeNotification, object: textView)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func editorTextChanged() {
+        // NSTextView's notification runs after storage processing has finished.
+        recomputeMatches(moveToFirst: false)
     }
 
     // MARK: - Bar construction
@@ -266,12 +275,14 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     // MARK: - Navigation (also reachable from the menu)
 
     public func findNext() {
+        recomputeMatches(moveToFirst: false)
         guard !matches.isEmpty else { NSSound.beep(); return }
         currentIndex = (currentIndex + 1) % matches.count
         focusCurrentMatch()
     }
 
     public func findPrevious() {
+        recomputeMatches(moveToFirst: false)
         guard !matches.isEmpty else { NSSound.beep(); return }
         currentIndex = (currentIndex - 1 + matches.count) % matches.count
         focusCurrentMatch()
@@ -367,6 +378,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     // MARK: - Replacement
 
     private func replaceCurrent() {
+        recomputeMatches(moveToFirst: false)
         guard let textView, matches.indices.contains(currentIndex) else { NSSound.beep(); return }
         let range = matches[currentIndex]
         let template = replaceField.stringValue
@@ -378,7 +390,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         case .success(let replacement):
             // Undo-aware insertion at the match range.
             if textView.shouldChangeText(in: range, replacementString: replacement) {
-                textView.insertText(replacement, replacementRange: range)
+                textView.textStorage?.replaceCharacters(in: range, with: replacement)
                 textView.didChangeText()
             }
             // The document shifted; recompute and land on the next match near
@@ -395,6 +407,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     }
 
     private func replaceAll() {
+        recomputeMatches(moveToFirst: false)
         guard let textView else { return }
         let template = replaceField.stringValue
         switch SearchEngine.replaceAll(in: textView.string,

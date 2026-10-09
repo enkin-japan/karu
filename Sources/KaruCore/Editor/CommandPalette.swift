@@ -141,6 +141,10 @@ public final class CommandPalette: NSObject {
     /// Renders an item's key equivalent as its macOS symbol string (e.g. "⌘⇧P"),
     /// or "" when the item has no shortcut.
     static func shortcutString(for item: NSMenuItem) -> String {
+        if item.keyEquivalent.isEmpty, item.action != nil,
+           let command = ShortcutSettings.shared.commands.first(where: { $0.id == ShortcutSettings.id(for: item) }) {
+            return ShortcutSettings.shared.binding(for: command).map(\.display).joined(separator: " ")
+        }
         guard !item.keyEquivalent.isEmpty else { return "" }
         var out = ""
         let mask = item.keyEquivalentModifierMask
@@ -153,7 +157,18 @@ public final class CommandPalette: NSObject {
     }
 
     private static func displayKey(_ key: String) -> String {
+        if key.unicodeScalars.count == 1, let value = key.unicodeScalars.first?.value,
+           value >= NSF1FunctionKey, value <= NSF35FunctionKey {
+            return "F" + String(value - UInt32(NSF1FunctionKey) + 1)
+        }
         switch key {
+        case "\u{1b}": return "Esc"
+        case "\u{7f}", "\u{8}": return "⌫"
+        case String(UnicodeScalar(NSDeleteFunctionKey)!): return "⌦"
+        case String(UnicodeScalar(NSHomeFunctionKey)!): return "↖"
+        case String(UnicodeScalar(NSEndFunctionKey)!): return "↘"
+        case String(UnicodeScalar(NSPageUpFunctionKey)!): return "⇞"
+        case String(UnicodeScalar(NSPageDownFunctionKey)!): return "⇟"
         case "\r": return "⏎"
         case "\t": return "⇥"
         case " ": return "␣"

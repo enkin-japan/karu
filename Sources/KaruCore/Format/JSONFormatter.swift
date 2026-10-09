@@ -37,7 +37,7 @@ public enum JSONFormatter {
         var resultLines: [String] = []
         var lineNumber = 0
 
-        let rawLines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let rawLines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" })
         for rawLine in rawLines {
             lineNumber += 1
 
@@ -112,9 +112,9 @@ public enum JSONFormatter {
         while i < n {
             let c = chars[i]
             switch c {
-            case " ", "\t", "\r":
+            case " ", "\t":
                 i += 1
-            case "\n":
+            case "\n", "\r\n", "\r":
                 line += 1
                 i += 1
             case "{":

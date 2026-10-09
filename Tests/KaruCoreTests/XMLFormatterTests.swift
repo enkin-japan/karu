@@ -58,12 +58,14 @@ struct XMLFormatterPrettyPrintTests {
         #expect(result == expected)
     }
 
-    @Test("text-only elements are collapsed onto a single line")
+    @Test("text-only elements preserve whitespace in their values")
     func textOnlyElementSingleLine() throws {
         let input = "<root>\n  <key>\n    CFBundleName\n  </key>\n</root>"
         let expected = """
         <root>
-          <key>CFBundleName</key>
+          <key>
+            CFBundleName
+          </key>
         </root>
         """
         let result = try XMLFormatter.prettyPrint(input)

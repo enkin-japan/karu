@@ -44,6 +44,8 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     private let uiLanguagePopup = NSPopUpButton()
 
     // Scratchpad hot-key recorder (T15.1).
+    private let shortcutsButton = NSButton()
+    private var shortcutsController: ShortcutPreferencesController?
     private let hotkeyButton = NSButton()
     private let hotkeyResetButton = NSButton()
 
@@ -101,6 +103,8 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         window.delegate = self
         buildUI()
         loadState()
+        NotificationCenter.default.addObserver(self, selector: #selector(updateHotkeyButtonTitle),
+                                               name: HotKeyCenter.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(languageDidChange),
@@ -127,7 +131,10 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     deinit {
         NotificationCenter.default.removeObserver(self)
         // A local monitor outlives its installer, so it must never be left behind.
-        if let hotkeyMonitor { NSEvent.removeMonitor(hotkeyMonitor) }
+        if let hotkeyMonitor {
+            NSEvent.removeMonitor(hotkeyMonitor)
+            NotificationCenter.default.post(name: HotKeyCenter.recordingDidChange, object: false)
+        }
     }
 
     // MARK: - UI construction
@@ -269,13 +276,17 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         scratchpadFontRow.spacing = 8
         scratchpadFontRow.alignment = .centerY
 
+        shortcutsButton.title = L10n.t(.shortcutTitle)
+        shortcutsButton.bezelStyle = .rounded
+        shortcutsButton.target = self
+        shortcutsButton.action = #selector(showShortcuts)
         let content = NSStackView(views: [
             languageRow,
             separator(),
             modulesHeader, moduleStack,
             separator(),
             editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, autoSaveButton, fontRow,
-            hotkeyRow, scratchpadFontRow,
+            hotkeyRow, scratchpadFontRow, shortcutsButton,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -284,6 +295,16 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         content.translatesAutoresizingMaskIntoConstraints = false
 
         window?.contentView = content
+    }
+
+    @objc private func showShortcuts() {
+        endHotkeyRecording()
+        if shortcutsController == nil {
+            shortcutsController = ShortcutPreferencesController()
+            shortcutsController?.onClose = { [weak self] in self?.shortcutsController = nil }
+        }
+        shortcutsController?.showWindow(nil)
+        shortcutsController?.window?.makeKeyAndOrderFront(nil)
     }
 
     private func styleSectionLabel(_ label: NSTextField, text: String) {
@@ -386,6 +407,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     /// `L10n.didChangeNotification` observer so the window updates in place.
     @objc private func languageDidChange() {
         window?.title = L10n.t(.prefTitle)
+        shortcutsButton.title = L10n.t(.shortcutTitle)
         styleSectionLabel(modulesHeader, text: L10n.t(.prefModules))
         styleSectionLabel(editorHeader, text: L10n.t(.prefEditor))
         uiLanguageRowLabel.stringValue = L10n.t(.prefLanguageLabel)
@@ -486,9 +508,10 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     }
 
     private func beginHotkeyRecording() {
+        NotificationCenter.default.post(name: HotKeyCenter.recordingDidChange, object: true)
         hotkeyButton.title = L10n.t(.prefHotkeyRecording)
         hotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
+            guard let self, event.window === self.window else { return event }
             return self.captureHotkey(event) ? nil : event
         }
     }
@@ -508,33 +531,46 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         guard flags.contains(.command) || flags.contains(.option) || flags.contains(.control) else {
             return true
         }
-        HotKeyCenter.store(keyCode: UInt32(event.keyCode),
-                           carbonModifiers: HotKeyCenter.carbonModifiers(from: flags))
-        NotificationCenter.default.post(name: HotKeyCenter.didChangeNotification, object: nil)
+        guard let stroke = ShortcutStroke(event: event),
+              let command = ShortcutSettings.shared.commands.first(where: { $0.id == ShortcutSettings.globalID }) else { return true }
+        let conflicts = ShortcutSettings.shared.set([stroke], for: command)
         endHotkeyRecording()
+        showShortcutConflicts(conflicts)
         return true
     }
 
     /// The single exit from the recording state: removes the monitor (always) and
     /// puts the current binding back on the button.
     private func endHotkeyRecording() {
-        if let hotkeyMonitor { NSEvent.removeMonitor(hotkeyMonitor) }
+        if let hotkeyMonitor {
+            NSEvent.removeMonitor(hotkeyMonitor)
+            NotificationCenter.default.post(name: HotKeyCenter.recordingDidChange, object: false)
+        }
         hotkeyMonitor = nil
         updateHotkeyButtonTitle()
     }
 
-    private func updateHotkeyButtonTitle() {
-        hotkeyButton.title = HotKeyCenter.displayString(
-            keyCode: HotKeyCenter.storedKeyCode(),
-            carbonModifiers: HotKeyCenter.storedModifiers())
+    @objc private func updateHotkeyButtonTitle() {
+        guard let command = ShortcutSettings.shared.commands.first(where: { $0.id == ShortcutSettings.globalID }) else { return }
+        let binding = ShortcutSettings.shared.binding(for: command)
+        hotkeyButton.title = binding.isEmpty ? L10n.t(.shortcutNone) : binding.map(\.display).joined(separator: " ")
+    }
+
+    private func showShortcutConflicts(_ conflicts: [ShortcutCommand]) {
+        guard !conflicts.isEmpty, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = L10n.t(.shortcutConflict, conflicts.map(\.title).joined(separator: ", "))
+        alert.beginSheetModal(for: window)
     }
 
     @objc private func hotkeyResetClicked(_ sender: NSButton) {
         endHotkeyRecording()
-        HotKeyCenter.resetToDefault()
-        NotificationCenter.default.post(name: HotKeyCenter.didChangeNotification, object: nil)
+        guard let command = ShortcutSettings.shared.commands.first(where: { $0.id == ShortcutSettings.globalID }) else { return }
+        showShortcutConflicts(ShortcutSettings.shared.reset(command))
         updateHotkeyButtonTitle()
     }
+
+    public func windowDidResignKey(_ notification: Notification) { endHotkeyRecording() }
 
     /// Closing the window while the recorder is armed must not leave its monitor
     /// eating keystrokes for the rest of the session.

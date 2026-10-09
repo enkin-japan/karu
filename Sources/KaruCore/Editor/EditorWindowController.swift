@@ -732,8 +732,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         guard let layoutManager = textView.layoutManager else { return }
 
         if let previous = bracketHighlight {
-            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: previous.open)
-            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: previous.close)
+            let length = (textView.string as NSString).length
+            for range in [previous.open, previous.close] where NSMaxRange(range) <= length {
+                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+            }
             bracketHighlight = nil
         }
 

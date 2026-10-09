@@ -250,8 +250,7 @@ public enum TodoEngine {
     ///
     /// Recognised prefixes: `- [ ] ` / `- [x] ` (always continued *unchecked*:
     /// a new item starts undone), `- `, `* `, and `N. ` (continued as `N+1. `,
-    /// without renumbering the lines below — that would rewrite text the user
-    /// did not touch).
+    /// with following siblings renumbered by `continueOrderedList`).
     public static func continuation(line: String, caretOffsetInLine caret: Int) -> Continuation? {
         let ns = line as NSString
         let indentLength = leadingWhitespaceLength(ns)
@@ -267,6 +266,50 @@ public enum TodoEngine {
             return .exit(NSRange(location: 0, length: ns.length))
         }
         return .insert(ns.substring(to: indentLength) + marker.next)
+    }
+
+    /// Inserts an ordered item and renumbers following siblings in the same
+    /// contiguous list. Nested items retain their own numbering; a blank line,
+    /// outdent or another same-level block ends the list.
+    public static func continueOrderedList(text: String, caret: Int) -> (text: String, selection: NSRange)? {
+        let ns = text as NSString
+        guard caret >= 0, caret < ns.length || caret == ns.length && ns.length > 0 else { return nil }
+        let line = ns.lineRange(for: NSRange(location: caret, length: 0))
+        var contentEnd = 0
+        ns.getLineStart(nil, end: nil, contentsEnd: &contentEnd, for: line)
+        let content = ns.substring(with: NSRange(location: line.location, length: contentEnd - line.location))
+        let value = content as NSString
+        let indent = leadingWhitespaceLength(value)
+        guard indent < value.length, (48...57).contains(value.character(at: indent)),
+              case .insert(let prefix) = continuation(line: content, caretOffsetInLine: caret - line.location),
+              let nextNumber = Int(prefix.trimmingCharacters(in: .whitespaces).split(separator: ".")[0]) else { return nil }
+        let indentation = value.substring(to: indent)
+        let terminator = NSMaxRange(line) > contentEnd
+            ? ns.substring(with: NSRange(location: contentEnd, length: NSMaxRange(line) - contentEnd)) : "\n"
+        let inserted = terminator + prefix
+        let result = NSMutableString(string: text)
+        result.insert(inserted, at: caret)
+        let newCaret = caret + (inserted as NSString).length
+        var cursor = NSMaxRange(line) + (inserted as NSString).length
+        var number = nextNumber + 1
+        while cursor < result.length {
+            let following = result.lineRange(for: NSRange(location: cursor, length: 0))
+            var end = 0
+            result.getLineStart(nil, end: nil, contentsEnd: &end, for: following)
+            let body = result.substring(with: NSRange(location: cursor, length: end - cursor)) as NSString
+            let width = leadingWhitespaceLength(body)
+            guard body.length > width, width >= indent else { break }
+            if width > indent { cursor = NSMaxRange(following); continue }
+            guard body.substring(to: width) == indentation,
+                  (48...57).contains(body.character(at: width)),
+                  let marker = listMarker(in: body, indentLength: width) else { break }
+            let digits = NSRange(location: cursor + width, length: marker.length - 2)
+            let replacement = String(number)
+            result.replaceCharacters(in: digits, with: replacement)
+            cursor = NSMaxRange(following) + replacement.utf16.count - digits.length
+            number += 1
+        }
+        return (result as String, NSRange(location: newCaret, length: 0))
     }
 
     /// The list marker at the start of `line`'s content, if any: its UTF-16

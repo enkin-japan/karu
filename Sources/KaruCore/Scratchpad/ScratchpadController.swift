@@ -86,6 +86,12 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// delegate's `zoomTargetsScratchpad`).
     var isKeyPanel: Bool { panel?.isKeyWindow == true }
 
+    @objc private func shortcutTooltipsChanged() {
+        pinButton?.toolTip = ShortcutSettings.shared.tooltip(id: "scratchpad.pin", title: L10n.t(.shortcutPin))
+        todoButton?.toolTip = ShortcutSettings.shared.tooltip(id: "scratchpad.todo", title: L10n.t(.shortcutTodo))
+            + " · " + ShortcutSettings.shared.tooltip(id: "scratchpad.check", title: L10n.t(.shortcutCheck))
+    }
+
     // MARK: - Show / hide
 
     @objc public func toggle() {
@@ -102,6 +108,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         }
         let panel = makePanel()
         self.panel = panel
+        NotificationCenter.default.addObserver(self, selector: #selector(shortcutTooltipsChanged),
+                                               name: ShortcutSettings.didChange, object: nil)
         // Restore the remembered frame; a first run has none, so the default
         // 480×360 set at construction time stays and is centred instead.
         if !panel.setFrameUsingName(Self.frameAutosaveName) {
@@ -117,9 +125,9 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// its layout manager and text storage) resident for a panel nobody is
     /// looking at, which is exactly the cost this design refuses to pay.
     public func hide() {
-        guard let panel else { return }
+        guard !isGraduating, !presentingPersistenceError, let panel else { return }
         cancelFlush()
-        flushNow()
+        guard flushNow() else { return }
         panel.saveFrame(usingName: Self.frameAutosaveName)
         // Detach and forget *before* ordering out: an unpinned panel losing key
         // status would otherwise call straight back into `hide()` from inside
@@ -127,6 +135,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         NotificationCenter.default.removeObserver(self, name: NSText.didChangeNotification, object: textView)
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: panel)
         NotificationCenter.default.removeObserver(self, name: ScratchpadStore.fontDidChangeNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: ShortcutSettings.didChange, object: nil)
         panel.delegate = nil
         self.panel = nil
         textView = nil
@@ -143,10 +152,11 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
 
     /// Writes the current text right now if the panel is up. Called while the
     /// app is being torn down, where a debounced write would never fire.
-    public func flushIfVisible() {
-        guard panel != nil else { return }
+    @discardableResult
+    public func flushIfVisible() -> Bool {
+        guard panel != nil else { return true }
         cancelFlush()
-        flushNow()
+        return flushNow()
     }
 
     /// A non-activating panel can become key *without* activating Karu, which is
@@ -363,7 +373,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.setButtonType(.momentaryChange)
-        button.toolTip = L10n.t(.scratchpadPinTooltip)
+        button.toolTip = ShortcutSettings.shared.tooltip(id: "scratchpad.pin", title: L10n.t(.shortcutPin))
         pinButton = button
         updatePinButton()
         return button
@@ -391,7 +401,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         let button = ScratchpadTitlebarButton(image: NSImage(), target: self, action: #selector(toggleTodo(_:)))
         button.isBordered = false
         button.setButtonType(.momentaryChange)
-        button.toolTip = L10n.t(.scratchpadTodoTooltip)
+        button.toolTip = ShortcutSettings.shared.tooltip(id: "scratchpad.todo", title: L10n.t(.shortcutTodo))
+            + " · " + ShortcutSettings.shared.tooltip(id: "scratchpad.check", title: L10n.t(.shortcutCheck))
         button.contentTintColor = .secondaryLabelColor
         if let symbol = NSImage(systemSymbolName: "checklist", accessibilityDescription: nil) {
             button.imagePosition = .imageOnly
@@ -503,9 +514,34 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// Writes the buffer straight from the main thread: the pad holds notes, not
     /// megabytes, and writes at most once per 1.5 s, so a background queue would
     /// buy nothing but a race with teardown.
-    private func flushNow() {
-        guard let textView else { return }
-        store.write(textView.string)
+    /// Injectable presentation keeps failure-path tests independent of sheets.
+    var persistenceErrorHandler: ((Error) -> Void)?
+    private var persistenceErrorShown = false
+    private var presentingPersistenceError = false
+
+    @discardableResult
+    private func flushNow(reportFailure: Bool = true) -> Bool {
+        guard let textView else { return true }
+        switch store.write(textView.string) {
+        case .success:
+            persistenceErrorShown = false
+            return true
+        case .failure(let error):
+            // Keep the panel/buffer alive; typing must never erase the last
+            // recoverable copy. Report once until a write succeeds.
+            if reportFailure, !persistenceErrorShown {
+                persistenceErrorShown = true
+                if let persistenceErrorHandler {
+                    persistenceErrorHandler(error)
+                } else if let panel {
+                    presentingPersistenceError = true
+                    NSAlert(error: error).beginSheetModal(for: panel) { [weak self] _ in
+                        self?.presentingPersistenceError = false
+                    }
+                }
+            }
+            return false
+        }
     }
 
     // MARK: - Graduation (⌘S)
@@ -526,7 +562,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         guard !isGraduating, let panel, let textView else { return }
         isGraduating = true
         cancelFlush()
-        flushNow()
+        flushNow(reportFailure: false)
 
         let savePanel = NSSavePanel()
         savePanel.nameFieldStringValue = Self.suggestedFileName(for: textView.string)
@@ -597,7 +633,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     }
 
     @objc private func panelDidResignKey(_ notification: Notification) {
-        guard !isGraduating, !ScratchpadStore.isPinned() else { return }
+        guard !isGraduating, !presentingPersistenceError, !ScratchpadStore.isPinned() else { return }
         hide()
     }
 }
@@ -660,47 +696,43 @@ private final class ScratchpadTextView: NSTextView {
     /// The pad's key equivalents. None of them arrive through the main menu —
     /// File ▸ Save and Edit ▸ Find target the editor window controller, and
     /// View ▸ Zoom writes the *shared* editor size — so they are claimed here.
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if modifiers == .command {
-            switch event.charactersIgnoringModifiers?.lowercased() {
-            case "s":
-                // Only a bare ⌘S — ⌘⇧S and friends stay available to the menu.
-                controller?.graduate()
-                return true
-            case "f":
-                controller?.showFindBar()
-                return true
+    private let shortcutRouter = ShortcutRouter()
+
+    override func resignFirstResponder() -> Bool {
+        shortcutRouter.reset()
+        return super.resignFirstResponder()
+    }
+
+    private func handleShortcut(_ event: NSEvent) -> Bool {
+        guard !hasMarkedText() else { return false }
+        return shortcutRouter.handle(event, scope: .scratchpad, sender: self) { [weak self] command in
+            guard let self else { return false }
+            switch command.id {
+            case "scratchpad.todo": self.toggleTodoList()
+            case "scratchpad.check": self.toggleTodoChecked()
+            case "scratchpad.pin": self.controller?.togglePinned(nil)
             default:
-                break
+                switch command.action {
+                case "saveDocument:": self.controller?.graduate()
+                case "showFindBar:": self.controller?.showFindBar()
+                case "zoomIn:": self.controller?.zoom(.zoomIn)
+                case "zoomOut:": self.controller?.zoom(.zoomOut)
+                case "actualSize:": self.controller?.zoom(.actualSize)
+                default: return false
+                }
             }
-        }
-        // ⇧⌘L / ⇧⌘U / ⇧⌘P — the title-bar buttons' actions plus the check-off
-        // switch. Claimed here for the same reason as the pair above: the pad has
-        // no menu of its own, and the main menu's ⇧⌘P (the editor's command
-        // palette) must not win while the pad is key.
-        if modifiers == [.command, .shift] {
-            switch event.charactersIgnoringModifiers?.lowercased() {
-            case "l":
-                toggleTodoList()
-                return true
-            case "u":
-                toggleTodoChecked()
-                return true
-            case "p":
-                controller?.togglePinned(nil)
-                return true
-            default:
-                break
-            }
-        }
-        if let zoom = ScratchpadController.zoomCommand(
-            modifiers: event.modifierFlags,
-            charactersIgnoringModifiers: event.charactersIgnoringModifiers) {
-            controller?.zoom(zoom)
             return true
         }
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self, handleShortcut(event) { return true }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if handleShortcut(event) { return }
+        super.keyDown(with: event)
     }
 
     // MARK: To-do lists (T15.6)
@@ -795,6 +827,10 @@ private final class ScratchpadTextView: NSTextView {
             return
         }
 
+        if let ordered = TodoEngine.continueOrderedList(text: string, caret: selection.location) {
+            apply(ordered)
+            return
+        }
         switch continuation {
         case .insert(let prefix):
             let inserted = "\n" + prefix

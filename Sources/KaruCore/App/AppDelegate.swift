@@ -42,6 +42,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the last window closes" policy below.
     private var statusItem: NSStatusItem?
 
+    public override init() {
+        super.init()
+        if let path = ProcessInfo.processInfo.environment["KARU_DIAGNOSTIC_DIRECTORY"],
+           path.hasPrefix("/") {
+            let directory = URL(fileURLWithPath: path, isDirectory: true)
+            let suite = "dev.enkin.Karu.Diagnostics." + directory.lastPathComponent
+            sessionStore = SessionStore(defaults: UserDefaults(suiteName: suite)!)
+            // Each benchmark/snapshot starts fresh even when the previous
+            // probe intentionally exited without application termination.
+            sessionStore.clear()
+            sessionStore.markCleanExit()
+            draftStore = DraftStore(directory: directory.appendingPathComponent("Drafts"))
+            scratchpadController = ScratchpadController(store: ScratchpadStore(
+                directory: directory.appendingPathComponent("Scratchpad")))
+        }
+    }
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
         if UpdateController.isSupported {
             updateController = UpdateController()
@@ -52,6 +69,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         NSApp.mainMenu = MainMenu.build()
+        NotificationCenter.default.addObserver(self, selector: #selector(shortcutsDidChange),
+                                               name: ShortcutSettings.didChange, object: nil)
 
         // Restore policy (T14.9, user decision): only an update relaunch or an
         // exit that never marked itself clean (crash / force quit) restores the
@@ -83,33 +102,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileArgs = CommandLine.arguments.dropFirst().filter {
             !$0.hasPrefix("-") && FileManager.default.fileExists(atPath: $0)
         }
-        if fileArgs.isEmpty {
-            // application(_:open:) may already have opened documents before
-            // didFinishLaunching runs (Finder double-click launch) — only
-            // create the untitled window when nothing else is open, otherwise
-            // every Finder open spawned a stray empty window.
-            if windowControllers.isEmpty {
-                // Plain launch (no file arguments, nothing opened from Finder):
-                // bring back the previous session's documents when the restore
-                // policy above says so (update relaunch / crash), then pour any
-                // unsaved content a crash left behind into them (T14.11 — it
-                // can also open windows of its own, for untitled drafts).
-                if shouldRestoreSession {
-                    restoreSession()
-                    restoreDrafts()
-                }
-                // Nothing came back (or nothing to come back to): start fresh.
-                if windowControllers.isEmpty {
-                    newDocument(nil)
-                }
-            }
-        } else {
-            for path in fileArgs {
-                let controller = makeController()
-                controller.load(url: URL(fileURLWithPath: path))
-                controller.showWindow(nil)
-            }
-        }
+        openStartupDocuments(fileURLs: fileArgs.map { URL(fileURLWithPath: $0) },
+                             restoring: shouldRestoreSession)
         NSApp.activate(ignoringOtherApps: true)
 
         // Scratchpad (T15.1). Installed after the windows exist so the status
@@ -765,6 +759,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     // Quit must honor the same unsaved-changes confirmation as closing a window;
     // NSApp.terminate does not consult windowShouldClose on its own.
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard scratchpadController.flushIfVisible() else { return .terminateCancel }
         for controller in windowControllers {
             if let window = controller.window, !controller.windowShouldClose(window) {
                 return .terminateCancel
@@ -775,14 +770,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // entries instead of clearing the list, and take one last caret/scroll
         // snapshot here — AppKit does not reliably send windowWillClose during
         // termination, so this is the only dependable moment (T14.8).
+        // Save dialogs above run a nested event loop; the pad may have changed.
+        guard scratchpadController.flushIfVisible() else { return .terminateCancel }
         isTerminating = true
         for controller in windowControllers {
             controller.recordSessionState()
         }
-        // The scratchpad's debounced write would never fire once we return
-        // `.terminateNow`, so force it out here — the pad is a notebook, and
-        // losing the last sentence typed before ⌘Q is not acceptable.
-        MainActor.assumeIsolated { scratchpadController.flushIfVisible() }
         // A quit that reaches this line is deliberate: mark it clean so the
         // next launch starts fresh. If Sparkle set the update-relaunch flag
         // before terminating us, that flag overrides cleanliness and the next
@@ -794,6 +787,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // reaches this line, which is exactly what keeps its drafts alive.
         draftStore.clear()
         return .terminateNow
+    }
+
+    /// All launch routes share the same recovery policy. Explicit opens may
+    /// already exist (Finder callbacks arrive before didFinishLaunching).
+    func openStartupDocuments(fileURLs: [URL], restoring: Bool) {
+        for url in fileURLs { openFromFinder(url) }
+        if restoring {
+            restoreSession()
+            restoreDrafts()
+        }
+        if windowControllers.isEmpty { newDocument(nil) }
     }
 
     // MARK: - Session restore (T14.8)
@@ -814,6 +818,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 sessionStore.remove(path: entry.path)
                 continue
             }
+            if windowController(for: url) != nil { continue }
             let controller = makeController()
             controller.load(url: url)
             controller.restoreSession(caret: entry.caret, scrollY: entry.scrollY)
@@ -901,7 +906,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             .contentModificationDate
     }
 
-    @objc private func languageDidChange() {
+    @MainActor @objc private func shortcutsDidChange() {
+        NSApp.mainMenu = MainMenu.build()
+        rebuildStatusItemMenu()
+    }
+
+    @MainActor @objc private func languageDidChange() {
+        ShortcutSettings.shared.reloadTitles()
         NSApp.mainMenu = MainMenu.build()
         rebuildStatusItemMenu()
     }

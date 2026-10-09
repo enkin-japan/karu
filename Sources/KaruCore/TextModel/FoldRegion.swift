@@ -295,7 +295,7 @@ public enum FoldScanner {
     /// the terminator ignored).
     private static func fenceCloses(_ line: String, fence: (char: Character, count: Int)) -> Bool {
         var chars = Array(line)
-        while let last = chars.last, last == " " || last == "\t" || last == "\n" || last == "\r" {
+        while let last = chars.last, last == " " || last == "\t" || last == "\n" || last == "\r" || last == "\r\n" {
             chars.removeLast()
         }
         while let first = chars.first, first == " " || first == "\t" { chars.removeFirst() }
@@ -331,7 +331,7 @@ public enum FoldScanner {
 
     /// True when the line has no non-whitespace character (terminator aside).
     private static func isBlank(_ line: String) -> Bool {
-        for ch in line where ch != " " && ch != "\t" && ch != "\n" && ch != "\r" {
+        for ch in line where ch != " " && ch != "\t" && ch != "\n" && ch != "\r" && ch != "\r\n" {
             return false
         }
         return true
@@ -343,7 +343,7 @@ public enum FoldScanner {
     private static func isPureCloser(_ line: String) -> Bool {
         var chars = Array(line)
         while let last = chars.last,
-              last == " " || last == "\t" || last == "\n" || last == "\r" || last == "," || last == ";" {
+              last == " " || last == "\t" || last == "\n" || last == "\r" || last == "\r\n" || last == "," || last == ";" {
             chars.removeLast()
         }
         while let first = chars.first, first == " " || first == "\t" {
@@ -357,7 +357,7 @@ public enum FoldScanner {
     /// ends with a colon.
     private static func trimmedEndsWithColon(_ line: String) -> Bool {
         var chars = Array(line)
-        while let last = chars.last, last == " " || last == "\t" || last == "\n" || last == "\r" {
+        while let last = chars.last, last == " " || last == "\t" || last == "\n" || last == "\r" || last == "\r\n" {
             chars.removeLast()
         }
         return chars.last == ":"

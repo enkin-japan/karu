@@ -1,9 +1,141 @@
 # Karu 工程步骤账本
 
 > 开工前读 `ARCHITECTURE.md`。每完成一项：更新状态、记录负责方与验收结果。
-> 负责方按 CLAUDE.md 路由规则：main = 主会话直接做；implementer / chore-worker = 委派。
+> 当前 Codex 路由见 [AGENTS.md](../AGENTS.md)，开发流程见 [DEVELOPMENT.md](DEVELOPMENT.md)，
+> 本机实测与发版见 [RELEASE.md](RELEASE.md)。历史 Claude 任务的负责方按当时 CLAUDE.md 记录保留。
 > 委派必须附：涉及文件路径 + 验收标准。子代理改完，主会话 review diff 后才能提交。
-> 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败（记录次数，触发升级链）
+> 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败。区分自动化通过、待用户实测与已发布；
+> 历史失败次数升级链不用于当前 Codex 流程，失败应报告证据，由主会话决定下一步。
+
+## v0.10.0 / build 24 发布（2026-10-10）
+
+- 用户在预装体验优化构建后明确要求“发布”。负责：main；状态：🔄 发布链进行中。
+- 内容：R1–R11 缺陷修复；草稿本有序列表插入重排；Python f-string 表达式高亮及滚动优化；
+  全部快捷键设置；已审核的 Codex 项目配置与开发/发布文档。
+- 本轮发布检查：macOS 27.0.1 (26A434)、Apple Swift 6.4；776 tests / 13 suites 通过；
+  release 视觉冒烟与折叠几何通过；phys_footprint 三场景 34 / 46 / 64 MB，全部通过且无跳过。
+  临时副本 Developer ID 签名预检通过。原有两处 `.claude/agents` 模型调整不纳入提交。
+- 原始偶发文本背景绘制异常仍未复现确切触发条件，发布说明保留该边界。
+- 版本 0.10.0、build 24；待公证、资产上传、线上更新源检查及正式版本机安装。
+
+
+## 维护流程：Codex 配置迁移（2026-10-09）
+
+- 用户审核后实施：新增根 AGENTS.md、项目 .codex/config.toml、implementer/reviewer/verifier
+  三个代理配置，以及 DEVELOPMENT.md、RELEASE.md；仅更新本台账入口与架构描述。
+- 继承用户当前模型/推理强度和权限，最多同时运行两个子代理；按收益委派，主会话负责架构、
+  最终审查与发布。共享构建和 GUI 验证串行；verifier 不改业务代码，reviewer 只读。
+- 将经用户确认的“先本机实测、明确发布指令后发版、退出旧实例后替换”规则从 Claude
+  私有记忆迁入仓库；保留原 Claude 配置及用户未提交改动。
+- ARCHITECTURE.md 校正为当前 TextKit 1 路径，并补记缩进点替代背景色块的既有决议。
+- 负责：main。验收：配置格式、引用、Codex 加载及 diff 检查；不改业务源码、不跑应用发布。
+  状态：✅ 七个新增文件及两份文档更新完成；四份 TOML 与文档引用通过检查，
+  本机 Codex 0.162.0-alpha.2 严格 config/read 确认项目配置生效，prompt-input 确认根规则
+  与主会话加两个子代理的容量。角色文件已静态校验，当前会话接口没有角色选择参数，
+  角色实际加载/执行尚未验证，按 AGENTS.md 回退至主会话；未运行 Swift 测试或发布流程。
+
+## 维护审查：代码缺陷排查（2026-10-09）
+
+范围：当前 v0.9.10 源码，覆盖文档/恢复、编辑/布局、搜索替换、格式化、语言功能、
+草稿本、设置与发布脚本。负责：main；仅审查，未修改业务源码或测试源码，未安装/发布。
+状态：✅ 审查与复现完成；审查时均未修复。后续修复与验收见下节。
+
+验证：本机 Swift 6.4（arm64 macOS 27 SDK）运行 `swift test`，755 tests / 11 suites 全通过。
+临时探针链接本轮实际构建的 KaruCore；下列 11 项均取得动态复现证据。
+涉及持久化的探针使用临时目录和隔离 defaults；未对用户真实草稿做破坏性验证。
+两项崩溃发生于独立探针进程，异常栈分别指向单词高亮清除与搜索替换的正则范围。
+本轮未重跑整套视觉冒烟、内存基准、真实 iCloud/全屏输入法或签名公证发布链。
+
+| ID | 优先级 | 缺陷及复现证据 | 定位 / 修复方向 | 状态 |
+|---|---|---|---|---|
+| R1 | P1 | 单词重复高亮后在文末退格，30000 字符测试文档缩短为 29999 时抛 NSRangeException；栈为 processEditing → WordOccurrenceHighlighter.clearHighlights → removeTemporaryAttribute → 段落边界越界 | Editor/WordOccurrenceHighlighter.swift：编辑回调仍同步清临时属性，应采用 LinkDetector 已有的延迟合并方式 | ✅ 已修复，自动验证通过 |
+| R2 | P1 | 搜索命中 `{100,6}` 后把正文缩为 1 字符，再点“替换”，NSRegularExpression 因旧范围越界崩溃 | Search/FindBarController.swift：正文变更未刷新 matches；同时在 SearchEngine 边界防御 | ✅ 已修复，自动验证通过 |
+| R3 | P1 | 模拟崩溃遗留草稿后先走 Finder 打开入口再启动：windows=1、recovered=false、draftsBeforeQuit=1；正常退出后 draftsAfterQuit=0，用户从未看到草稿就被清理 | App/AppDelegate.swift：恢复不应只发生于无文件参数且没有已开窗口的分支，恢复与显式打开需协调去重 | ✅ 已修复，自动验证通过 |
+| R4 | P1 | XML/plist 格式化将 `<string>  hello  </string>` 变为 `<string>hello</string>`；PropertyListSerialization 解析前后值确实不同 | Format/XMLFormatter.swift：flushText 无条件 trim，需保留文本值及混合内容语义 | ✅ 已修复，自动验证通过 |
+| R5 | P1 | 模拟草稿目录写入失败后隐藏草稿本，panelReleased=true、persisted=""，新文本唯一的内存副本被释放 | Scratchpad/ScratchpadController.swift + ScratchpadStore.swift：写入必须返回结果，失败不能继续销毁缓冲区 | ✅ 已修复，自动验证通过 |
+| R6 | P2 | 查找 `foo` 并单次替换为 `(`，实际得到 `(foo)` 而非 `(` | Search/FindBarController.swift：insertText 进入 EditorTextView 自动配对/包裹路径；程序性替换需保持字面语义与撤销 | ✅ 已修复，自动验证通过 |
+| R7 | P2 | 合法 CRLF JSON 与多行 CRLF JSONL 均报 unexpected character '\r\n'，对应 LF JSON 正常 | Format/JSONFormatter.swift：Swift Character 将 CRLF 视为整体，扫描及 JSONL 分行不能仅识别单独 CR/LF | ✅ 已修复，自动验证通过 |
+| R8 | P2 | `one\rtwo\rthree` 被 LineIndex 统计为 1 行，第二行偏移仍返回行号 1；应用却提供 CR 转换菜单 | TextModel/LineIndex.swift：重建及增量路径只识别 LF，需与 AppKit 支持的换行一致 | ✅ 已修复，自动验证通过 |
+| R9 | P2 | 对 `a\r\nb\r\n` 首行执行复制到下方，得到 `a\r\n\na\r\nb\r\n`，多出空行并混入 LF | Editor/LineOperations.swift：endsWithNewline 用 Character 比较遗漏 CRLF，误走“无末尾换行”分支 | ✅ 已修复，自动验证通过 |
+| R10 | P2 | Python 高亮切换为 Plain Text 后，首字符 foregroundColor 临时属性仍存在（before=true、after=true） | Highlight/HighlightEngine.swift：language 变 nil 后调度直接返回，需清除旧语言全部着色 | ✅ 已修复，自动验证通过 |
+| R11 | P2 | CRLF Markdown 中第 2–4 行是完整代码围栏，第 5 行是新标题；却扫描出 2–6 的代码块和 1–6 的前一标题，吞入后续章节 | TextModel/FoldRegion.swift：fenceCloses 未移除整体 CRLF，闭栏被当作未闭合；同类换行判断一并审查 | ✅ 已修复，自动验证通过 |
+
+修复建议顺序：先 R1/R2 崩溃，再 R3/R4/R5 数据保护，随后 R6–R11；
+将上述复现转成针对性回归测试，并对真实入口进行验证。755 全绿不覆盖这些路径。
+
+## 维护修复：R1–R11 与偶发绘制崩溃（2026-10-09）
+
+负责：main。状态：实现完成、自动化验证通过、已安装本机；待用户日常实测，未发布。
+
+- R1/R2：同词高亮的清除延后到编辑处理完成，并跟随编辑更新已绘制范围；搜索在正文变化
+  和执行操作前刷新，正则替换防御失效范围。程序性替换走保留撤销的字面写入，修复 R6。
+- R3/R5：Finder/CLI 打开同样执行恢复并去重；草稿本写入失败返回错误，保留窗口和文本，
+  提示错误、阻止隐藏/退出，允许重试或另存。退出前再次检查保存，覆盖保存对话框期间的编辑。
+- R4：XML/plist 保留文本值、混合内容及 xml:space="preserve" 的内部原文；结构性缩进仍整理。
+  无 schema 时无法证明空白节点可丢弃，因此已有空白文本也保守保留；仅无文本节点的
+  结构展开缩进。节点仅保存原文范围，避免每层复制整个子树。更新原本错误地要求裁剪文本值的测试。
+- R7–R11：统一处理 CRLF 字符、CR 行索引、跨 CRLF 编辑边界、复制行及 Markdown 围栏；
+  切换纯文本/未知语言时清空旧着色。行索引增量结果用 Foundation 行边界做独立交叉验证。
+- 用户补充的 editor_bug.log：0.9.10 (23)，macOS 27.0.1，2026-10-07 主线程在
+  NSTextStorage.ensureAttributesAreFixedInRange → NSLayoutManager 背景绘制中抛异常。
+  没有业务函数或具体越界范围，不能直接归因为 R1，也不能宣称已复现这个偶发崩溃。
+  同类防御同时收紧：ShrinkRepaintObserver 在编辑回调只标记可视区重绘、不查询字形；
+  滚动通知后的语法着色延后合并；旧括号高亮清理加边界检查。仍需用户日常使用观察。
+
+本轮证据：
+
+- Swift 6.4 / arm64 / macOS 27：765 tests / 12 suites 全通过，包含 10 项新增回归测试
+  （启动恢复另有 Finder/CLI 两个参数用例）。替换的字面值、撤销/重做均验证。
+- 原临时复现探针重新链接修复后的库：7 种模式均 exit 0。30000 字符文档末端已有
+  60 个高亮样本，连续退格 60 次不崩溃；失效范围替换不崩溃；草稿写失败时
+  panelReleased=false；Finder 启动 windows=2、recovered=true。
+- release 视觉冒烟：bright 96.9%、dark 0.47%，VISUAL OK；折叠关闭行与头行边界
+  均为 18.4，隐藏行高度为零，FOLD GEOMETRY OK。
+- 真实应用滚动探针 passes=20、mismatches=0；跨多行中文删除后 ghostPixels=0。
+- 内存三场景均执行：空文档 34 MB、中等文件 45 MB、大文件 65 MB，达到预算要求
+  （大文件已在上限）。额外直接采样确认 footprint 命令返回 phys_footprint，未用 RSS 回退。
+- 新增 KARU_DIAGNOSTIC_DIRECTORY 供现有真实 App 探针隔离会话/草稿/草稿本；每次
+  诊断启动清空诊断会话。崩溃恢复本身使用注入的临时 stores 测试。未操作用户真实草稿。
+- 本机预装完成：正常退出旧实例后替换并启动 `/Applications/Karu.app`；Developer ID 签名
+  与 deep/strict 验证通过，bundle 5.1 MB，版本仍为 0.9.10 (23)。安装二进制 SHA256 与
+  本轮最终构建一致；保留最初正式版回退副本。未提交、推送、升版本、打标签或发布。
+- 尚未验证：用户原始偶发闪退的完整触发步骤、长时间日常使用、真实 iCloud 与全屏输入法；
+  本轮不运行公证或发布上传链。
+
+
+## 体验优化：列表、Python 与快捷键（2026-10-10）
+
+负责：main。用户确认快捷键方案为“全部命令可搜索、修改、清除、恢复默认、冲突提示，
+保留草稿本全局热键”。状态：实现完成、自动化及资源验证通过、已安装本机；待用户实测，尚未发布。
+
+- 草稿本：有序列表中间回车，当前项后插入新编号，后续连续同级条目依次重排；嵌套条目
+  保持自己的编号，空行、退缩进或非列表同级段落终止重排。支持 CRLF、Unicode 和行内拆分。
+  换行与所有编号调整通过最小编辑一次提交，撤销/重做均为一步。空条目回车退出列表不变。
+- Python：新增流式词法状态，区分 f/rf/fr 字符串文字、变量、内置函数、数字、花括号和
+  格式说明符；处理转义花括号、嵌套字段/引号、三引号及可视区从字符串中部开始的情况。
+  不引入解释器、LSP 或全文 token 常驻表。约 10 MB 文档末尾状态扫描的首测为 0.42 秒，
+  随后改为原生字符集合搜索跳过普通代码，并只保留一个视口附近的词法检查点；编辑即失效。
+  同一 10.35 MB 夹具最终首跳 0.225 秒、附近重绘 0.0036 秒、附近向上滚动 0.0043 秒。
+- 设置 → 全部快捷键：78 条命令，菜单项（含语言/编码参数和缩放替代键）由 MainMenu
+  派生；补充下方插入行、草稿本待办/完成/置顶和全局唤起。只持久化覆盖值，支持搜索、
+  单键组合及两段组合键录制、清除、单项恢复、确认后全部恢复，菜单与运行时即时同步。
+- 冲突检查包括应用内相同组合、单键与组合键前缀冲突；编辑器/草稿本的独立命令允许复用。
+  两段组合键限编辑器/草稿本聚焦时，2 秒超时或失去焦点即取消。普通文字和系统光标移动
+  不改绑。系统或其他应用占用的全局键不属于应用内冲突表。
+- 录制仅接收设置窗口事件，失焦/关闭/Esc 取消并移除监听；录制期间暂时注销草稿本全局
+  热键，结束后恢复，避免全局热键抢走录制输入。快捷键详情窗口关闭后释放。
+
+验证：776 tests / 13 suites 全通过；包含 11 项新增测试。更新旧 f-string 整段 string 的
+断言为表达式分色；修正已有命令面板测试依赖别的测试先初始化 NSApplication 的顺序问题。
+隔离 defaults 的真实设置窗口探针已录入 ⌃⌥⌘9 并验证保存；窗口截图检查通过。
+最终 release 视觉冒烟 VISUAL OK / FOLD GEOMETRY OK；Python 实际窗口截图确认插值
+变量、内置函数、嵌套格式字段、转义花括号与多行插值着色区分正确；主设置入口完整可见。
+最终内存：空文档 33 MB、约 1 MB 文件 47 MB、约 10 MB 文件 64 MB，均为 phys_footprint
+口径且没有跳过场景。Developer ID 打包签名及 strict 检查通过，bundle 5.3 MB。
+本机安装完成：正常退出旧实例后替换并启动 `/Applications/Karu.app`，deep/strict 签名
+验证通过，安装二进制与本轮构建 SHA256 一致。保留升级前测试构建供回退。版本仍为
+0.9.10 (23)，未提交、推送、升版本或发布。
+
 
 ## M1 骨架
 

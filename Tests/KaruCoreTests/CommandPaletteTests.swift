@@ -114,6 +114,7 @@ import Testing
 
 @MainActor
 @Test func paletteReleasesStateWhenClosed() {
+    _ = NSApplication.shared
     let textView = NSTextView()
     let palette = CommandPalette(textView: textView)
 
