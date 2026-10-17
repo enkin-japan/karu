@@ -60,6 +60,14 @@ final class ShortcutSettings {
         overrides = overrides.filter { $0.value.count <= 2 && $0.value.allSatisfy(\.valid) }
     }
 
+    func reloadOverridesFromDefaults() {
+        overrides = defaults.data(forKey: Self.storageKey).flatMap {
+            try? JSONDecoder().decode([String: [ShortcutStroke]].self, from: $0)
+        } ?? [:]
+        revision += 1
+        NotificationCenter.default.post(name: Self.didChange, object: nil)
+    }
+
     static func id(for item: NSMenuItem) -> String {
         let action = item.action.map(NSStringFromSelector) ?? ""
         return "menu." + action + (item.representedObject.map { "|\($0)" } ?? "")

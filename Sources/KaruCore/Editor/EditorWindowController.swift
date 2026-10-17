@@ -356,6 +356,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         updateWindowState()
         refreshStatusBar()
         toolbarController?.reloadStrings()
+        // Configuration imports also broadcast this notification; keep the
+        // displayed indentation in sync with the newly restored preference.
+        toolbarController?.refreshIndent()
         findBar.reloadStrings()
     }
 

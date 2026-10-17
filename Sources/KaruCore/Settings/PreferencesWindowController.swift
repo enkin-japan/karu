@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// Single preferences window with two groups:
 ///
@@ -44,6 +45,11 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     private let uiLanguagePopup = NSPopUpButton()
 
     // Scratchpad hot-key recorder (T15.1).
+    private let fileDefaultsButton = NSButton()
+    private let exportButton = NSButton()
+    private let importButton = NSButton()
+    private let settingsResult = NSTextField(labelWithString: "")
+    private var fileDefaultsController: DefaultApplicationPreferencesController?
     private let shortcutsButton = NSButton()
     private var shortcutsController: ShortcutPreferencesController?
     private let hotkeyButton = NSButton()
@@ -103,6 +109,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         window.delegate = self
         buildUI()
         loadState()
+        NotificationCenter.default.addObserver(self, selector: #selector(settingsImported), name: SettingsArchive.didImport, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateHotkeyButtonTitle),
                                                name: HotKeyCenter.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(
@@ -280,13 +287,23 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         shortcutsButton.bezelStyle = .rounded
         shortcutsButton.target = self
         shortcutsButton.action = #selector(showShortcuts)
+        for (button, title, action) in [
+            (fileDefaultsButton, L10n.t(.fileDefaultsTitle), #selector(showFileDefaults)),
+            (exportButton, L10n.t(.settingsExport), #selector(exportSettings)),
+            (importButton, L10n.t(.settingsImport), #selector(importSettings))
+        ] {
+            button.title = title; button.bezelStyle = .rounded; button.target = self; button.action = action
+        }
+        let backupRow = NSStackView(views: [exportButton, importButton]); backupRow.spacing = 8
+        settingsResult.textColor = .secondaryLabelColor
+        settingsResult.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         let content = NSStackView(views: [
             languageRow,
             separator(),
             modulesHeader, moduleStack,
             separator(),
             editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, autoSaveButton, fontRow,
-            hotkeyRow, scratchpadFontRow, shortcutsButton,
+            hotkeyRow, scratchpadFontRow, shortcutsButton, fileDefaultsButton, backupRow, settingsResult,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -305,6 +322,78 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         }
         shortcutsController?.showWindow(nil)
         shortcutsController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func showFileDefaults() {
+        endHotkeyRecording()
+        if fileDefaultsController == nil {
+            fileDefaultsController = DefaultApplicationPreferencesController()
+            fileDefaultsController?.onClose = { [weak self] in self?.fileDefaultsController = nil }
+        }
+        fileDefaultsController?.showWindow(nil)
+        fileDefaultsController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func exportSettings() {
+        endHotkeyRecording()
+        guard let window else { return }
+        do {
+            let data = try SettingsArchive.export()
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "Karu-settings.json"
+            panel.beginSheetModal(for: window) { [weak self] response in
+                guard response == .OK, let url = panel.url else { return }
+                do {
+                    try data.write(to: url, options: .atomic)
+                    self?.settingsResult.stringValue = L10n.t(.settingsExported)
+                }
+                catch { self?.presentSettingsError(error) }
+            }
+        } catch { presentSettingsError(error) }
+    }
+
+    @objc private func importSettings() {
+        endHotkeyRecording()
+        guard let window else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            do {
+                let document = try SettingsArchive.read(from: url)
+                let alert = NSAlert()
+                alert.messageText = L10n.t(.settingsImport)
+                alert.informativeText = L10n.t(.settingsImportConfirm)
+                alert.addButton(withTitle: L10n.t(.settingsImportAction))
+                alert.addButton(withTitle: L10n.t(.shortcutCancel))
+                alert.beginSheetModal(for: window) { [weak self] result in
+                    guard result == .alertFirstButtonReturn else { return }
+                    do { try SettingsArchive.apply(document) }
+                    catch { self?.presentSettingsError(error) }
+                }
+            } catch { self.presentSettingsError(error) }
+        }
+    }
+
+    private func presentSettingsError(_ error: Error) {
+        settingsResult.stringValue = ""
+        guard let window else { return }
+        NSAlert(error: error).beginSheetModal(for: window)
+    }
+
+    @objc private func settingsImported() {
+        settingsResult.stringValue = L10n.t(.settingsImported)
+        let index = languagePopup.indexOfSelectedItem
+        loadState()
+        languagePopup.selectItem(at: index)
+        reloadIndentWidth()
+        updateHotkeyButtonTitle()
+        Self.forEachEditorTextView {
+            $0.indentRainbowEnabled = IndentRainbow.defaultEnabled
+            $0.autoClosePairsEnabled = AutoClosePairs.defaultEnabled
+            $0.needsDisplay = true
+        }
     }
 
     private func styleSectionLabel(_ label: NSTextField, text: String) {
@@ -406,8 +495,12 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     /// Re-pulls every localized string after a language switch. Called from the
     /// `L10n.didChangeNotification` observer so the window updates in place.
     @objc private func languageDidChange() {
+        settingsResult.stringValue = ""
         window?.title = L10n.t(.prefTitle)
         shortcutsButton.title = L10n.t(.shortcutTitle)
+        fileDefaultsButton.title = L10n.t(.fileDefaultsTitle)
+        exportButton.title = L10n.t(.settingsExport)
+        importButton.title = L10n.t(.settingsImport)
         styleSectionLabel(modulesHeader, text: L10n.t(.prefModules))
         styleSectionLabel(editorHeader, text: L10n.t(.prefEditor))
         uiLanguageRowLabel.stringValue = L10n.t(.prefLanguageLabel)

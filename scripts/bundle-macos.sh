@@ -71,7 +71,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 				<string>sql</string><string>xml</string><string>plist</string>
 				<string>svg</string><string>log</string><string>cfg</string>
 				<string>ini</string><string>yaml</string><string>yml</string>
-				<string>toml</string>
+				<string>toml</string><string>go</string><string>rs</string><string>swift</string>
 			</array>
 		</dict>
 	</array>
@@ -80,9 +80,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.10.0</string>
+	<string>0.11.0</string>
 	<key>CFBundleVersion</key>
-	<string>24</string>
+	<string>25</string>
 	<key>SUFeedURL</key>
 	<string>https://github.com/enkin-japan/karu/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>

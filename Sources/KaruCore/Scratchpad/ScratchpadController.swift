@@ -108,6 +108,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         }
         let panel = makePanel()
         self.panel = panel
+        NotificationCenter.default.addObserver(self, selector: #selector(updatePinButton), name: SettingsArchive.didImport, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(shortcutTooltipsChanged),
                                                name: ShortcutSettings.didChange, object: nil)
         // Restore the remembered frame; a first run has none, so the default
@@ -136,6 +137,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: panel)
         NotificationCenter.default.removeObserver(self, name: ScratchpadStore.fontDidChangeNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: ShortcutSettings.didChange, object: nil)
+        NotificationCenter.default.removeObserver(self, name: SettingsArchive.didImport, object: nil)
         panel.delegate = nil
         self.panel = nil
         textView = nil
@@ -379,7 +381,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         return button
     }
 
-    private func updatePinButton() {
+    @objc private func updatePinButton() {
         let pinned = ScratchpadStore.isPinned()
         pinButton?.image = NSImage(systemSymbolName: pinned ? "pin.fill" : "pin",
                                    accessibilityDescription: nil)

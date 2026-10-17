@@ -43,6 +43,8 @@ rules say they must.
 - Python f-strings highlight interpolation expressions and nested format fields.
 - Settings → Keyboard Shortcuts: search, record, clear, restore defaults, and detect conflicts within Karu, including the global scratchpad binding.
 
+Settings also provides default file application management and JSON preference export/import. macOS groups extensions by content type and may request confirmation; ambiguous non-text types are omitted. Backups contain Karu preferences and shortcuts, excluding documents, notes, sessions, and system file associations. Import replaces preferences and restores omitted options to their defaults.
+
 XML/plist formatting preserves text values, mixed content, and `xml:space="preserve"`. Crash recovery also runs when opening a file from Finder or the command line. If the scratchpad cannot be saved, it stays open and quitting is cancelled so you can retry or save the text elsewhere.
 
 ## The budget (enforced, not aspirational)

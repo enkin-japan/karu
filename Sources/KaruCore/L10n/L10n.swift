@@ -22,6 +22,9 @@ public enum AppLanguage: String, CaseIterable, Sendable {
 /// Every user-facing UI string, keyed. `CaseIterable` powers the completeness
 /// test that guards against a missing translation in any of the three tables.
 public enum L10nKey: String, CaseIterable, Sendable {
+    case settingsImported, settingsExported
+    case settingsExport, settingsImport, settingsImportAction, settingsImportConfirm, settingsInvalid, settingsVersion, settingsInvalidValue, fileDefaultsTitle, fileDefaultsSearch, fileDefaultsFormat, fileDefaultsCurrent, fileDefaultsApply, fileDefaultsRefresh, fileDefaultsInstalledOnly, fileDefaultsNotChanged, fileDefaultsUnknown, fileDefaultsHelp, fileDefaultsWorking, fileDefaultsResult
+
     case shortcutTitle, shortcutSearch, shortcutCommand, shortcutBinding, shortcutRecord, shortcutClear, shortcutResetAll, shortcutSequence, shortcutHelp, shortcutNone, shortcutRecordingHelp, shortcutSecondKey, shortcutSaved, shortcutConflict, shortcutResetConfirm, shortcutCancel, shortcutInsertBelow, shortcutTodo, shortcutCheck, shortcutPin
 
     // App menu (carry the app name per macOS convention).
