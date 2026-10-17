@@ -7,10 +7,10 @@
 > 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败。区分自动化通过、待用户实测与已发布；
 > 历史失败次数升级链不用于当前 Codex 流程，失败应报告证据，由主会话决定下一步。
 
-## v0.11.0 / build 25 发布准备（2026-10-17）
+## v0.11.0 / build 25 发布（2026-10-17）
 
 - 用户实测后确认“没什么问题”，授权推送新版本，并要求核对迁移后环境的遗漏。
-  负责：main。状态：发布准备完成，公证凭据与原 Sparkle 更新签名密钥尚待恢复；未发布。
+  负责：main。状态：✅ 已发布、线上更新验证通过、正式版已安装本机；新机公证凭据迁移仍待完成。
 - 版本改为 0.11.0、build 25。发布内容为默认打开方式管理及设置 JSON 导出/导入，
   保留 Bundle ID、签名团队和已发布更新公钥；原有两处 Claude 配置改动不纳入提交。
 - 本轮重新验证：784 tests / 14 suites 全通过；release 视觉冒烟、折叠几何通过。
@@ -25,8 +25,32 @@
 - 仍缺两项独立凭据：notarytool 的 tinyeditor-notary profile 返回 No Keychain password item found；
   Sparkle sign_update 的 ed25519 账户返回 Signing key not found。测试仅签名临时文件，
   未导出私钥或生成新密钥。须恢复原 Sparkle 密钥并用既有公钥验签，不能更换更新身份。
+- 后续用户完成 Sparkle 密钥迁移；已验证恢复后的公钥与已发布版本一致，临时文件签名与
+  公钥验签通过。当前只剩公证 profile；按用户要求优先识别并恢复旧条目，不新建/覆盖凭据。
+- 用户复制旧钥匙串后无法用旧登录密码解锁。Apple TN3137 说明 macOS 26.4 起文件钥匙串
+  可能还依赖旧机受保护熵文件，故密码正确也可能无法解锁复制件；尚未确认该文件的具体原因。
+  不关闭 SIP；准备改用旧机原钥匙串提交公证，新机装订与发布，尚待旧机 Accepted 结果。
+  已保留签名 app，并生成 `build/Karu-v0.11.0-notary.zip`，SHA256：
+  `454198a1a1bbac7d178851136977f504c5b17e0c46afa2433d6d88be2e9fa182`。
+  旧机公证与新机装订之间不得重新构建或重签 app。
 - 已准备三语发布说明。凭据恢复后继续公证、装订、更新包验签、标签与 Release 上传、
   线上 latest 更新验证及正式版本机安装；当前未创建发布标签或上传资产。
+- 发布收尾：用户在旧机完成同一签名 ZIP 的公证，返回请求
+  `0952040a-1b4f-4bea-ae48-2048078c311e`，授权本次先使用该结果。
+  新机未重新构建或重签 app；核对原 ZIP 与二进制哈希后成功装订并验证票据，
+  Gatekeeper 返回 `Notarized Developer ID`。因新机 profile 尚未恢复，未在新机读取公证日志。
+- 源码提交 `a2aa96bafe14b6a1e5ac9eaca1b2ca4e5e0c2574` 与标签 `v0.11.0` 已原子推送；
+  三语发布说明和 Karu.dmg、Karu.zip、appcast.xml 已上传，草稿资产 SHA256/长度核对后公开为 latest。
+  发布页：https://github.com/enkin-japan/karu/releases/tag/v0.11.0 。
+- 本次续发检查：更新 ZIP 解包后 deep/strict 签名、装订票据及版本 0.11.0 (25) 通过；
+  DMG 完整性与签名通过；三份公开 latest 下载的 SHA256/长度与本地一致；线上 appcast
+  版本、build、URL、长度正确，线上 ZIP 用既有 Sparkle 公钥独立验签通过。
+  本次未重跑先前的 784 项测试、视觉或内存检查，业务源码与验收提交一致。
+- 正常退出旧实例后安装并启动 `/Applications/Karu.app`，进程路径、版本、二进制哈希及
+  安装后的 Gatekeeper 验证通过，保留 `/Applications/.Karu-before-v011-20261017-182231.app` 回退副本。
+  正式二进制 SHA256：`07a5793591bdc92b338d30d3bcfac12a1c35a41834c9b850c136d78efcecee60`。
+  发布 ZIP SHA256：`6a9973352f08bd7283d0a938d1a89e864a3f7c04ec24ce5526d9d3dff747bcd4`。
+  待办：将原公证凭据保存到新机 `tinyeditor-notary` profile 并验证，以解除后续发布对旧机的依赖。
 
 
 ## 设置增强：默认打开方式与配置备份（2026-10-17）
