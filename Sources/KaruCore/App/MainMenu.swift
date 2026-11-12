@@ -2,7 +2,10 @@ import AppKit
 
 @MainActor
 enum MainMenu {
-    static func build(applyShortcuts: Bool = true) -> NSMenu {
+    /// `includeHiddenLanguages` lists every supported language regardless of
+    /// `LanguageMenuSettings`; the shortcut catalog uses it so bindings for a
+    /// hidden language survive. The live menu leaves it `false` (T16.2).
+    static func build(applyShortcuts: Bool = true, includeHiddenLanguages: Bool = false) -> NSMenu {
         let mainMenu = NSMenu()
 
         let appMenuItem = NSMenuItem()
@@ -237,27 +240,78 @@ enum MainMenu {
                          keyEquivalent: "")
 
         // Language menu: Auto (content/extension detection) plus a manual
-        // override for each supported language. Targets the first responder
+        // override for each visible language. Targets the first responder
         // (EditorWindowController); check state is driven by validateMenuItem.
+        // The item list is shared with the toolbar popup via
+        // `LanguageMenuSettings` (T16.2) and refreshed lazily by
+        // `LanguageMenuController` whenever the menu is about to be used.
         let languageMenuItem = NSMenuItem()
         mainMenu.addItem(languageMenuItem)
         let languageMenu = NSMenu(title: L10n.t(.menuLanguage))
         languageMenuItem.submenu = languageMenu
-        let autoItem = languageMenu.addItem(withTitle: L10n.t(.languageAuto),
-                                            action: #selector(EditorWindowController.selectAutoLanguage(_:)),
-                                            keyEquivalent: "")
-        autoItem.state = .on
-        languageMenu.addItem(.separator())
-        // Shared with the toolbar's language popup (SupportedLanguage) so the two
-        // lists never drift. The empty identifier is Plain Text (no highlight).
-        for (title, identifier) in SupportedLanguage.all {
-            let item = languageMenu.addItem(withTitle: title,
-                                            action: #selector(EditorWindowController.selectLanguage(_:)),
-                                            keyEquivalent: "")
-            item.representedObject = identifier
+        if includeHiddenLanguages {
+            LanguageMenuController.populate(languageMenu, layout: .unfiltered)
+        } else {
+            LanguageMenuController.populate(languageMenu, layout: LanguageMenuController.currentLayout())
+            languageMenu.delegate = LanguageMenuController.shared
         }
+
+        // Run menu (T16.3b): run the current buffer. Targets the first
+        // responder (EditorWindowController), which greys the items out while
+        // the `run` module is off (Stop also when nothing runs) and retitles
+        // Show / Hide Output. The shortcut catalog picks the three up from here
+        // with stable ids (`menu.runCode:` …), so they are rebindable.
+        let runMenuItem = NSMenuItem()
+        mainMenu.addItem(runMenuItem)
+        let runMenu = NSMenu(title: L10n.t(.menuRun))
+        runMenuItem.submenu = runMenu
+        let runItem = runMenu.addItem(withTitle: L10n.t(.menuRunCode),
+                                      action: #selector(EditorWindowController.runCode(_:)),
+                                      keyEquivalent: "r")
+        runItem.keyEquivalentModifierMask = [.command]
+        let stopItem = runMenu.addItem(withTitle: L10n.t(.menuRunStop),
+                                       action: #selector(EditorWindowController.stopRun(_:)),
+                                       keyEquivalent: ".")
+        stopItem.keyEquivalentModifierMask = [.command]
+        runMenu.addItem(.separator())
+        let outputItem = runMenu.addItem(withTitle: L10n.t(.menuRunShowOutput),
+                                         action: #selector(EditorWindowController.toggleRunOutput(_:)),
+                                         keyEquivalent: "y")
+        outputItem.keyEquivalentModifierMask = [.command, .shift]
 
         if applyShortcuts { ShortcutSettings.shared.apply(to: mainMenu) }
         return mainMenu
+    }
+}
+
+/// Keeps the main "Language" menu in step with `LanguageMenuSettings` and with
+/// the key editor window's language (T16.2). One shared, stateless delegate:
+/// `menuNeedsUpdate` recomputes the wanted item list and rebuilds only when it
+/// differs, so the per-keystroke key-equivalent scan stays cheap.
+@MainActor
+final class LanguageMenuController: NSObject, NSMenuDelegate {
+    static let shared = LanguageMenuController()
+
+    /// Visible languages plus, when the key (or main) editor window uses a
+    /// hidden language by manual choice, that language so its checkmark shows.
+    static func currentLayout(settings: LanguageMenuSettings = LanguageMenuSettings()) -> LanguageMenuLayout {
+        let editor = [NSApp?.keyWindow, NSApp?.mainWindow].lazy
+            .compactMap { $0?.windowController as? EditorWindowController }.first
+        let current = editor.flatMap { $0.isLanguageAuto ? nil : $0.currentLanguageIdentifierValue }
+        return settings.menuLayout(current: current)
+    }
+
+    static func populate(_ menu: NSMenu, layout: LanguageMenuLayout) {
+        layout.populate(menu, autoTitle: L10n.t(.languageAuto),
+                        autoAction: #selector(EditorWindowController.selectAutoLanguage(_:)),
+                        languageAction: #selector(EditorWindowController.selectLanguage(_:)))
+        menu.items.first?.state = .on
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let layout = Self.currentLayout()
+        guard LanguageMenuLayout.signature(of: menu) != layout.signature else { return }
+        Self.populate(menu, layout: layout)
+        ShortcutSettings.shared.apply(to: menu)
     }
 }

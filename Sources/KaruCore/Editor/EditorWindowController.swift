@@ -67,6 +67,19 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// cost is one bounded range array), cancelled on teardown.
     private var wordHighlighter: WordOccurrenceHighlighter!
 
+    /// Run current buffer (T16.3b, Run/RunSessionController.swift). The session
+    /// (runner + output panel) is created on first Run / Show Output and
+    /// released on panel close, window close or `run` module off. The other
+    /// two are injection points for tests.
+    var runSession: RunSessionController?
+    var runPrepare: RunSessionController.Prepare = RunSessionController.defaultPrepare
+    var runModuleSettings = ModuleSettings()
+    /// Output panel height chosen in this window (not persisted).
+    var runPanelHeight: CGFloat?
+    /// Where the output panel is inserted (below the editor scroll view).
+    private weak var contentStack: NSStackView?
+    private weak var editorScrollView: NSScrollView?
+
     /// True once the user has manually picked a language from the Language menu.
     /// Suppresses all automatic detection until they choose Auto again.
     private var userOverrodeLanguage = false
@@ -280,6 +293,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
+        contentStack = stack
+        editorScrollView = scrollView
 
         // Pin the stack to the window's contentLayoutGuide, NOT the content
         // view's edges: on macOS 26 (Liquid Glass) the content view extends
@@ -343,6 +358,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             selector: #selector(handleResignKey(_:)),
             name: NSWindow.didResignKeyNotification,
             object: window
+        )
+        // `run` module off: stop and release this window's run session (T16.3b).
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(runModuleDidChange),
+            name: ModuleSettings.didChangeNotification,
+            object: nil
         )
 
         updateWindowState()
@@ -1306,6 +1328,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     // MARK: - Menu validation
 
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if let verdict = validateRunMenuItem(menuItem) { return verdict }
         if menuItem.action == #selector(reopenWithEncoding(_:)) {
             // Reopening reads from disk, so an untitled (never-saved) document
             // has nothing to reopen — grey the whole submenu out.
@@ -1477,6 +1500,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // focus-loss auto-save would silently write out changes the user just
         // answered "Don't Save" about.
         isClosing = true
+        // A run never outlives its window (T16.3b).
+        tearDownRunSession()
         // Session bookkeeping (T14.8). Closing a window *by hand* is the user
         // saying "I'm done with this file" — it drops out of the restore list.
         // A close that is only a side effect of quitting keeps its entry, with
@@ -1498,5 +1523,38 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             removeDraft()
         }
         onClose?()
+    }
+}
+
+// MARK: - Run session host (T16.3b)
+
+extension EditorWindowController: RunSessionHost {
+    var runSourceText: String { textView.string }
+    var runDocumentURL: URL? { documentController.fileURL }
+
+    var runPanelHost: (stack: NSStackView, editor: NSView)? {
+        guard let contentStack, let editorScrollView else { return nil }
+        return (contentStack, editorScrollView)
+    }
+
+    /// A language found by "run" sniffing an Auto + Plain Text buffer: applied
+    /// exactly like `maybeAutoDetectLanguage` does, so Auto mode stays on.
+    func applyAutoDetectedLanguage(identifier: String) {
+        applyLanguage(identifier: identifier)
+        didAutoDetectLanguage = true
+    }
+
+    func runSessionStateDidChange() {
+        toolbarController?.refreshRunButton()
+    }
+
+    func runSessionDidClose() {
+        runSession = nil
+        runSessionStateDidChange()
+    }
+
+    @objc func runModuleDidChange() {
+        if !isRunModuleEnabled { tearDownRunSession() }
+        runSessionStateDidChange()
     }
 }

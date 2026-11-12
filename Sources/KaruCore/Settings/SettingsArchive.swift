@@ -19,13 +19,16 @@ enum SettingsArchive {
             }
         }
     }
+    /// `array` exists only for the hidden-language list (T16.2); validation
+    /// rejects it for every other key and any non-string element in it.
     enum Value: Codable, Equatable {
-        case bool(Bool), number(Double), string(String)
+        case bool(Bool), number(Double), string(String), array([Value])
         init(from decoder: Decoder) throws {
             let c = try decoder.singleValueContainer()
             if let value = try? c.decode(Bool.self) { self = .bool(value) }
             else if let value = try? c.decode(Double.self) { self = .number(value) }
-            else { self = .string(try c.decode(String.self)) }
+            else if let value = try? c.decode(String.self) { self = .string(value) }
+            else { self = .array(try c.decode([Value].self)) }
         }
         func encode(to encoder: Encoder) throws {
             var c = encoder.singleValueContainer()
@@ -33,6 +36,7 @@ enum SettingsArchive {
             case .bool(let value): try c.encode(value)
             case .number(let value): try c.encode(value)
             case .string(let value): try c.encode(value)
+            case .array(let values): try c.encode(values)
             }
         }
         var object: Any {
@@ -40,6 +44,7 @@ enum SettingsArchive {
             case .bool(let value): return value
             case .number(let value): return value
             case .string(let value): return value
+            case .array(let values): return values.map(\.object)
             }
         }
     }
@@ -60,12 +65,19 @@ enum SettingsArchive {
     static var keys: Set<String> {
         boolKeys.union(widthKeys).union([EditorFontSettings.fontSizeKey, ScratchpadStore.fontSizeKey,
             L10n.defaultsKey, HotKeyCenter.keyCodeDefaultsKey, HotKeyCenter.modifiersDefaultsKey,
-            "scratchpad.hotkey.character"])
+            "scratchpad.hotkey.character", LanguageMenuSettings.hiddenKey])
     }
     static func export(defaults: UserDefaults = .standard, commands: [ShortcutCommand]? = nil) throws -> Data {
         var values: [String: Value] = [:]
         for key in keys {
             guard let value = defaults.object(forKey: key) else { continue }
+            if key == LanguageMenuSettings.hiddenKey {
+                // Unreadable / unknown entries mean "visible" to the app, so
+                // they are dropped here rather than failing the whole export.
+                let hidden = LanguageMenuSettings.sanitized((value as? [Any] ?? []).compactMap { $0 as? String })
+                if !hidden.isEmpty { values[key] = .array(hidden.map(Value.string)) }
+                continue
+            }
             if let n = value as? NSNumber {
                 values[key] = CFGetTypeID(n) == CFBooleanGetTypeID() ? .bool(n.boolValue) : .number(n.doubleValue)
             } else if let string = value as? String { values[key] = .string(string) }
@@ -124,6 +136,10 @@ enum SettingsArchive {
                 } else if key == "scratchpad.hotkey.character" {
                     guard string.utf16.count == 1, string == string.lowercased() else { throw Failure.value(key) }
                 } else { throw Failure.value(key) }
+            case .array(let items):
+                guard key == LanguageMenuSettings.hiddenKey,
+                      items.allSatisfy({ if case .string = $0 { return true } else { return false } })
+                else { throw Failure.value(key) }
             }
         }
         let hasCode = doc.preferences[HotKeyCenter.keyCodeDefaultsKey] != nil
@@ -172,14 +188,25 @@ enum SettingsArchive {
         try validate(document, commands: shortcuts.commands)
         let encoded = try JSONEncoder().encode(document.shortcuts)
         for key in keys { defaults.removeObject(forKey: key) }
-        for (key, value) in document.preferences { defaults.set(value.object, forKey: key) }
+        for (key, value) in document.preferences {
+            if key == LanguageMenuSettings.hiddenKey, case .array(let items) = value {
+                // Unknown identifiers and Plain Text are dropped silently.
+                let hidden = LanguageMenuSettings.sanitized(items.compactMap {
+                    if case .string(let id) = $0 { return id } else { return nil }
+                })
+                if !hidden.isEmpty { defaults.set(hidden, forKey: key) }
+                continue
+            }
+            defaults.set(value.object, forKey: key)
+        }
         defaults.set(encoded, forKey: ShortcutSettings.storageKey)
         shortcuts.reloadOverridesFromDefaults()
         guard defaults === UserDefaults.standard else { return }
         let center = NotificationCenter.default
         for module in FeatureModule.allCases { center.post(name: ModuleSettings.didChangeNotification, object: module.rawValue) }
         for name in [L10n.didChangeNotification, EditorFontSettings.didChangeNotification,
-                     ScratchpadStore.fontDidChangeNotification, HotKeyCenter.didChangeNotification, didImport] {
+                     ScratchpadStore.fontDidChangeNotification, HotKeyCenter.didChangeNotification,
+                     LanguageMenuSettings.didChangeNotification, didImport] {
             center.post(name: name, object: nil)
         }
     }

@@ -15,6 +15,8 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     private let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let indentPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let formatButton = NSButton()
+    /// Run / Stop (T16.3b). Present only while the `run` module is on.
+    private let runButton = NSButton()
     private let modulePopup = NSPopUpButton(frame: .zero, pullsDown: true)
     private let settingsButton = NSButton()
 
@@ -29,6 +31,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     private static let language = NSToolbarItem.Identifier("dev.enkin.toolbar.language")
     private static let indent = NSToolbarItem.Identifier("dev.enkin.toolbar.indent")
     private static let format = NSToolbarItem.Identifier("dev.enkin.toolbar.format")
+    static let run = NSToolbarItem.Identifier("dev.enkin.toolbar.run")
     private static let title = NSToolbarItem.Identifier("dev.enkin.toolbar.title")
     private static let modules = NSToolbarItem.Identifier("dev.enkin.toolbar.modules")
     private static let settings = NSToolbarItem.Identifier("dev.enkin.toolbar.settings")
@@ -43,6 +46,8 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         buildControls()
         moduleCenter.addObserver(self, selector: #selector(moduleSettingsChanged),
                                  name: ModuleSettings.didChangeNotification, object: nil)
+        moduleCenter.addObserver(self, selector: #selector(languageListChanged),
+                                 name: LanguageMenuSettings.didChangeNotification, object: nil)
     }
 
     deinit {
@@ -63,17 +68,14 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     // MARK: - Control construction
 
     private func buildControls() {
-        // Language popup: Auto, then one entry per supported language.
+        // Language popup: Auto, then one entry per visible language (T16.2).
+        // Items are (re)built by `refreshLanguageSelection` from the shared
+        // `LanguageMenuSettings`; populated here once so the popup has its
+        // natural size before the toolbar item is created.
         let langMenu = NSMenu()
-        let auto = NSMenuItem(title: L10n.t(.languageAuto), action: nil, keyEquivalent: "")
-        auto.tag = Self.autoLanguageTag
-        langMenu.addItem(auto)
-        langMenu.addItem(.separator())
-        for lang in SupportedLanguage.all {
-            let item = NSMenuItem(title: lang.title, action: nil, keyEquivalent: "")
-            item.representedObject = lang.identifier
-            langMenu.addItem(item)
-        }
+        LanguageMenuSettings(center: moduleCenter).menuLayout(current: nil)
+            .populate(langMenu, autoTitle: L10n.t(.languageAuto), autoAction: nil,
+                      autoTag: Self.autoLanguageTag, languageAction: nil)
         languagePopup.menu = langMenu
         languagePopup.target = self
         languagePopup.action = #selector(languageChanged)
@@ -97,6 +99,12 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         formatButton.target = self
         formatButton.action = #selector(formatTapped)
         formatButton.toolTip = L10n.t(.menuFormatDocument)
+
+        runButton.imagePosition = .imageLeading
+        runButton.bezelStyle = .toolbar
+        runButton.target = self
+        runButton.action = #selector(runTapped)
+        applyRunButtonState(active: false)
 
         // Modules: a compact pull-down whose items toggle each feature module.
         let modMenu = NSMenu()
@@ -145,6 +153,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         indentPopup.toolTip = L10n.t(.toolbarIndentTooltip)
         formatButton.title = L10n.t(.formatAction)
         formatButton.toolTip = L10n.t(.menuFormatDocument)
+        applyRunButtonState(active: windowController?.isRunActive ?? false)
         modulePopup.toolTip = L10n.t(.toolbarFeatureModulesTooltip)
         modulePopup.menu?.items.first?.title = L10n.t(.prefModules)
         for item in modulePopup.menu?.items ?? [] {
@@ -165,6 +174,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         case language: return L10n.t(.menuLanguage)
         case indent: return L10n.t(.toolbarIndentLabel)
         case format: return L10n.t(.formatAction)
+        case run: return L10n.t(.menuRunCode)
         case modules: return L10n.t(.prefModules)
         case settings: return L10n.t(.toolbarSettingsLabel)
         default: return nil
@@ -192,6 +202,11 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         windowController?.formatDocument(nil)
     }
 
+    @objc private func runTapped() {
+        guard let wc = windowController else { return }
+        if wc.isRunActive { wc.stopRun(nil) } else { wc.runCode(nil) }
+    }
+
     @objc private func moduleToggled(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let module = FeatureModule(rawValue: raw) else { return }
@@ -207,6 +222,11 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
 
     @objc private func moduleSettingsChanged() {
         refreshFormatEnabled()
+        refreshRunButton()
+    }
+
+    @objc private func languageListChanged() {
+        refreshLanguageSelection()
     }
 
     // MARK: - State sync
@@ -217,10 +237,12 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         refreshLanguageSelection()
         refreshIndent()
         refreshFormatEnabled()
+        refreshRunButton()
     }
 
     func refreshLanguageSelection() {
         guard let wc = windowController else { return }
+        rebuildLanguageItemsIfNeeded(for: wc)
         if wc.isLanguageAuto {
             languagePopup.selectItem(withTag: Self.autoLanguageTag)
         } else {
@@ -233,6 +255,19 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
                 languagePopup.selectItem(withTag: Self.autoLanguageTag)
             }
         }
+    }
+
+    /// Rebuilds the popup's items when the visible-language list (or a hidden
+    /// manually chosen language that must stay selectable) changed. The hidden
+    /// current language is appended after a separator so the popup never shows
+    /// a wrong or blank title; it disappears again once the window moves on.
+    private func rebuildLanguageItemsIfNeeded(for wc: EditorWindowController) {
+        guard let menu = languagePopup.menu else { return }
+        let current: String? = wc.isLanguageAuto ? nil : wc.currentLanguageIdentifierValue
+        let layout = LanguageMenuSettings(center: moduleCenter).menuLayout(current: current)
+        guard LanguageMenuLayout.signature(of: menu) != layout.signature else { return }
+        layout.populate(menu, autoTitle: L10n.t(.languageAuto), autoAction: nil,
+                        autoTag: Self.autoLanguageTag, languageAction: nil)
     }
 
     func refreshIndent() {
@@ -250,6 +285,30 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         let formatOn = ModuleSettings().isEnabled(.format)
         formatButton.isEnabled = formatOn &&
             FormatDispatch.supports(languageIdentifier: wc.currentLanguageIdentifierValue)
+    }
+
+    /// Inserts / removes the Run item with the `run` module and flips it
+    /// between Run (▶) and Stop (■) with the window's run state.
+    func refreshRunButton() {
+        guard let wc = windowController else { return }
+        if let toolbar = wc.window?.toolbar {
+            let index = toolbar.items.firstIndex { $0.itemIdentifier == Self.run }
+            if wc.isRunModuleEnabled, index == nil {
+                let formatIndex = toolbar.items.firstIndex { $0.itemIdentifier == Self.format }
+                toolbar.insertItem(withItemIdentifier: Self.run, at: (formatIndex ?? 2) + 1)
+            } else if !wc.isRunModuleEnabled, let index {
+                toolbar.removeItem(at: index)
+            }
+        }
+        applyRunButtonState(active: wc.isRunActive)
+    }
+
+    private func applyRunButtonState(active: Bool) {
+        let title = active ? L10n.t(.menuRunStop) : L10n.t(.menuRunCode)
+        runButton.title = title
+        runButton.image = NSImage(systemSymbolName: active ? "stop.fill" : "play.fill",
+                                  accessibilityDescription: title)
+        runButton.toolTip = title
     }
 
     // MARK: - NSMenuDelegate (module pull-down checkmarks)
@@ -272,6 +331,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         case Self.language: return viewItem(itemIdentifier, label: L10n.t(.menuLanguage), view: languagePopup)
         case Self.indent:   return viewItem(itemIdentifier, label: L10n.t(.toolbarIndentLabel), view: indentPopup)
         case Self.format:   return viewItem(itemIdentifier, label: L10n.t(.formatAction), view: formatButton)
+        case Self.run:      return viewItem(itemIdentifier, label: L10n.t(.menuRunCode), view: runButton)
         case Self.title:    return viewItem(itemIdentifier, label: "", view: titleControl)
         case Self.modules:  return viewItem(itemIdentifier, label: L10n.t(.prefModules), view: modulePopup)
         case Self.settings: return viewItem(itemIdentifier, label: L10n.t(.toolbarSettingsLabel), view: settingsButton)
@@ -282,13 +342,14 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         // The filename capsule is centred between two flexible spaces so it sits
         // roughly at the middle of the titlebar, VS Code style.
-        [Self.language, Self.indent, Self.format,
-         .flexibleSpace, Self.title, .flexibleSpace,
-         Self.modules, Self.settings]
+        let runEnabled = windowController?.isRunModuleEnabled ?? ModuleSettings().isEnabled(.run)
+        return [Self.language, Self.indent, Self.format] + (runEnabled ? [Self.run] : []) +
+            [.flexibleSpace, Self.title, .flexibleSpace, Self.modules, Self.settings]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
+        [Self.language, Self.indent, Self.format, Self.run,
+         .flexibleSpace, Self.title, Self.modules, Self.settings]
     }
 
     private func viewItem(_ identifier: NSToolbarItem.Identifier,

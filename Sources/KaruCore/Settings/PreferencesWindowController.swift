@@ -52,6 +52,10 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     private var fileDefaultsController: DefaultApplicationPreferencesController?
     private let shortcutsButton = NSButton()
     private var shortcutsController: ShortcutPreferencesController?
+    private let languageListButton = NSButton()
+    private var languageListController: LanguageListPreferencesController?
+    private let runSettingsButton = NSButton()
+    private var runSettingsController: RunPreferencesController?
     private let hotkeyButton = NSButton()
     private let hotkeyResetButton = NSButton()
 
@@ -110,6 +114,8 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         buildUI()
         loadState()
         NotificationCenter.default.addObserver(self, selector: #selector(settingsImported), name: SettingsArchive.didImport, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(indentLanguagesChanged),
+                                               name: LanguageMenuSettings.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateHotkeyButtonTitle),
                                                name: HotKeyCenter.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(
@@ -180,9 +186,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         styleSectionLabel(editorHeader, text: L10n.t(.prefEditor))
 
         // Indent width row: language popup + stepper + value.
-        for lang in Self.languages {
-            languagePopup.addItem(withTitle: lang.title)
-        }
+        rebuildIndentLanguagePopup()
         languagePopup.target = self
         languagePopup.action = #selector(languageChanged(_:))
 
@@ -288,6 +292,8 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         shortcutsButton.target = self
         shortcutsButton.action = #selector(showShortcuts)
         for (button, title, action) in [
+            (languageListButton, L10n.t(.languageListTitle), #selector(showLanguageList)),
+            (runSettingsButton, L10n.t(.runSettingsTitle), #selector(showRunSettings)),
             (fileDefaultsButton, L10n.t(.fileDefaultsTitle), #selector(showFileDefaults)),
             (exportButton, L10n.t(.settingsExport), #selector(exportSettings)),
             (importButton, L10n.t(.settingsImport), #selector(importSettings))
@@ -303,7 +309,9 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
             modulesHeader, moduleStack,
             separator(),
             editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, autoSaveButton, fontRow,
-            hotkeyRow, scratchpadFontRow, shortcutsButton, fileDefaultsButton, backupRow, settingsResult,
+            hotkeyRow, scratchpadFontRow, languageListButton, runSettingsButton, shortcutsButton,
+            fileDefaultsButton, backupRow,
+            settingsResult,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -322,6 +330,27 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         }
         shortcutsController?.showWindow(nil)
         shortcutsController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func showLanguageList() {
+        endHotkeyRecording()
+        if languageListController == nil {
+            languageListController = LanguageListPreferencesController()
+            languageListController?.onClose = { [weak self] in self?.languageListController = nil }
+        }
+        languageListController?.showWindow(nil)
+        languageListController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Settings › Run (T16.3b): built on open, released on close.
+    @objc private func showRunSettings() {
+        endHotkeyRecording()
+        if runSettingsController == nil {
+            runSettingsController = RunPreferencesController()
+            runSettingsController?.onClose = { [weak self] in self?.runSettingsController = nil }
+        }
+        runSettingsController?.showWindow(nil)
+        runSettingsController?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func showFileDefaults() {
@@ -384,9 +413,9 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
 
     @objc private func settingsImported() {
         settingsResult.stringValue = L10n.t(.settingsImported)
-        let index = languagePopup.indexOfSelectedItem
+        let language = selectedLanguage
         loadState()
-        languagePopup.selectItem(at: index)
+        rebuildIndentLanguagePopup(selecting: language)
         reloadIndentWidth()
         updateHotkeyButtonTitle()
         Self.forEachEditorTextView {
@@ -449,8 +478,36 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     }
 
     private var selectedLanguage: String {
-        let index = max(0, languagePopup.indexOfSelectedItem)
-        return Self.languages[index].id
+        languagePopup.selectedItem?.representedObject as? String ?? Self.languages[0].id
+    }
+
+    /// Indent-width languages that are visible in the shared language list
+    /// (T16.2 follow-up: the popup used to list every language regardless).
+    /// Falls back to the full list if everything offered here is hidden.
+    static func indentLanguages(settings: LanguageMenuSettings = LanguageMenuSettings()) -> [(id: String, title: String)] {
+        let visible = languages.filter { settings.isVisible($0.id) }
+        return visible.isEmpty ? languages : visible
+    }
+
+    /// Rebuilds the indent-width popup from the language list, keeping
+    /// `selecting` (default: the current choice) when it is still offered.
+    private func rebuildIndentLanguagePopup(selecting language: String? = nil) {
+        let keep = language ?? (languagePopup.numberOfItems > 0 ? selectedLanguage : nil)
+        languagePopup.removeAllItems()
+        for lang in Self.indentLanguages() {
+            languagePopup.addItem(withTitle: lang.title)
+            languagePopup.lastItem?.representedObject = lang.id
+        }
+        if let keep, let item = languagePopup.itemArray.first(where: { $0.representedObject as? String == keep }) {
+            languagePopup.select(item)
+        } else {
+            languagePopup.selectItem(at: 0)
+        }
+    }
+
+    @objc private func indentLanguagesChanged() {
+        rebuildIndentLanguagePopup()
+        reloadIndentWidth()
     }
 
     private func reloadIndentWidth() {
@@ -498,6 +555,8 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         settingsResult.stringValue = ""
         window?.title = L10n.t(.prefTitle)
         shortcutsButton.title = L10n.t(.shortcutTitle)
+        languageListButton.title = L10n.t(.languageListTitle)
+        runSettingsButton.title = L10n.t(.runSettingsTitle)
         fileDefaultsButton.title = L10n.t(.fileDefaultsTitle)
         exportButton.title = L10n.t(.settingsExport)
         importButton.title = L10n.t(.settingsImport)

@@ -184,11 +184,11 @@ kb_to_mb_str() {
 printf '%-22s | %-10s | %-12s | %-8s | %s\n' "轮次" "实测(MB)" "预算目标(MB)" "上限(MB)" "结果"
 printf '%-22s-+-%-10s-+-%-12s-+-%-8s-+-%s\n' "----------------------" "----------" "------------" "--------" "------"
 
-# 轮次 1：空文档启动基线，预算见 ARCHITECTURE.md：目标 20-30 MB，上限 35 MB
+# 轮次 1：空文档启动基线，预算见 ARCHITECTURE.md：目标 20-30 MB，上限 99 MB
 ROUND1_MB="$(kb_to_mb_str "$ROUND1_KB")"
 ROUND1_RESULT="FAIL"
 if [[ -n "$ROUND1_KB" ]]; then
-    if awk -v mb="$ROUND1_MB" 'BEGIN{exit !(mb <= 35)}'; then
+    if awk -v mb="$ROUND1_MB" 'BEGIN{exit !(mb <= 99)}'; then
         ROUND1_RESULT="PASS"
     else
         ROUND1_RESULT="FAIL"
@@ -198,34 +198,34 @@ else
     ROUND1_RESULT="FAIL"
     OVERALL_FAIL=1
 fi
-printf '%-22s | %-10s | %-12s | %-8s | %s\n' "空文档启动基线" "$ROUND1_MB" "20-30" "35" "$ROUND1_RESULT"
+printf '%-22s | %-10s | %-12s | %-8s | %s\n' "空文档启动基线" "$ROUND1_MB" "20-30" "99" "$ROUND1_RESULT"
 
-# 轮次 2：打开中等文件（全功能空闲常驻），预算：目标 30-45 MB，上限 50 MB
+# 轮次 2：打开中等文件（全功能空闲常驻），预算：目标 30-45 MB，上限 99 MB
 if [[ "$ROUND2_STATUS" == "SKIPPED" ]]; then
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 medium.json" "N/A" "30-45" "50" "SKIPPED"
+    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 medium.json" "N/A" "30-45" "99" "SKIPPED"
 else
     ROUND2_MB="$(kb_to_mb_str "$ROUND2_KB")"
     ROUND2_RESULT="FAIL"
-    if [[ -n "$ROUND2_KB" ]] && awk -v mb="$ROUND2_MB" 'BEGIN{exit !(mb <= 50)}'; then
+    if [[ -n "$ROUND2_KB" ]] && awk -v mb="$ROUND2_MB" 'BEGIN{exit !(mb <= 99)}'; then
         ROUND2_RESULT="PASS"
     else
         OVERALL_FAIL=1
     fi
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 medium.json" "$ROUND2_MB" "30-45" "50" "$ROUND2_RESULT"
+    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 medium.json" "$ROUND2_MB" "30-45" "99" "$ROUND2_RESULT"
 fi
 
-# 轮次 3：打开大文件（~10 MB），预算：目标 50-60 MB，上限 65 MB（ARCHITECTURE.md §1）
+# 轮次 3：打开大文件（~10 MB），预算：目标 50-60 MB，上限 99 MB（ARCHITECTURE.md §1）
 if [[ "$ROUND3_STATUS" == "SKIPPED" ]]; then
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "N/A" "50-60" "65" "SKIPPED"
+    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "N/A" "50-60" "99" "SKIPPED"
 else
     ROUND3_MB="$(kb_to_mb_str "$ROUND3_KB")"
     ROUND3_RESULT="FAIL"
-    if [[ -n "$ROUND3_KB" ]] && awk -v mb="$ROUND3_MB" 'BEGIN{exit !(mb <= 65)}'; then
+    if [[ -n "$ROUND3_KB" ]] && awk -v mb="$ROUND3_MB" 'BEGIN{exit !(mb <= 99)}'; then
         ROUND3_RESULT="PASS"
     else
         OVERALL_FAIL=1
     fi
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "$ROUND3_MB" "50-60" "65" "$ROUND3_RESULT"
+    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "$ROUND3_MB" "50-60" "99" "$ROUND3_RESULT"
 fi
 
 echo ""

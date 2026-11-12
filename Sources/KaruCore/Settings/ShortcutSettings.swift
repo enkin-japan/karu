@@ -95,7 +95,7 @@ final class ShortcutSettings {
                     parameter: item.representedObject, tag: item.tag, defaultBinding: binding)]
             }
         }
-        var commands = collect(MainMenu.build(applyShortcuts: false), parent: "")
+        var commands = collect(MainMenu.build(applyShortcuts: false, includeHiddenLanguages: true), parent: "")
         commands.append(ShortcutCommand(id: "editor.insertLineBelow", title: L10n.t(.shortcutInsertBelow), scope: .editor,
             action: "insertLineBelow:", defaultBinding: [ShortcutStroke("\r", .command)]))
         for (id, title, key) in [("todo", L10n.t(.shortcutTodo), "l"),

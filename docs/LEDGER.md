@@ -7,6 +7,94 @@
 > 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败。区分自动化通过、待用户实测与已发布；
 > 历史失败次数升级链不用于当前 Codex 流程，失败应报告证据，由主会话决定下一步。
 
+## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
+
+用户决策（2026-11-12）：常驻内存三场景上限统一上调为 99 MB，目标值不变，新增常驻内存仍须评估并汇报；
+新增单文件代码执行（设计见 ARCHITECTURE §6）；App 内安装/卸载工具链；设置中自定义工具栏与
+“语言”菜单可选语言。SQL/HTML 不执行；不做运行时语系细化；输出面板带 stdin；增强识别与高亮共用；
+`run` 模块默认开；工具链第一批 Python/Node/Go/Java/.NET（+ Zig 视实测），不影响终端全局环境。
+
+| # | 任务 | 负责 | 状态 |
+|---|---|---|---|
+| T16.1 | ARCHITECTURE 预算/边界/§6、mem-benchmark 上限改 99 MB | main | ✅ 文档完成 |
+| T16.2 | 语言列表设置（工具栏 + 语言菜单，Auto/Plain 常驻，导出白名单） | implementer，main 审查 | ✅ 实现，自动化通过；GUI 待本机实测 |
+| T16.3a | 运行引擎：语言判定、增强识别、工具链定位、执行计划、posix_spawn 进程层、RunSettings、run 模块枚举 | implementer，main 审查 | ✅ 自动化通过 |
+| T16.3b | 运行界面：输出面板与 stdin、菜单/工具栏、运行设置窗口、三语文案、窗口/退出生命周期 | implementer，main 审查 | ✅ 自动化通过；已预装本机待实测 |
+| T16.4 | Zig 在无 CLT 条件下编译运行 C/C++ 的可行性实测 | main | ✅ 可行（见下） |
+| T16.5 | 工具链管理：内置清单 + SHA256、下载/解压/原子安装/取消/卸载、缓存隔离、设置界面 | implementer，main 审查与真实网络验证 | ✅ 自动化 + 真实下载运行通过；GUI 待本机实测 |
+| T16.6 | 全量测试、视觉冒烟、内存同环境对照、本机预装待实测 | main | ✅ 已预装本机，待用户实测 |
+
+- T16.4 实测（main）：官方 index.json 最新版 Zig 0.17.1（2026-11-02）aarch64-macos，
+  tar.xz 54 MB、SHA256 与官方一致，解压 432 MB；二进制为 ad-hoc 签名，未加 quarantine 时可直接运行。
+  以 `env -i PATH=/bin DEVELOPER_DIR=/nonexistent` 屏蔽 Xcode/xcrun，并把 ZIG 缓存指向隔离目录，
+  `zig cc` / `zig c++ -std=c++20` 在 native 与显式 `-target aarch64-macos` 两种模式均成功编译运行
+  C（stdio/math/stdin/退出码 3）与 C++（vector/string/algorithm/thread）；产物仅依赖
+  `/usr/lib/libSystem.B.dylib`。首次编译 4–6 s 并生成约 117 MB 缓存，缓存命中后 < 1 s。
+  结论：C/C++ 纳入 Karu 可安装工具链，运行时固定传显式 target 以免依赖本机 SDK；
+  磁盘占用按“安装 432 MB + 缓存上百 MB”向用户展示。限制：仅 libc/libc++，无 Apple 框架。
+  本机装有 Xcode，屏蔽方式为环境模拟，真正无 Xcode 机器仍在 T16.6 前择机复核。
+- T16.2（implementer 实现，main 审查 diff）：新增 `LanguageMenuSettings`（只存隐藏 id，key
+  `languages.hidden.v1`）与“语言列表…”子窗口；工具栏与语言菜单共用纯函数布局，手动选中的隐藏语言
+  以分隔线后的临时项显示；快捷键目录仍按全部语言生成，隐藏语言的绑定不丢失；命令面板随菜单不列隐藏语言。
+  设置导出新增数组值（仅此 key），格式版本仍为 1：含隐藏列表的新导出文件在旧版导入会被判无效。
+  验证：794 tests / 15 suites 通过；visual-smoke（隔离诊断目录）VISUAL OK、FOLD GEOMETRY OK。
+  子窗口布局、菜单刷新与界面语言切换未做真实 GUI 交互，留待本机实测。常驻增量仅一个无存储共享菜单代理
+  与每工具栏一个观察者，未单独跑内存基准，T16.6 统一对照。
+- T16.3a（implementer 实现，main 审查）：`Sources/KaruCore/Run/` 新增判定器、`ToolchainLocator`（自定义 >
+  Karu 安装 > 登录 shell PATH > 系统 PATH；CLT 与 java 占位程序先探测、不触发系统安装框）、`RunPlanBuilder`
+  （临时目录 UTF-8/LF 快照，编译步骤在临时目录、运行在文档目录）、`CodeRunner`（posix_spawn 独立进程组、
+  每次运行一个串行队列、≤30 次/秒合并投递、约 1 MB 输出上限、stdin 非阻塞且无 SIGPIPE、SIGTERM→2 s→SIGKILL、
+  主进程退出后 0.5 s 清理残留进程组）。LanguageSniffer 增加 Go/Rust/Java/C#/C++/Swift/TS 规则，原有测试不改全过；
+  无命中 8 KB 样本最坏耗时约 0.7→1.45 ms/次（仅未分类的未命名文档触发）。补充：缺 locale 时为子进程设
+  `LANG=en_US.UTF-8`。main 审查后将 Go 由 `go run` 改为临时目录 `go build` 再运行，避免文档目录所在 Go module 干扰。
+  验证：908 tests / 25 suites 通过；implementer 另以本机工具链手工跑通 python（stdin/中文）、node JS/TS、
+  zsh shebang、clang C/C++20、swiftc；Java（本机无 JDK，正确报缺运行时）、go/rustc/dotnet/zig 未实跑。
+  已知局限：`$SHELL -l` 不读 `.zshrc`，只在 `.zshrc` 设 PATH 的用户需用自定义路径或 Karu 安装工具链。
+- T16.3b（implementer 实现，main 审查）：每窗口懒建 `RunSessionController`（持有 CodeRunner 与输出面板）；
+  工具栏 Run/Stop（模块关闭时移除）；“运行”菜单 ⌘R / ⌘. / ⇧⌘Y，自动进入快捷键目录；输出面板插在编辑区下方
+  （自带 5 pt 拖动分隔条，未用 NSSplitView，编辑区视图不换父），stdin 行仅运行中显示；面板文本只镜像 runner 的
+  有界缓冲；隐藏面板释放视图但保留运行，× 停止并释放会话；关窗/模块关闭停止并释放；启动清理 24 h 前的临时目录，
+  退出时 `stopAll(force:)`。设置新增“运行…”子窗口（来源/自定义路径/检测/C·C++ 参数），每行留 T16.5 安装位。
+  验证：928 tests / 31 suites 通过（新套件 7 次、全量 4 次无波动）；visual-smoke VISUAL OK、FOLD GEOMETRY OK；
+  mem-benchmark（隔离诊断目录）两次均 31 / 50 / 63 MB，与改动前同环境基线一致，未使用时无常驻增量。
+- 本机预装（2026-11-12，main）：`bundle-macos.sh` Developer ID 签名（团队 9A84P4ZS84），6.0 MB，deep/strict 通过，
+  包内无密钥类文件；版本仍 0.11.0 (25)，测试构建不升版本。正常请求旧实例退出后替换 `/Applications/Karu.app`，
+  回退副本 `/Applications/.Karu-before-m16-20261112-223027.app`；启动后进程路径正确、二进制与构建一致。
+  状态：T16.2 + T16.3 待用户实测；真实工具链运行与 GUI 交互尚未由用户确认。
+- T16.5（implementer 实现，main 审查）：`ToolchainManifest`（6 项，固定官方 URL/大小/SHA256 或 SHA512，host 白名单）、
+  `ToolchainStore`（`<AppSupport>/<bundle id>/Toolchains/<id>/<version>`、`.cache/<id>`、`.staging`）、
+  `ToolchainInstaller`（ephemeral URLSession 落盘、拒绝非 https 跳转、CryptoKit 1 MB 分块校验、系统 tar 子进程解压、
+  可执行文件存在且符号链接不逃逸、同卷 rename 原子就位、失败/取消清理暂存）、`ToolchainManager`（仅设置窗口打开
+  或任务进行中存活）、`KaruManagedToolchains` 作为定位器默认 provider；设置 › 运行每行安装/取消/卸载与占用显示，
+  Swift/Rust 行显示 CLT 状态并可调用 `xcode-select --install`。main 补：退出 App 时取消安装并立即 SIGKILL tar。
+- T16.5 真实网络验证（main，临时探针测试，未入库，结束即删除）：正式下载器把 6 套工具链装入临时根目录，
+  全部下载、校验、解压成功（python 1 s、node 1 s、go 2 s、JDK 3 s、.NET 11 s、zig 10 s）；以 source=managed
+  逐一运行 Python 3.14.10、JS/TS（Node 26.13.1 类型剥离）、Go 1.27.4、Java 25、C#（.NET 10 文件程序）、
+  C/C++（zig cc/c++ -target aarch64-macos），输出含中文全部正确。安装占用约 1.9 GB（.NET 654 MB、zig 426 MB），
+  首轮缓存约 0.5 GB。下载文件无 quarantine 属性（仅 provenance），未经公证的 python/zig 二进制可直接启动。
+  首轮发现两处全局写入：`~/Library/Application Support/go/telemetry`（Go 本地遥测，`GOTELEMETRY` 环境变量无效）与
+  `~/.local/share/NuGet/Migrations`。修复：新增仅作用于编译步骤的环境覆盖（`compileEnvironment` →
+  `RunCommand.environmentOverrides`），Go 编译步骤 HOME 指向缓存；.NET 设 `XDG_DATA_HOME` 到缓存。删除两处探针产物后
+  以全新缓存复跑：8 种语言全部通过，全局路径（~/go、~/.npm、~/.nuget、~/.dotnet、~/.cache/zig、~/.config/go、
+  ~/Library/Application Support/go、~/Library/Caches/go-build、~/.local/share/NuGet 等）无新增或修改。
+  验证在测试进程内完成；加固运行时 Karu.app 内的点击安装与运行待本机实测。新增回归测试后 964 tests / 39 suites 通过。
+- T16.6（main）：964 tests / 39 suites 通过；visual-smoke VISUAL OK、FOLD GEOMETRY OK；mem-benchmark 两次均
+  25 / 35 / 61 MB（全部 PASS，低于此前同日 31 / 50 / 63 MB，降幅超出已知 ±5 MB 漂移，未归因于代码，按环境波动记录）。
+  重新打包（Developer ID，6.4 MB，deep/strict 通过）并在正常退出旧实例后替换安装、启动，二进制与构建一致；
+  删除同日中间测试构建，保留 v0.11.0 回退副本 `/Applications/.Karu-before-m16-20261112-223027.app`。
+  状态：M16 全部实现并自动化验证，已装本机待用户实测；未提交、未发布。
+- 用户实测反馈（2026-11-12）：取消勾选部分语言后“工具栏等处仍是全语言清单”。main 在本机真实 App 中核查：
+  主菜单“言語”、新窗口工具栏下拉框、已打开窗口的实时更新均已正确过滤（以 Swift 临时取消勾选验证后恢复原设置）；
+  未跟随的是设置窗口“インデント幅”的语言下拉框，它使用自己的固定列表。修复：该下拉框按语言列表过滤并在设置变化时
+  重建（按 id 保持当前选择；若该处全部被隐藏则回退为完整列表），新增回归测试。965 tests / 39 suites 通过，
+  visual-smoke 通过；重新打包替换安装后在真实设置窗口确认下拉框已去掉隐藏语言。“运行…”窗口的按语言配置行
+  属于工具链配置，当时未按语言列表隐藏。
+- 用户决定“运行…”窗口也跟随语言列表（2026-11-12，main）：被隐藏语言的配置行、检测结果行及 C/C++ 编译参数行一并隐藏，
+  设置变化时实时更新；窗口改为在内容变化（检测结果、安装/CLT 状态异步到达、行显隐）后按内容重新适配并保持顶边。
+  隐藏仅影响显示，已安装的工具链与按语言设置不变。顺带修复 T16.5 补丁引入的竞态：取消回调先 SIGKILL tar 后，
+  解压循环可能报“tar signal 9”而非“已取消”，现于收尾时优先判取消（相关测试连跑 8 次稳定）。
+  验证：966 tests / 39 suites 通过；visual-smoke 通过；重新打包换装后在真实“实行”窗口确认只显示未隐藏语言的行。
+
 ## 维护：新机公证凭据与文档校正（2026-11-12）
 
 负责：main。状态：✅ 公证 profile 已恢复并验证；文档/配置校正完成，未改应用代码，未提交。

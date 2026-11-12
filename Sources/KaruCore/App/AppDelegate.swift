@@ -71,6 +71,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = MainMenu.build()
         NotificationCenter.default.addObserver(self, selector: #selector(shortcutsDidChange),
                                                name: ShortcutSettings.didChange, object: nil)
+        // Run workspaces left behind by a crash (T16.3b). Directory listing
+        // only, off the main thread; nothing stays resident.
+        DispatchQueue.global(qos: .utility).async {
+            RunWorkspace.purgeStale(olderThan: 24 * 60 * 60)
+            // Toolchain downloads / extractions interrupted by a quit or crash
+            // (T16.5). No install can be running yet at launch.
+            ToolchainStore().purgeStaging()
+        }
 
         // Restore policy (T14.9, user decision): only an update relaunch or an
         // exit that never marked itself clean (crash / force quit) restores the
@@ -787,6 +795,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // reaches this line, which is exactly what keeps its drafts alive.
         draftStore.clear()
         return .terminateNow
+    }
+
+    /// No run process may outlive the app (T16.3b): SIGKILL every live run's
+    /// process group. Window closes during termination are not guaranteed.
+    public func applicationWillTerminate(_ notification: Notification) {
+        CodeRunner.stopAll(force: true)
+        ToolchainManager.cancelAllInstalls()
     }
 
     /// All launch routes share the same recovery policy. Explicit opens may

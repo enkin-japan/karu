@@ -25,6 +25,31 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case settingsImported, settingsExported
     case settingsExport, settingsImport, settingsImportAction, settingsImportConfirm, settingsInvalid, settingsVersion, settingsInvalidValue, fileDefaultsTitle, fileDefaultsSearch, fileDefaultsFormat, fileDefaultsCurrent, fileDefaultsApply, fileDefaultsRefresh, fileDefaultsInstalledOnly, fileDefaultsNotChanged, fileDefaultsUnknown, fileDefaultsHelp, fileDefaultsWorking, fileDefaultsResult
 
+    // Language list preferences (T16.2).
+    case languageListTitle, languageListHelp, languageListShowAll
+
+    // Run current buffer (T16.3b): menu / toolbar, output panel, status lines,
+    // failure messages and the Run settings sub-window.
+    case menuRun, menuRunCode, menuRunStop, menuRunShowOutput, menuRunHideOutput
+    case runOutputTitle, runClear, runCopy, runRerun, runCloseOutput, runEOF, runEOFTooltip, runInputPlaceholder
+    case runPreparing, runOutputTruncated
+    case runExited, runSignaled, runCompileFailed, runCompileSignaled, runStopped, runCancelled
+    case runFailUnrecognized, runFailNotExecutable, runFailPlainText, runFailToolNotFound
+    case runFailToolchainNotInstalled, runFailCustomInvalid, runFailCustomEmpty, runFailDeveloperTools
+    case runFailJava, runFailWorkspace, runFailLaunch
+    case runSettingsTitle, runSettingsHelp, runSourceAuto, runSourceManaged, runSourceSystem, runSourceCustom
+    case runChoose, runDetect, runDetecting, runPathPlaceholder, runCFlags, runCppFlags, runFlagsPlaceholder
+    case runOriginCustom, runOriginManaged, runOriginLogin, runOriginSystem, runOriginFixed
+    // Karu-managed toolchains in Settings › Run (T16.5).
+    case runToolchainNotInstalled, runToolchainInstalled, runToolchainInstalledSize
+    case runToolchainDownloading, runToolchainVerifying, runToolchainExtracting, runToolchainUninstalling
+    case runToolchainFailed, runToolchainProvidedBy
+    case runToolchainInstall, runToolchainUpdate, runToolchainCancel, runToolchainUninstall
+    case runToolchainUninstallTitle, runToolchainUninstallInfo
+    case runToolchainErrorNetwork, runToolchainErrorHTTP, runToolchainErrorInsecure, runToolchainErrorChecksum
+    case runToolchainErrorExtract, runToolchainErrorMissing, runToolchainErrorFilesystem, runToolchainErrorCancelled
+    case runCLTChecking, runCLTInstalled, runCLTMissing, runCLTInstall, runRustHint, runRustHintDetail
+
     case shortcutTitle, shortcutSearch, shortcutCommand, shortcutBinding, shortcutRecord, shortcutClear, shortcutResetAll, shortcutSequence, shortcutHelp, shortcutNone, shortcutRecordingHelp, shortcutSecondKey, shortcutSaved, shortcutConflict, shortcutResetConfirm, shortcutCancel, shortcutInsertBelow, shortcutTodo, shortcutCheck, shortcutPin
 
     // App menu (carry the app name per macOS convention).
@@ -102,7 +127,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     // Transient status-bar notes for crash-draft recovery (T14.11).
     case draftRestored, draftDiscardedDiskNewer, draftRestoredAsUntitled
     // Feature-module display names.
-    case moduleHighlight, moduleCompletion, moduleFormat
+    case moduleHighlight, moduleCompletion, moduleFormat, moduleRun
     // Status bar.
     case statusLnCol, statusCharOne, statusCharMany
     case statusSelection, statusSelectionSingleLine

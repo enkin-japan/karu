@@ -37,6 +37,10 @@
    在该授权范围内连续执行，不在每一步重复确认。存在未解决验收问题时先说明具体问题。
 2. 主会话更新版本号及递增 build。只提交本次已审查的文件，不夹带用户原有未提交改动；
    记录源码提交、版本和产物的对应关系，验证后不得悄悄换入未验收代码。
+2a. 工具链清单（`Sources/KaruCore/Run/ToolchainManifest.swift`，M16 起）：评估是否更新各工具链版本。
+   更新时只从官方源（python-build-standalone Release、nodejs.org、go.dev、Adoptium、dotnet release
+   metadata、ziglang.org）取下载地址、大小与 SHA256/SHA512，写入清单后用真实下载做一次安装与运行验证，
+   结果记入台账。不更新则保留原版本，清单随应用版本固定，运行时不拉远程清单。
 3. 完成全量 Swift 测试、视觉冒烟与内存基准；三种内存场景不得把 SKIPPED 当作通过。
    记录系统环境，预算判断遵循 [ARCHITECTURE.md](ARCHITECTURE.md)。
 4. 发布前用临时副本做小签名检查，尽早发现证书/钥匙串问题；不得改签用户应用来探路。

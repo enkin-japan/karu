@@ -10,6 +10,7 @@ public enum FeatureModule: String, CaseIterable, Sendable {
     case highlight
     case completion
     case format
+    case run
 
     /// User-facing display name for the settings UI (localized).
     public var displayName: String {
@@ -17,6 +18,7 @@ public enum FeatureModule: String, CaseIterable, Sendable {
         case .highlight: return L10n.t(.moduleHighlight)
         case .completion: return L10n.t(.moduleCompletion)
         case .format: return L10n.t(.moduleFormat)
+        case .run: return L10n.t(.moduleRun)
         }
     }
 
