@@ -7,6 +7,28 @@
 > 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败。区分自动化通过、待用户实测与已发布；
 > 历史失败次数升级链不用于当前 Codex 流程，失败应报告证据，由主会话决定下一步。
 
+## 维护：新机公证凭据与文档校正（2026-11-12）
+
+负责：main。状态：✅ 公证 profile 已恢复并验证；文档/配置校正完成，未改应用代码，未提交。
+
+- 公证凭据：新机 `tinyeditor-notary` 确认缺失后，经用户指定使用既有 App Store Connect
+  API Key（Key ID 752V43A8GR，私钥位于 `~/.appstoreconnect/private_keys/`，仓库外；
+  Issuer 取自同团队另一项目的本地 env 文件，未写入仓库或日志）。保存前先以该 Key 直接查询
+  公证历史，可见 83 条记录，含 v0.11.0 `0952040a-…` 与 v0.10.0 `aa5042cf-…`，确认为团队 9A84P4ZS84。
+  `notarytool store-credentials` 校验通过后存入 login keychain；随后按 release-macos.sh 的
+  `--keychain-profile tinyeditor-notary --keychain login.keychain-db` 方式查询历史成功。
+  v0.11.0 记录的“发布依赖旧机公证”待办就此解除；未新建 Key，未改签名或 Sparkle 身份。
+- 当前环境复核：macOS 27.2 (26B123)、Xcode 27.2、Swift 6.4.2。`swift test` 784 tests / 14 suites 通过。
+  `mem-benchmark.sh`（隔离 `KARU_DIAGNOSTIC_DIRECTORY`）连跑 3 次均为 31 / 50 / 63 MB，全部 PASS，
+  但中等文档恰等于 50 MB 上限（footprint 精度 1 MB），新增常驻状态须先评估此场景。
+- 校正 CLAUDE.md：原红线路径（apple-app/、backend/、config.yaml）来自另一项目，本仓库历史中
+  从未存在；改为 `scripts/bundle-macos.sh`、`scripts/release-macos.sh`、签名/公证/发布与 bundle ID。
+  T9.1 所写“bundle ID 为 APNs 红线”同源误植：Karu 不使用 APNs，bundle ID 保留的实际理由是
+  Sparkle 更新身份、偏好/Application Support 数据与文件关联。
+- 环境约束一节改为当前事实（装有 Xcode、产物在 `.build/out/Products`，仍只用 Swift Testing）；
+  ARCHITECTURE 加环境注记，选型不变。chore-worker 模型由 `claude-sonnet-5` 改为别名 `sonnet`，
+  与另两个代理的 `opus` 别名一致。清理仓库根目录 439 个未跟踪编译中间产物（28 MB，均已被忽略）。
+
 ## v0.11.0 / build 25 发布（2026-10-17）
 
 - 用户实测后确认“没什么问题”，授权推送新版本，并要求核对迁移后环境的遗漏。
@@ -480,8 +502,11 @@ T4.1/T4.2 仅依赖 T1.1；T4.3 依赖 T2.2；T1.2 随时可做；T5.* 最后。
 
 ## 环境约束（委派时必须告知子代理）
 
-- 本机仅有 Command Line Tools，无完整 Xcode：**没有 XCTest**，单元测试一律用 Swift Testing
-  （`import Testing`、`@Test`、`#expect`）；构建/测试命令为 `swift build` / `swift test`。
+- 单元测试一律用 Swift Testing（`import Testing`、`@Test`、`#expect`），不引入 XCTest；
+  构建/测试命令为 `swift build` / `swift test`。工程不得以完整 Xcode 为前提。
+  （2026-11-12 核对：当前开发机装有 Xcode 27.2、无独立 CLT，Swift 6.4.2；SPM 产物实际在
+  `.build/out/Products/<Debug|Release>`，`.build/debug`、`.build/release` 为符号链接，脚本路径照常可用。
+  早期“本机仅 CLT、无 XCTest”是 2026-07 旧机环境。）
 - 涉及 AppKit 的测试代码需标注 `@MainActor`。
 - **SPM 增量编译偶发陈旧**（本会话已两次遇到）：逻辑正确的改动测试却失败时，先
   `rm -rf .build` 全量重建再判定，不要空转排查。

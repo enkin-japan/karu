@@ -53,6 +53,9 @@
 > 2026-10-09 文档校正：原表写 TextKit 2，但当前 EditorWindowController、FoldingController
 > 及 HighlightEngine 实际使用 NSLayoutManager 的字形、布局代理与临时属性接口。
 > 本次仅对齐实现事实，不迁移文本引擎。开发验证流程见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+>
+> 2026-11-12 环境注记：构建系统一行的“本机无完整 Xcode（仅 CLT）”是 2026-07 选型时的环境；
+> 当前开发机已装 Xcode 27.2。选型不变：仍以 SPM + 脚本为准，不以 Xcode 工程或 XCTest 为前提。
 
 ## 2.5 模块化（路线 A：静态内建 + 开关 + 懒加载）
 

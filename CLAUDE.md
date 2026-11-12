@@ -15,10 +15,15 @@
   implementer fails it, the main session takes over directly.
 - Changes touching the following paths must never be delegated; the main
   session handles them directly:
-  - apple-app/bundle-macos.sh and apple-app/release-ios.sh (packaging /
-    signing / secret red lines: .p8 and .env* must never enter the bundle)
-  - backend/framework/mcp/tools/api_tool_factory.py — the secrets handling
-    parts (read_secret / write_secret / .secrets.env, 0600 perms)
-  - config.yaml (bundle_id is an Apple-registered APNs topic; must not change)
+  - scripts/bundle-macos.sh and scripts/release-macos.sh (packaging /
+    signing / notarization / Sparkle signing; secret red lines: .p8, .env*,
+    .secrets.env and private keys must never enter the repo, bundle or logs)
+  - Signing, notarization, publishing and replacing /Applications/Karu.app
+    (see docs/RELEASE.md); credentials stay referenced via the keychain
+    (notary profile `tinyeditor-notary`, Sparkle EdDSA key)
+  - The bundle ID `dev.enkin.TinyEditor` (Info.plist in bundle-macos.sh) must
+    not change: it is the Sparkle update identity and keys user defaults,
+    Application Support data and file associations. Karu does not use APNs.
+- Project conventions, budgets and verification: see AGENTS.md and docs/.
 - Do not delegate trivial changes (a few lines in a single file); the main
   session does them directly, as delegation overhead is not worth it.

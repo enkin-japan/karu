@@ -5,7 +5,7 @@ description: Handles well-scoped, verifiable tasks - running tests and fixing
   messages, and implementing a single function or small module strictly
   following a detailed plan provided in the delegation instructions
 tools: Read, Edit, Write, Bash, Grep, Glob
-model: claude-sonnet-5
+model: sonnet
 ---
 You are an executor. Work strictly within the scope defined in the delegation
 instructions; do not expand the scope of changes.
