@@ -7,6 +7,31 @@
 > 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败。区分自动化通过、待用户实测与已发布；
 > 历史失败次数升级链不用于当前 Codex 流程，失败应报告证据，由主会话决定下一步。
 
+## v0.12.0 / build 26 发布（2026-11-12）
+
+- 用户明确指令“发布”。负责：main。状态：✅ 已发布、线上更新验证通过、正式版已安装本机。
+- 内容：M16（代码运行、Karu 安装工具链、语言列表、增强语言识别）。源码 `5f1a9d8`，版本提交与标签
+  `v0.12.0` → `a08e5f367122ff42b962bfd7b1720e763336ac97`（仅 bundle-macos.sh 版本号 0.11.0/25 → 0.12.0/26），已原子推送。
+  工具链清单保持 M16 当日实测版本，未更新。
+- 发布前验证（macOS 27.2 26B123、Xcode 27.2、Swift 6.4.2）：966 tests / 39 suites 通过；visual-smoke VISUAL OK、
+  FOLD GEOMETRY OK；mem-benchmark 两次 32 / 51 / 63 MB，无 SKIPPED，全部低于 99 MB 上限，中等文档超出 45 MB 目标。
+  同环境 A/B（git worktree 17f0786 与候选交替）：基线 30 / 49 / 62、50*/50 / 63（*空文档一次系统漂移），候选 31 / 50 / 63、
+  33 / 51 / 63，新版约 +1 MB，方向一致、幅度在已知漂移内；release 二进制 2.21 → 3.17 MB（__TEXT +416 KB、__DATA +32 KB），
+  推测为新增代码与三语文案元数据，非运行时常驻状态。按 §1 新规则已向用户汇报。中等文档超目标属既有情况（v0.11.0 同为 51 MB）。
+- 临时副本 Developer ID 签名与可信时间戳检查通过；新机 `tinyeditor-notary` profile 首次用于发布：公证请求
+  `b7faad75-f743-4ed5-b4dd-3ac2aa864ed7` Accepted，装订与验证通过，Gatekeeper `Notarized Developer ID`。
+  v0.11.0 记录的“发布依赖旧机公证”自此正式解除。
+- 产物：Karu.app 6.4 MB（0.12.0 / 26，deep/strict、stapler 通过）；Karu.zip 2439308 bytes（解包签名与票据通过、二进制一致）；
+  Karu.dmg 2827801 bytes（hdiutil 校验与签名通过）；包内无密钥类文件。Sparkle EdDSA 签名以 app 内置公钥（openssl）独立验签通过。
+  SHA256：zip `9748ae1263dfca7d2b8e692b795139ba6dcea77c532a37fba015c3beef544939`、dmg
+  `a8e7f2bf908fe19acc796155c6315f44c2a55cf7ffb80ac122e41f882bfdac9d`、appcast `4315de12ccd292c612ea2408a56e55779ac25ab1adccea383575f2aaf0049ebb`、
+  二进制 `6043b1630739eaff81f4c6a0261f4574ac82ee90aee38dfec5b016314b5590da`。
+- GitHub Release：三语发布说明，草稿阶段三资产 SHA256 与本地一致后公开并设为 latest：
+  https://github.com/enkin-japan/karu/releases/tag/v0.12.0 。从公开 `releases/latest/download/` 下载三资产与本地逐一一致；
+  线上 appcast 为 0.12.0 / 26，URL、长度（2439308）正确，线上 ZIP 用内置公钥验签通过。
+- 本机：正常请求测试构建退出后替换为正式版并启动，版本 0.12.0 (26)、stapler 与 Gatekeeper 通过、二进制与发布包一致；
+  删除同版测试构建，保留 v0.11.0 回退副本 `/Applications/.Karu-before-m16-20261112-223027.app`。
+
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 
 用户决策（2026-11-12）：常驻内存三场景上限统一上调为 99 MB，目标值不变，新增常驻内存仍须评估并汇报；
