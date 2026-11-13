@@ -5,10 +5,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_BIN=".build/release/KaruApp"
+# KARU_BENCH_APP_BIN 可覆盖被测二进制（例如同机 A/B 对照的基线版构建）；
+# 覆盖时不执行 swift build。未设置时行为不变。
+APP_BIN="${KARU_BENCH_APP_BIN:-.build/release/KaruApp}"
 
-echo "== [1/4] swift build -c release =="
-swift build -c release
+if [[ -n "${KARU_BENCH_APP_BIN:-}" ]]; then
+    echo "== [1/4] 使用 KARU_BENCH_APP_BIN=$APP_BIN（跳过 swift build） =="
+else
+    echo "== [1/4] swift build -c release =="
+    swift build -c release
+fi
 
 if [[ ! -x "$APP_BIN" ]]; then
     echo "ERROR: $APP_BIN not found or not executable after build" >&2
@@ -234,6 +240,54 @@ if [[ "$CLI_OPEN_SUPPORTED" -eq 0 ]]; then
     echo "（Sources/KaruApp/main.swift、Sources/KaruCore/Editor/EditorWindowController.swift"
     echo " 均未检测到 CommandLine 参数解析或 application(_:open:) 处理），"
     echo "因此“打开 medium.json”“打开 large.py”两轮标记为 SKIPPED，仅完成空文档启动基线一轮实测。"
+fi
+
+# ---- 推断样本（参考，M17 T17.0）----
+# 1000 行量级、名字与类型多样的 Python / TS 样本（scripts/m17/gen-inference-samples.py
+# 生成），仅作参考读数：只检查 99 MB 上限，不设预算目标，不改动上面三个正式场景。
+REF_PY="Tests/Fixtures/M17/inference/sample_1000.py"
+REF_TS="Tests/Fixtures/M17/inference/sample_1000.ts"
+
+echo ""
+echo "== 推断样本（参考） =="
+echo ""
+# 上面各轮以 kill 结束，未标记正常退出；未隔离时下一次启动会恢复上一轮打开的临时文件，
+# 参考轮读数会混入它们。调用方未设置 KARU_DIAGNOSTIC_DIRECTORY 时，仅为参考轮设置
+# 一个临时诊断目录（每次启动清空诊断会话），正式三轮的运行方式不变。
+REF_DIAG_DOMAIN=""
+if [[ -z "${KARU_DIAGNOSTIC_DIRECTORY:-}" ]]; then
+    export KARU_DIAGNOSTIC_DIRECTORY="$TMP_DIR/karu-bench-diag"
+    mkdir -p "$KARU_DIAGNOSTIC_DIRECTORY"
+    REF_DIAG_DOMAIN="dev.enkin.Karu.Diagnostics.karu-bench-diag"
+    echo "（参考轮使用临时诊断目录隔离会话；正式三轮未隔离。按 LEDGER 口径应整体设置 KARU_DIAGNOSTIC_DIRECTORY 运行。）"
+fi
+if [[ "$CLI_OPEN_SUPPORTED" -eq 1 ]]; then
+    REF1_KB=""; REF2_KB=""
+    [[ -f "$REF_PY" ]] && REF1_KB="$(run_round "打开 sample_1000.py（参考）" "$REF_PY")"
+    [[ -f "$REF_TS" ]] && REF2_KB="$(run_round "打开 sample_1000.ts（参考）" "$REF_TS")"
+    printf '%-22s | %-10s | %-8s | %s\n' "轮次" "实测(MB)" "上限(MB)" "结果"
+    printf '%-22s-+-%-10s-+-%-8s-+-%s\n' "----------------------" "----------" "--------" "------"
+    for pair in "sample_1000.py|$REF_PY|$REF1_KB" "sample_1000.ts|$REF_TS|$REF2_KB"; do
+        IFS='|' read -r ref_name ref_path ref_kb <<< "$pair"
+        if [[ ! -f "$ref_path" ]]; then
+            printf '%-22s | %-10s | %-8s | %s\n' "打开 $ref_name" "N/A" "99" "SKIPPED（缺少样本）"
+            continue
+        fi
+        ref_mb="$(kb_to_mb_str "$ref_kb")"
+        ref_result="FAIL"
+        if [[ -n "$ref_kb" ]] && awk -v mb="$ref_mb" 'BEGIN{exit !(mb <= 99)}'; then
+            ref_result="PASS"
+        else
+            OVERALL_FAIL=1
+        fi
+        printf '%-22s | %-10s | %-8s | %s\n' "打开 $ref_name" "$ref_mb" "99" "$ref_result"
+    done
+else
+    echo "推断样本两轮已跳过：app 无 CLI 打开文件路径。"
+fi
+# 清理上面为参考轮临时创建的诊断 defaults 域。
+if [[ -n "$REF_DIAG_DOMAIN" ]]; then
+    defaults delete "$REF_DIAG_DOMAIN" >/dev/null 2>&1 || true
 fi
 
 if [[ "$OVERALL_FAIL" -ne 0 ]]; then

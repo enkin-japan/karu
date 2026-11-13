@@ -1,0 +1,14 @@
+Meeting notes — platform sync
+
+Attendees: Ada, Grace, Linus
+Topics: Kubernetes upgrade, kubectl plugins, deployment freeze.
+
+1. The deployment pipeline deployed twice on Friday.
+2. Configuration drift: the configuration repo and the confirmed values differ.
+3. 下周 review the Kubernetes dashboard（仪表盘）and the incident timeline.
+
+Action items:
+- Ada: write the ⟨1⟩ upgrade plan
+- Grace: ⟨2⟩ the rollout
+- Linus: compare ⟨3⟩ with staging
+- Everyone: read the incident ⟨4⟩

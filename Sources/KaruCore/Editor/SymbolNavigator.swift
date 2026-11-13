@@ -6,9 +6,11 @@ import AppKit
 /// (functions / types / variables) with a case-insensitive filter field, and
 /// jumps the editor's selection to the chosen symbol's name.
 ///
-/// Design (ARCHITECTURE.md §3.4 "瞬时不常驻"): the symbol list is produced by a
-/// single `WordIndex.scanSymbolLocations` call at open time — **no** resident
-/// index, **no** `textStorage` observer. Closing the panel drops the list, the
+/// Design (ARCHITECTURE.md §3.4 "瞬时不常驻"): the symbol list is taken at open
+/// time — from the window's `DocumentAnalysis` snapshot (one declaration scan
+/// per document version, shared with highlight and completion; a transient
+/// scan when neither module is on) — **no** index of its own, **no**
+/// `textStorage` observer. Closing the panel drops the list, the
 /// table, and the panel itself, so a closed navigator's resident cost is ≈ 0.
 /// The owning `EditorWindowController` also releases its reference on close (via
 /// `onClose`), so the whole object is deallocated between uses.
@@ -56,10 +58,19 @@ public final class SymbolNavigator: NSObject {
     /// reference so the navigator is fully released when the panel goes away.
     public func present(languageIdentifier: String, onClose: (() -> Void)? = nil) {
         guard let textView else { return }
+        present(locations: WordIndex.scanSymbolLocations(text: textView.string,
+                                                         languageIdentifier: languageIdentifier),
+                onClose: onClose)
+    }
+
+    /// Shows the navigator over already-scanned `locations` — in an editor
+    /// window, the document analysis's current declaration snapshot (M17
+    /// T17.1), so opening the navigator does not rescan when one is held.
+    public func present(locations: [WordIndex.SymbolLocation], onClose: (() -> Void)? = nil) {
+        guard textView != nil else { return }
         self.onClose = onClose
 
-        allLocations = WordIndex.scanSymbolLocations(text: textView.string,
-                                                     languageIdentifier: languageIdentifier)
+        allLocations = locations
         filtered = allLocations
 
         let panel = makePanel()

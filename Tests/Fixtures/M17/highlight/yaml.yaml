@@ -1,0 +1,64 @@
+# CI pipeline definition.
+# A comment with "quotes" and key: value text.
+name: release-pipeline
+version: 2
+defaults: &defaults
+  timeout_minutes: 30
+  retries: 2
+  shell: bash
+
+env:
+  APP_NAME: karu
+  GREETING: "Hello, \"world\" # not a comment"
+  SINGLE: 'it''s fine # still a string'
+  URL: https://example.com/#anchor
+
+jobs:
+  build:
+    <<: *defaults
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build (literal block)
+        run: |
+          # this line is part of the block scalar, not a YAML comment
+          swift build -c release
+          echo "key: value inside a block"
+          if [ -n "$APP_NAME" ]; then
+            echo done
+          fi
+      - name: Folded description
+        description: >
+          This long description is folded into a single line.
+          A colon here: is just text, and # is not a comment.
+
+          Blank lines inside a folded scalar start a new paragraph.
+      - name: Keep trailing newlines
+        notes: |+
+          kept
+
+      - name: Strip with indentation indicator
+        script: |2-
+            indented two extra spaces
+          back at the indicator level
+      - name: Quoted multi-line
+        message: "first line
+          continued line # not a comment
+          last line"
+    outputs:
+      artifact: build/${{ env.APP_NAME }}.zip   # trailing comment
+
+  test:
+    <<: *defaults
+    needs: [build]
+    matrix:
+      os: [macos-14, macos-15]
+      swift: ["6.0", "6.1"]
+    run: >-
+      swift test
+      --parallel
+    enabled: true
+    threshold: 0.95
+    empty: ~
+...

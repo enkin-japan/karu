@@ -76,23 +76,26 @@ private extension NSColor {
 /// - **Module-gated**: gated on `module.highlight`. When the module is switched
 ///   off it removes every foreground attribute and drops all runtime state
 ///   (the compiled `LanguageDefinition`), so a disabled highlighter's resident
-///   cost returns to ≈ 0. It rebuilds from the remembered file extension when
+///   cost returns to ≈ 0. It rebuilds from the analysis's language when
 ///   re-enabled.
+/// - **Shared analysis** (M17 T17.1): the language, the declared-symbol table
+///   and the Python checkpoints come from the window's `DocumentAnalysis`; the
+///   engine no longer scans declarations itself. Constructed without one (unit
+///   tests, probes) it owns a private analysis and forwards its edits to it.
 @MainActor
-public final class HighlightEngine: NSObject, TextStorageObserving {
+public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnalysisConsumer {
     private weak var textView: NSTextView?
     private weak var scrollView: NSScrollView?
     private let moduleSettings: ModuleSettings
     private let theme = HighlightTheme()
 
-    /// Lightweight, always-retained config: the file extension used to resolve
-    /// a language. Survives module toggles so the language can be rebuilt.
-    private var languageExtension: String?
-
-    /// Lightweight, always-retained config: a language identifier pinned
-    /// explicitly (from the Language menu or the content sniffer). Takes
-    /// precedence over `languageExtension`; survives module toggles.
-    private var pinnedIdentifier: String?
+    /// The document analysis that owns the language, the declaration snapshot
+    /// and the lexical checkpoints. Shared with completion in an editor window;
+    /// private to this engine when none was injected (`ownsAnalysis`).
+    let analysis: DocumentAnalysis
+    /// True when the engine created `analysis` itself and must therefore feed
+    /// it the edits it observes (nobody else registered it on a hub).
+    private let ownsAnalysis: Bool
 
     /// Releasable runtime state: the compiled language definition. `nil` when
     /// the module is disabled or no language applies to the current file.
@@ -100,13 +103,11 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
 
     /// Releasable runtime state: in-document declared symbols (functions /
     /// types / variables), coloured in the gaps the language rules leave
-    /// uncoloured. Rebuilt on the edit-debounce tick and on language change;
-    /// dropped together with `language` when the module is switched off, so it
-    /// is part of the `isRuntimeStateReleased` guarantee.
+    /// uncoloured. Taken from the analysis's declaration snapshot on language
+    /// change and whenever a new snapshot is published (after the edit
+    /// debounce); dropped together with `language` when the module is switched
+    /// off, so it is part of the `isRuntimeStateReleased` guarantee.
     private var symbolTable: WordIndex.SymbolTable?
-    // One bounded lexical checkpoint, placed behind the viewport. It avoids
-    // rescanning a large file on every nearby scroll; never a per-line index.
-    private var pythonCheckpoint: (offset: Int, state: PythonTokenizer.State)?
 
     /// A single compiled identifier matcher, reused across every symbol pass.
     // swiftlint:disable:next force_try
@@ -123,16 +124,10 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// Internal (not private) so unit tests can assert the invalidation.
     var paintedRange: NSRange?
 
-    /// Pending debounced highlight pass, if any.
-    private var pendingHighlight: DispatchWorkItem?
-
     /// KVO token for the application's effective appearance. A light/dark switch
     /// invalidates the painted band and repaints the viewport so the temporary
     /// attribute colours re-resolve to the new appearance.
     private var appearanceObservation: NSKeyValueObservation?
-
-    /// Edit debounce interval (ARCHITECTURE: 0.05–0.1s).
-    private let debounceInterval: TimeInterval = 0.07
 
     // MARK: - Queryable state (for tests / diagnostics)
 
@@ -151,16 +146,27 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// `.default` in production; tests inject a private center for isolation).
     private let moduleCenter: NotificationCenter
 
+    /// `analysis`: the window's shared document analysis. When `nil` the
+    /// engine creates a private one on the same text view and settings (and
+    /// forwards its edits to it), so a standalone engine behaves as before.
     public init(textView: NSTextView,
                 scrollView: NSScrollView,
                 moduleSettings: ModuleSettings = ModuleSettings(),
-                moduleCenter: NotificationCenter = .default) {
+                moduleCenter: NotificationCenter = .default,
+                analysis: DocumentAnalysis? = nil) {
         self.textView = textView
         self.scrollView = scrollView
         self.moduleSettings = moduleSettings
         self.moduleCenter = moduleCenter
         self.moduleEnabled = moduleSettings.isEnabled(.highlight)
+        // Created before this engine observes module changes, so the analysis
+        // sees each toggle first (same order as in an editor window).
+        self.analysis = analysis ?? DocumentAnalysis(textView: textView,
+                                                     moduleSettings: moduleSettings,
+                                                     moduleCenter: moduleCenter)
+        self.ownsAnalysis = analysis == nil
         super.init()
+        self.analysis.addConsumer(self)
 
         // Recolour on scroll (AppKit view notifications: always `.default`).
         let clip = scrollView.contentView
@@ -193,97 +199,78 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         NotificationCenter.default.removeObserver(self)
         appearanceObservation?.invalidate()
         pendingViewport?.cancel()
-        pendingHighlight?.cancel()
     }
 
     // MARK: - Language wiring
 
-    /// Points the engine at the language owning `ext` (the file's extension).
-    /// Passing `nil` or an unknown extension leaves the engine idle. Remembers
-    /// the extension so the language can be rebuilt after a module toggle.
+    /// Points the document at the language owning `ext` (the file's
+    /// extension) via the analysis — the language is the analysis's, so in an
+    /// editor window this also re-points completion. Passing `nil` or an
+    /// unknown extension leaves the engine idle.
     ///
-    /// Returns the resolved language identifier (e.g. `"python"`) so the caller
-    /// can drive indent width from it without building the definition a second
-    /// time — or `nil` if the extension maps to no registered language.
+    /// Returns the resolved language identifier (e.g. `"python"`), or `nil` if
+    /// the extension maps to no registered language.
     @discardableResult
     public func setLanguage(fileExtension ext: String?) -> String? {
-        languageExtension = ext?.isEmpty == true ? nil : ext
-        pinnedIdentifier = nil
-        rebuildLanguage()
-        scheduleHighlight(debounced: false)
+        analysis.setLanguage(identifier: ext.flatMap { LanguageRegistry.identifier(forExtension: $0) })
         return currentLanguageIdentifier
     }
 
-    /// Points the engine at the language whose `identifier` is `id` (e.g. from
-    /// the Language menu or the content sniffer). Passing `nil` or an empty /
-    /// unknown identifier leaves the engine idle (plain text). Takes precedence
-    /// over any previously set file extension and is remembered so the language
-    /// survives a module toggle.
+    /// Points the document at the language whose `identifier` is `id` (e.g.
+    /// from the Language menu or the content sniffer) via the analysis. Passing
+    /// `nil` or an empty / unknown identifier leaves the engine idle (plain
+    /// text). The language lives in the analysis, so it survives a module
+    /// toggle.
     ///
     /// Returns the resolved identifier, or `nil` if it maps to no registered
     /// language.
     @discardableResult
     public func setLanguage(identifier id: String?) -> String? {
-        pinnedIdentifier = (id?.isEmpty == true) ? nil : id
-        languageExtension = nil
-        rebuildLanguage()
-        scheduleHighlight(debounced: false)
+        analysis.setLanguage(identifier: id)
         return currentLanguageIdentifier
     }
 
     /// The identifier of the language resolved for the current file (e.g.
-    /// `"markdown"`), independent of module state — used to drive indent width.
-    ///
-    /// When the module is enabled the identifier is read from the already-built
-    /// definition (no extra work). When the module is disabled the definition is
-    /// not retained, so this resolves it once on demand to read the identifier;
-    /// that stays lazy (nothing is built until a file actually asks for it).
+    /// `"markdown"`), independent of module state — read from the analysis,
+    /// which keeps it whether or not the definition is built.
     public var currentLanguageIdentifier: String? {
-        if let language { return language.identifier }
-        if let id = pinnedIdentifier { return LanguageRegistry.definition(forIdentifier: id)?.identifier }
-        guard let ext = languageExtension else { return nil }
-        return LanguageRegistry.definition(forExtension: ext)?.identifier
+        analysis.languageIdentifier.isEmpty ? nil : analysis.languageIdentifier
     }
 
-    /// Resolves the pinned identifier (preferred) or the file extension into a
-    /// compiled definition, but only while the module is enabled. Clears the
-    /// definition otherwise.
+    /// Builds the compiled definition for the analysis's language and takes
+    /// the symbol table from its declaration snapshot, but only while the
+    /// module is enabled. Clears both otherwise.
     private func rebuildLanguage() {
-        pythonCheckpoint = nil
-        // Language change (either `setLanguage` entry, and module re-enable which
-        // also routes through here) invalidates the painted band.
-        pendingHighlight?.cancel()
-        pendingHighlight = nil
+        // Language change (via the analysis, and module re-enable which also
+        // routes through here) invalidates the painted band.
         removeAllForegroundColour()
         guard moduleEnabled else {
             language = nil
             symbolTable = nil
             return
         }
-        if let id = pinnedIdentifier {
-            language = LanguageRegistry.definition(forIdentifier: id)
-        } else if let ext = languageExtension {
-            language = LanguageRegistry.definition(forExtension: ext)
-        } else {
-            language = nil
-        }
-        rebuildSymbolTable()
+        let id = analysis.languageIdentifier
+        language = id.isEmpty ? nil : LanguageRegistry.definition(forIdentifier: id)
+        symbolTable = language == nil ? nil : analysis.ensureDeclarations().scan.table
     }
 
-    /// Rescans the whole document for declared symbols for the active language.
-    ///
-    /// This is a single regex pass over `textView.string`; even for a 10 MB
-    /// document that is the same order of work the completion module already
-    /// performs on every edit (a debounced full scan), so it is acceptable
-    /// here. It runs only on the 0.07 s edit-debounce tick and on language
-    /// change — never per scroll frame — so viewport panning stays cheap.
-    private func rebuildSymbolTable() {
-        guard moduleEnabled, let language, let textView else {
-            symbolTable = nil
-            return
+    // MARK: - DocumentAnalysisConsumer
+
+    public func documentAnalysisDidChange(_ analysis: DocumentAnalysis,
+                                          reason: DocumentAnalysis.ChangeReason) {
+        switch reason {
+        case .language:
+            rebuildLanguage()
+            scheduleHighlight()
+        case .declarations:
+            // The post-edit rescan landed: refresh the table and repaint the
+            // viewport (what the engine's own debounce tick did before T17.1).
+            guard moduleEnabled, language != nil, let snapshot = analysis.declarations else { return }
+            symbolTable = snapshot.scan.table
+            highlightVisibleRange()
+        case .released:
+            break
         }
-        symbolTable = WordIndex.symbolTable(text: textView.string,
-                                            languageIdentifier: language.identifier)
     }
 
     // MARK: - Appearance
@@ -296,7 +283,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
     /// the module is off or no language applies.
     public func appearanceDidChange() {
         paintedRange = nil
-        scheduleHighlight(debounced: false)
+        scheduleHighlight()
     }
 
     // MARK: - Notifications
@@ -307,7 +294,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         pendingViewport?.cancel()
         let item = DispatchWorkItem { [weak self] in
             self?.pendingViewport = nil
-            self?.scheduleHighlight(debounced: false)
+            self?.scheduleHighlight()
         }
         pendingViewport = item
         DispatchQueue.main.async(execute: item)
@@ -320,7 +307,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         moduleEnabled = nowEnabled
         if nowEnabled {
             rebuildLanguage()
-            scheduleHighlight(debounced: false)
+            scheduleHighlight()
         } else {
             tearDown()
         }
@@ -328,9 +315,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
 
     /// Releases all runtime state and clears painted colour.
     private func tearDown() {
-        pythonCheckpoint = nil
-        pendingHighlight?.cancel()
-        pendingHighlight = nil
+        analysis.checkpoints.removeAll()
         language = nil
         symbolTable = nil
         removeAllForegroundColour()
@@ -343,31 +328,23 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
                                              changeInLength delta: Int,
                                              textStorage: NSTextStorage) {
         guard editedMask.contains(.editedCharacters) else { return }
-        pythonCheckpoint = nil
+        // A private analysis is on no hub: feed it the edit first (version bump,
+        // checkpoint invalidation, debounced declaration rescan).
+        if ownsAnalysis {
+            analysis.textStorageDidProcessEditing(editedMask: editedMask, editedRange: editedRange,
+                                                  changeInLength: delta, textStorage: textStorage)
+        }
         // Editing may have changed content anywhere in (or shifted) the painted
-        // band, so it can no longer be trusted to short-circuit a scroll.
+        // band, so it can no longer be trusted to short-circuit a scroll. The
+        // repaint follows the analysis's debounced rescan (`.declarations`).
         paintedRange = nil
-        scheduleHighlight(debounced: true)
     }
 
     // MARK: - Scheduling
 
-    private func scheduleHighlight(debounced: Bool) {
+    private func scheduleHighlight() {
         guard moduleEnabled, language != nil else { return }
-        pendingHighlight?.cancel()
-        guard debounced else {
-            pendingHighlight = nil
-            highlightVisibleRange()
-            return
-        }
-        // The debounced tick is an edit; refresh the symbol table (once per
-        // debounce, not per scroll) before repainting the viewport.
-        let item = DispatchWorkItem { [weak self] in
-            self?.rebuildSymbolTable()
-            self?.highlightVisibleRange()
-        }
-        pendingHighlight = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: item)
+        highlightVisibleRange()
     }
 
     // MARK: - Colouring
@@ -563,6 +540,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
 
         let ns = textView.string as NSString
         guard ns.length > 0 else { return }
+        let perfStart = PerfLog.isEnabled ? PerfLog.now() : 0
 
         let visibleRect = scrollView.contentView.bounds
 
@@ -574,6 +552,10 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
 
         // Zero-work fast path: the viewport is still inside the pre-painted band.
         if let painted = paintedRange, Self.range(painted, contains: viewportChars) {
+            if PerfLog.isEnabled {
+                PerfLog.record("highlight.pass", since: perfStart,
+                               ["lang": language.identifier, "painted": 0, "skipped": 1])
+            }
             return
         }
 
@@ -599,20 +581,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         var openDelimiter = language.identifier == "python" ? nil : Self.openMultilineDelimiter(
             in: ns, at: start, delimiters: language.multilineStringDelimiters)
 
-        var pythonState = PythonTokenizer.State()
-        if language.identifier == "python" {
-            let desiredAnchor = ns.lineRange(for: NSRange(location: max(0, start - 131_072), length: 0)).location
-            if pythonCheckpoint == nil || pythonCheckpoint!.offset > start {
-                pythonCheckpoint = (desiredAnchor, PythonTokenizer.state(in: ns, before: desiredAnchor, language: language))
-            } else if start - pythonCheckpoint!.offset > 262_144 {
-                let old = pythonCheckpoint!
-                pythonCheckpoint = (desiredAnchor, PythonTokenizer.state(in: ns, before: desiredAnchor,
-                    language: language, from: old.offset, initial: old.state))
-            }
-            let checkpoint = pythonCheckpoint!
-            pythonState = PythonTokenizer.state(in: ns, before: start, language: language,
-                                                from: checkpoint.offset, initial: checkpoint.state)
-        }
+        var pythonState = language.identifier == "python"
+            ? pythonLexicalState(at: start, in: ns, language: language)
+            : PythonTokenizer.State()
         var loc = start
         while loc < end {
             let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
@@ -651,6 +622,41 @@ public final class HighlightEngine: NSObject, TextStorageObserving {
         // Record the band we actually painted so subsequent scroll ticks that
         // stay within it can short-circuit.
         paintedRange = paintChars
+        if PerfLog.isEnabled {
+            PerfLog.record("highlight.pass", since: perfStart,
+                           ["lang": language.identifier, "painted": paintChars.length, "skipped": 0])
+        }
+    }
+
+    /// The Python lexical state at `start` (a line start). Resumes from the
+    /// analysis's nearest checkpoint at or before `start` (or offset 0), walks
+    /// forward in line-aligned chunks of about `CheckpointStore.spacing`,
+    /// recording a checkpoint at each chunk boundary, then advances to `start`.
+    private func pythonLexicalState(at start: Int, in ns: NSString,
+                                    language: LanguageDefinition) -> PythonTokenizer.State {
+        var offset = 0
+        var state = PythonTokenizer.State()
+        if let checkpoint = analysis.checkpoints.nearest(atOrBefore: start),
+           case .python(let saved) = checkpoint.state {
+            offset = checkpoint.offset
+            state = saved
+        }
+        let spacing = CheckpointStore.spacing
+        while start - offset > spacing {
+            // The line start at or before `offset + spacing`; when one line is
+            // longer than the spacing, the end of that line instead.
+            var next = ns.lineRange(for: NSRange(location: offset + spacing, length: 0)).location
+            if next <= offset {
+                next = NSMaxRange(ns.lineRange(for: NSRange(location: offset, length: 0)))
+            }
+            guard next > offset, next < start else { break }
+            state = PythonTokenizer.state(in: ns, before: next, language: language,
+                                          from: offset, initial: state)
+            analysis.checkpoints.record(offset: next, state: .python(state))
+            offset = next
+        }
+        return PythonTokenizer.state(in: ns, before: start, language: language,
+                                     from: offset, initial: state)
     }
 
     /// Colours the declared-symbol identifiers on one line, but only in the

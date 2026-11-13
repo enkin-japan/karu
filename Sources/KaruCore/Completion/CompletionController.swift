@@ -24,8 +24,16 @@ public protocol CompletionKeyHandler: AnyObject {
     func dismissCompletion()
 }
 
-/// Prefix-completion module: builds a document word index (debounced), scans
-/// lightweight declaration symbols, and drives a floating suggestion popup.
+/// Prefix-completion module: builds a document word index (debounced), takes
+/// declaration symbols from the document analysis, and drives a floating
+/// suggestion popup.
+///
+/// Symbols (M17 T17.1) come from the shared `DocumentAnalysis` snapshot — one
+/// declaration scan per document version, shared with the highlighter and the
+/// navigator. A language change reaches this controller synchronously through
+/// the analysis, so the very next request already ranks the new language's
+/// declarations. Constructed without an analysis (unit tests, probes) it owns
+/// a private one and forwards its edits to it.
 ///
 /// Gating (ARCHITECTURE.md §2.5), mirroring `HighlightEngine`: gated on
 /// `module.completion`. Switching the module off dismisses the popup and drops
@@ -33,16 +41,23 @@ public protocol CompletionKeyHandler: AnyObject {
 /// returns to ≈ 0 (`isRuntimeStateReleased == true`); switching it back on
 /// rebuilds from the current document.
 @MainActor
-public final class CompletionController: NSObject, TextStorageObserving, CompletionKeyHandler {
+public final class CompletionController: NSObject, TextStorageObserving, CompletionKeyHandler,
+                                          DocumentAnalysisConsumer {
     private weak var textView: NSTextView?
     private let moduleSettings: ModuleSettings
     private let moduleCenter: NotificationCenter
+
+    /// The document analysis owning the language and declaration snapshot.
+    let analysis: DocumentAnalysis
+    /// True when this controller created `analysis` and must feed it edits.
+    private let ownsAnalysis: Bool
 
     /// Releasable runtime state: the document word index. `nil` when the module
     /// is disabled or nothing has been indexed yet.
     private var wordIndex: WordIndex?
 
-    /// Releasable runtime state: the last scanned declaration symbols.
+    /// Releasable runtime state: the declaration symbols of the analysis's
+    /// latest snapshot (kept while a post-edit rescan is pending).
     private var symbols: Set<String> = []
 
     /// Always-retained, cheap config resolved from the file's language.
@@ -77,16 +92,32 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     /// Whether the `completion` module is enabled.
     public var isModuleEnabled: Bool { moduleEnabled }
 
+    /// The suggestion list the popup is currently showing (empty when no popup
+    /// is up). Read-only window for the M17 baseline capture suite.
+    var currentSuggestionsForTesting: [String] { panel == nil ? [] : suggestions }
+
+    /// The declaration symbols the next request will rank (tests).
+    var currentSymbolsForTesting: Set<String> { symbols }
+
     // MARK: - Init
 
+    /// `analysis`: the window's shared document analysis; `nil` creates a
+    /// private one on the same text view and settings.
     public init(textView: NSTextView,
                 moduleSettings: ModuleSettings = ModuleSettings(),
-                moduleCenter: NotificationCenter = .default) {
+                moduleCenter: NotificationCenter = .default,
+                analysis: DocumentAnalysis? = nil) {
         self.textView = textView
         self.moduleSettings = moduleSettings
         self.moduleCenter = moduleCenter
         self.moduleEnabled = moduleSettings.isEnabled(.completion)
+        self.analysis = analysis ?? DocumentAnalysis(textView: textView,
+                                                     moduleSettings: moduleSettings,
+                                                     moduleCenter: moduleCenter)
+        self.ownsAnalysis = analysis == nil
         super.init()
+        self.analysis.addConsumer(self)
+        applyLanguageKeywords()
 
         moduleCenter.addObserver(
             self, selector: #selector(moduleSettingsChanged(_:)),
@@ -101,11 +132,25 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     // MARK: - Language wiring
 
-    /// Points the controller at the language owning `ext` so it can offer that
-    /// language's keywords and pick the right symbol-scan dialect. Resolving the
-    /// definition also exercises `LanguageDefinition.keywords`.
+    /// Points the document at the language owning `ext` via the analysis (in
+    /// an editor window that also re-points the highlighter). The analysis
+    /// calls back synchronously, which loads the keywords and symbols.
     public func setLanguage(fileExtension ext: String?) {
-        guard let ext, let def = LanguageRegistry.definition(forExtension: ext) else {
+        analysis.setLanguage(identifier: ext.flatMap { LanguageRegistry.identifier(forExtension: $0) })
+    }
+
+    /// Points the document at the language whose stable `identifier` is `id`
+    /// (e.g. `"python"`) via the analysis. An empty / unknown identifier drops
+    /// back to no language keywords.
+    public func setLanguage(identifier id: String?) {
+        analysis.setLanguage(identifier: id)
+    }
+
+    /// Loads the keywords + builtins of the analysis's language (always-retained
+    /// cheap config, independent of module state).
+    private func applyLanguageKeywords() {
+        let id = analysis.languageIdentifier
+        guard !id.isEmpty, let def = LanguageRegistry.definition(forIdentifier: id) else {
             languageIdentifier = ""
             languageKeywords = []
             return
@@ -114,38 +159,60 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         languageKeywords = def.keywords + def.builtins
     }
 
-    /// Points the controller at the language whose stable `identifier` is `id`
-    /// (e.g. `"python"`, chosen from the Language menu / toolbar or inferred by
-    /// the content sniffer). An empty / unknown identifier drops back to no
-    /// language keywords. This is the menu/sniff-driven counterpart to
-    /// `setLanguage(fileExtension:)`; keeping completion in step with the
-    /// highlighter was the wiring T6.2's review flagged as outstanding.
-    public func setLanguage(identifier id: String?) {
-        guard let id, !id.isEmpty,
-              let def = LanguageRegistry.definition(forIdentifier: id) else {
-            languageIdentifier = ""
-            languageKeywords = []
-            return
+    // MARK: - DocumentAnalysisConsumer
+
+    public func documentAnalysisDidChange(_ analysis: DocumentAnalysis,
+                                          reason: DocumentAnalysis.ChangeReason) {
+        switch reason {
+        case .language:
+            applyLanguageKeywords()
+            // Fixes the pre-T17.1 defect: the first request after a switch
+            // used the previous language's symbols until the next rebuild.
+            if moduleEnabled, wordIndex != nil {
+                symbols = analysis.ensureDeclarations().scan.completionSymbols
+            }
+        case .declarations:
+            if moduleEnabled, wordIndex != nil, let snapshot = analysis.declarations {
+                symbols = snapshot.scan.completionSymbols
+            }
+        case .released:
+            break
         }
-        languageIdentifier = def.identifier
-        languageKeywords = def.keywords + def.builtins
     }
 
     // MARK: - Indexing
 
-    /// Synchronously (re)builds the word index and symbol set from the current
-    /// document — but only while the module is enabled. Safe to call after a
-    /// file loads and used by the debounced edit path.
+    /// Synchronously (re)builds the word index from the current document and
+    /// takes the symbol set from the analysis (scanning only if it holds no
+    /// current snapshot) — but only while the module is enabled. Safe to call
+    /// after a file loads and used by the debounced edit path.
     public func indexDocument() {
+        indexDocument(scanDeclarationsIfMissing: true)
+    }
+
+    /// `scanDeclarationsIfMissing: false` is the debounced edit path: it only
+    /// adopts a current snapshot and otherwise keeps the previous symbols until
+    /// the analysis publishes (`.declarations`), so a scheduling race between
+    /// the two debounces can never cause a second synchronous full scan.
+    private func indexDocument(scanDeclarationsIfMissing: Bool) {
         guard moduleEnabled, let text = textView?.string else { return }
+        let start = PerfLog.isEnabled ? PerfLog.now() : 0
         wordIndex = WordIndex(text: text)
-        symbols = WordIndex.symbols(text: text, languageIdentifier: languageIdentifier)
+        if scanDeclarationsIfMissing {
+            symbols = analysis.ensureDeclarations().scan.completionSymbols
+        } else if let snapshot = analysis.declarations {
+            symbols = snapshot.scan.completionSymbols
+        }
+        if PerfLog.isEnabled {
+            PerfLog.record("completion.index", since: start,
+                           ["docLen": (text as NSString).length, "lang": languageIdentifier])
+        }
     }
 
     private func scheduleRebuild() {
         guard moduleEnabled else { return }
         pendingRebuild?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.indexDocument() }
+        let item = DispatchWorkItem { [weak self] in self?.indexDocument(scanDeclarationsIfMissing: false) }
         pendingRebuild = item
         DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: item)
     }
@@ -180,6 +247,10 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
                                              changeInLength delta: Int,
                                              textStorage: NSTextStorage) {
         guard editedMask.contains(.editedCharacters) else { return }
+        if ownsAnalysis {
+            analysis.textStorageDidProcessEditing(editedMask: editedMask, editedRange: editedRange,
+                                                  changeInLength: delta, textStorage: textStorage)
+        }
         scheduleRebuild()
     }
 
@@ -210,7 +281,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         guard moduleEnabled else { return }
         // First real use allocates the index lazily rather than waiting for the
         // debounce to fire, so the very first popup is not delayed.
-        if wordIndex == nil { indexDocument() }
+        let lazyIndex = wordIndex == nil
+        if lazyIndex { indexDocument() }
 
         if isCompletionActive {
             updatePopup()
@@ -220,6 +292,20 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
                   first.isLetter || first == "_" else { return }
             updatePopup()
         }
+        if PerfLog.isEnabled { logRequest(event, lazyIndex: lazyIndex) }
+    }
+
+    /// `completion.request`: from the triggering key event to the popup being
+    /// shown / refiltered or dismissed. Only called while `KARU_PERFLOG` is on.
+    private func logRequest(_ event: NSEvent, lazyIndex: Bool) {
+        let shown = panel != nil && !suggestions.isEmpty
+        let prefixLen = prefixRange?.length ?? (prefixRun()?.length ?? 0)
+        PerfLog.record("completion.request",
+                       durationSeconds: ProcessInfo.processInfo.systemUptime - event.timestamp,
+                       ["result": shown ? "shown" : "dismissed",
+                        "count": shown ? suggestions.count : 0,
+                        "prefixLen": prefixLen,
+                        "lazyIndex": lazyIndex ? 1 : 0])
     }
 
     public func dismissCompletion() { dismiss() }
@@ -254,6 +340,14 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     /// The `\w+`-run immediately before the caret, if it is at least
     /// `minPrefixLength` long and the selection is a plain caret.
     private func currentPrefix() -> (text: String, range: NSRange)? {
+        guard let textView, let range = prefixRun(),
+              range.length >= minPrefixLength else { return nil }
+        return ((textView.string as NSString).substring(with: range), range)
+    }
+
+    /// The word-character run ending at a plain caret (possibly empty), or
+    /// `nil` when there is a non-empty selection.
+    private func prefixRun() -> NSRange? {
         guard let textView else { return nil }
         let selection = textView.selectedRange()
         guard selection.length == 0 else { return nil }
@@ -264,10 +358,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             let ch = ns.substring(with: NSRange(location: start - 1, length: 1))
             if isWordCharacter(ch) { start -= 1 } else { break }
         }
-        let length = selection.location - start
-        guard length >= minPrefixLength else { return nil }
-        let range = NSRange(location: start, length: length)
-        return (ns.substring(with: range), range)
+        return NSRange(location: start, length: selection.location - start)
     }
 
     private func isWordCharacter(_ ch: String) -> Bool {

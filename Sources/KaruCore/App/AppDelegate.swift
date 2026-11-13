@@ -802,6 +802,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationWillTerminate(_ notification: Notification) {
         CodeRunner.stopAll(force: true)
         ToolchainManager.cancelAllInstalls()
+        // KARU_PERFLOG timing log (M17): write whatever is still buffered.
+        PerfLog.flush()
     }
 
     /// All launch routes share the same recovery policy. Explicit opens may

@@ -128,6 +128,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case draftRestored, draftDiscardedDiskNewer, draftRestoredAsUntitled
     // Feature-module display names.
     case moduleHighlight, moduleCompletion, moduleFormat, moduleRun
+    case moduleTypeInference, moduleCrossFileIndex
     // Status bar.
     case statusLnCol, statusCharOne, statusCharMany
     case statusSelection, statusSelectionSingleLine

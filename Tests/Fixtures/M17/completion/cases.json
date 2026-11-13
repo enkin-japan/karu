@@ -1,0 +1,1552 @@
+[
+  {
+    "id": "py-scope-01",
+    "file": "completion/scope/py_params.py",
+    "language": "python",
+    "caret": 1,
+    "typed": "user_c",
+    "kind": "scope",
+    "category": "param",
+    "expectTop1": "user_count",
+    "expectTop3": [
+      "user_count",
+      "user_config"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Plan §1 gap: render(user_count, user_config) vs refresh()'s user_cache; user_count was used on the line above, so it ranks first."
+  },
+  {
+    "id": "py-scope-02",
+    "file": "completion/scope/py_params.py",
+    "language": "python",
+    "caret": 2,
+    "typed": "line_",
+    "kind": "scope",
+    "category": "param",
+    "expectTop3": [
+      "line_width",
+      "line_style"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Keyword-only params after a default containing parentheses: scale=(1.0, 2.0) must not end the parameter list early."
+  },
+  {
+    "id": "py-scope-03",
+    "file": "completion/scope/py_params.py",
+    "language": "python",
+    "caret": 3,
+    "typed": "retry",
+    "kind": "scope",
+    "category": "param",
+    "expectTop3": [
+      "retry_limit",
+      "retry_backoff"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Annotated params with defaults; schedule()'s retry_interval belongs to another function and must rank after both."
+  },
+  {
+    "id": "py-scope-04",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 1,
+    "typed": "total_p",
+    "kind": "scope",
+    "category": "local",
+    "expectTop1": "total_price",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Local total_price beats paginate()'s total_pages."
+  },
+  {
+    "id": "py-scope-05",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 2,
+    "typed": "label_",
+    "kind": "scope",
+    "category": "shadow",
+    "expectTop3": [
+      "label_text",
+      "label_width"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Local label_text shadows the module-level label_text; one candidate (local source) plus the param label_width."
+  },
+  {
+    "id": "py-scope-06",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 3,
+    "typed": "shipment_r",
+    "kind": "scope",
+    "category": "loop",
+    "expectTop1": "shipment_row",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "For-loop target shipment_row vs rate()'s shipment_rate."
+  },
+  {
+    "id": "py-scope-07",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 4,
+    "typed": "handle_",
+    "kind": "scope",
+    "category": "with",
+    "expectTop1": "handle_in",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "with … as handle_in; write_config()'s handle_out is out of scope."
+  },
+  {
+    "id": "py-scope-08",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 5,
+    "typed": "parse_e",
+    "kind": "scope",
+    "category": "except",
+    "expectTop1": "parse_error",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "except ValueError as parse_error vs count_errors()'s parse_errors_total."
+  },
+  {
+    "id": "py-scope-09",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 6,
+    "typed": "sq_v",
+    "kind": "scope",
+    "category": "comprehension",
+    "expectTop1": "sq_value",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Comprehension variable used inside its own filter clause."
+  },
+  {
+    "id": "py-scope-10",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 7,
+    "typed": "last_",
+    "kind": "scope",
+    "category": "destructure",
+    "expectTop1": "last_name",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Tuple-unpacking target last_name vs audit()'s last_login."
+  },
+  {
+    "id": "py-scope-11",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 8,
+    "typed": "retry_b",
+    "kind": "scope",
+    "category": "closure",
+    "expectTop1": "retry_budget",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Closure reads the enclosing function's retry_budget; backoff()'s retry_backoff is unrelated."
+  },
+  {
+    "id": "py-scope-12",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 9,
+    "typed": "count_",
+    "kind": "scope",
+    "category": "nested",
+    "expectTop1": "count_items",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Caret in the outer function: count_items is in scope, the nested helper's count_total is not."
+  },
+  {
+    "id": "py-scope-13",
+    "file": "completion/scope/py_locals.py",
+    "language": "python",
+    "caret": 10,
+    "typed": "udn",
+    "kind": "scope",
+    "category": "camel",
+    "expectTop1": "user_display_name",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Plan §1: word-initial matching of user_display_name from 'udn'."
+  },
+  {
+    "id": "py-scope-14",
+    "file": "completion/scope/py_negative.py",
+    "language": "python",
+    "caret": 5,
+    "typed": "user_n",
+    "kind": "scope",
+    "category": "param",
+    "expectTop3": [
+      "user_name",
+      "user_nickname"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Inside an f-string replacement field the caret is code: params complete."
+  },
+  {
+    "id": "py-neg-01",
+    "file": "completion/scope/py_negative.py",
+    "language": "python",
+    "caret": 1,
+    "typed": "fake",
+    "kind": "scope",
+    "category": "negative",
+    "forbidden": [],
+    "expectNoPopup": true,
+    "holdout": false,
+    "note": "Caret inside a # comment: no automatic popup (plan §5.1)."
+  },
+  {
+    "id": "py-neg-02",
+    "file": "completion/scope/py_negative.py",
+    "language": "python",
+    "caret": 2,
+    "typed": "fake",
+    "kind": "scope",
+    "category": "negative",
+    "forbidden": [],
+    "expectNoPopup": true,
+    "holdout": true,
+    "note": "Caret inside a plain string literal: no automatic popup."
+  },
+  {
+    "id": "py-neg-03",
+    "file": "completion/scope/py_negative.py",
+    "language": "python",
+    "caret": 3,
+    "typed": "fake_",
+    "kind": "scope",
+    "category": "negative",
+    "expectTop1": "fake_count",
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "def fake_name(): appears only in a comment and must not surface as a declaration; the real local fake_count wins. Decision (main, 2026-11-13): such names may still appear as plain document words, ranked below every code-sourced candidate and labelled as document words; surfacing them as a declaration/symbol or above a code candidate fails.",
+    "docWordOnly": [
+      "fake_name"
+    ],
+    "forbidden": []
+  },
+  {
+    "id": "py-neg-04",
+    "file": "completion/scope/py_negative.py",
+    "language": "python",
+    "caret": 4,
+    "typed": "ghost_",
+    "kind": "scope",
+    "category": "negative",
+    "expectTop1": "ghost_limit",
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "def ghost_handler() appears only inside a string literal; the real local ghost_limit wins. Decision (main, 2026-11-13): such names may still appear as plain document words, ranked below every code-sourced candidate and labelled as document words; surfacing them as a declaration/symbol or above a code candidate fails.",
+    "docWordOnly": [
+      "ghost_handler"
+    ],
+    "forbidden": []
+  },
+  {
+    "id": "js-scope-01",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 1,
+    "typed": "cartT",
+    "kind": "scope",
+    "category": "param",
+    "expectTop1": "cartTotal",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Function param cartTotal vs header()'s cartTitle."
+  },
+  {
+    "id": "js-scope-02",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 2,
+    "typed": "eventP",
+    "kind": "scope",
+    "category": "param",
+    "expectTop1": "eventPayload",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Arrow-function parameter list."
+  },
+  {
+    "id": "js-scope-03",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 3,
+    "typed": "retryC",
+    "kind": "scope",
+    "category": "local",
+    "expectTop1": "retryCount",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "let retryCount in this function vs limits()'s retryCap."
+  },
+  {
+    "id": "js-scope-04",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 4,
+    "typed": "userR",
+    "kind": "scope",
+    "category": "destructure",
+    "expectTop1": "userRole",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Object destructuring binding userRole vs region()'s userRegion."
+  },
+  {
+    "id": "js-scope-05",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 5,
+    "typed": "restI",
+    "kind": "scope",
+    "category": "destructure",
+    "expectTop1": "restItems",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Array destructuring binding."
+  },
+  {
+    "id": "js-scope-06",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 6,
+    "typed": "fetchE",
+    "kind": "scope",
+    "category": "catch",
+    "expectTop1": "fetchError",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "catch (fetchError) outranks the module-level fetchEnabled."
+  },
+  {
+    "id": "js-scope-07",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 7,
+    "typed": "rowV",
+    "kind": "scope",
+    "category": "loop",
+    "expectTop1": "rowValue",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "for (const rowValue of rows) binding."
+  },
+  {
+    "id": "js-scope-08",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 8,
+    "typed": "counterS",
+    "kind": "scope",
+    "category": "closure",
+    "expectTop1": "counterStep",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Arrow closure reads the enclosing const counterStep."
+  },
+  {
+    "id": "js-scope-09",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 9,
+    "typed": "udn",
+    "kind": "scope",
+    "category": "camel",
+    "expectTop1": "userDisplayName",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Plan §1: camel-case initials 'udn' -> userDisplayName."
+  },
+  {
+    "id": "js-scope-10",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 10,
+    "typed": "url",
+    "kind": "scope",
+    "category": "case",
+    "expectTop1": "urlValue",
+    "expectTop3": [
+      "urlValue",
+      "URLValue"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Plan §1: URLValue and urlValue both exist; the exact-case prefix match urlValue ranks first, URLValue stays available."
+  },
+  {
+    "id": "js-scope-11",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 11,
+    "typed": "tot",
+    "kind": "scope",
+    "category": "local",
+    "expectTop1": "total",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Plan §5.2: `const total = (subtotal + tax)` is a variable, not an arrow function (no =>). Expected kind label: local/variable, never function; current scan classifies it as a function, which only the T17.6 label / highlight colour can show."
+  },
+  {
+    "id": "js-scope-12",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 12,
+    "typed": "timeo",
+    "kind": "scope",
+    "category": "shadow",
+    "expectTop3": [
+      "timeout"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Param timeout shadows the module const timeout: exactly one 'timeout' candidate, sourced from the param."
+  },
+  {
+    "id": "js-scope-13",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 13,
+    "typed": "qt",
+    "kind": "scope",
+    "category": "param",
+    "expectTop1": "qty",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Inside a template-literal ${…} interpolation the caret is code: params complete."
+  },
+  {
+    "id": "js-scope-14",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 14,
+    "typed": "o",
+    "kind": "scope",
+    "category": "local",
+    "expectTop1": "userCount",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Plan §1 mid-word caret: document text is `userC|unt`; typing 'o' gives `userCo|unt`. userCount must be offered; accepting must replace the whole identifier (T17.6), which this list capture cannot observe."
+  },
+  {
+    "id": "js-neg-01",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 15,
+    "typed": "To",
+    "kind": "scope",
+    "category": "negative",
+    "forbidden": [],
+    "expectNoPopup": true,
+    "holdout": false,
+    "note": "Caret inside a // comment: no automatic popup."
+  },
+  {
+    "id": "js-neg-02",
+    "file": "completion/scope/js_scope.js",
+    "language": "javascript",
+    "caret": 16,
+    "typed": "No",
+    "kind": "scope",
+    "category": "negative",
+    "forbidden": [],
+    "expectNoPopup": true,
+    "holdout": true,
+    "note": "Caret inside a string literal: no automatic popup."
+  },
+  {
+    "id": "ts-scope-01",
+    "file": "completion/scope/ts_scope.ts",
+    "language": "typescript",
+    "caret": 1,
+    "typed": "patchR",
+    "kind": "scope",
+    "category": "param",
+    "expectTop1": "patchRecord",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Generic function parameter with a type annotation Partial<TRecord>."
+  },
+  {
+    "id": "ts-scope-02",
+    "file": "completion/scope/ts_scope.ts",
+    "language": "typescript",
+    "caret": 2,
+    "typed": "retryP",
+    "kind": "scope",
+    "category": "param",
+    "expectTop1": "retryPolicy",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Constructor parameter property (private retryPolicy: RetryPolicy)."
+  },
+  {
+    "id": "ts-scope-03",
+    "file": "completion/scope/ts_scope.ts",
+    "language": "typescript",
+    "caret": 3,
+    "typed": "origin",
+    "kind": "scope",
+    "category": "destructure",
+    "expectTop3": [
+      "originX",
+      "originY"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Destructured, type-annotated parameter ({ originX, originY }: Point)."
+  },
+  {
+    "id": "ts-scope-04",
+    "file": "completion/scope/ts_scope.ts",
+    "language": "typescript",
+    "caret": 4,
+    "typed": "pageS",
+    "kind": "scope",
+    "category": "param",
+    "expectTop1": "pageSizeHint",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Optional/defaulted params (pageIndex?: number, pageSizeHint = 20), caret inside ${…}."
+  },
+  {
+    "id": "ts-scope-05",
+    "file": "completion/scope/ts_scope.ts",
+    "language": "typescript",
+    "caret": 5,
+    "typed": "la",
+    "kind": "scope",
+    "category": "local",
+    "expectTop3": [
+      "DisplayMode",
+      "DisplayDensity"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Type position: `let mode: Displa|` offers the file's type aliases DisplayMode / DisplayDensity."
+  },
+  {
+    "id": "ts-neg-01",
+    "file": "completion/scope/ts_scope.ts",
+    "language": "typescript",
+    "caret": 6,
+    "typed": "Fl",
+    "kind": "scope",
+    "category": "negative",
+    "forbidden": [],
+    "expectNoPopup": true,
+    "holdout": false,
+    "note": "Caret inside a // comment: no automatic popup."
+  },
+  {
+    "id": "ts-neg-02",
+    "file": "completion/scope/ts_scope.ts",
+    "language": "typescript",
+    "caret": 7,
+    "typed": "fakeF",
+    "kind": "scope",
+    "category": "negative",
+    "forbidden": [],
+    "expectNoPopup": true,
+    "holdout": false,
+    "note": "Caret inside template-literal text (not an interpolation): no automatic popup."
+  },
+  {
+    "id": "ts-neg-03",
+    "file": "completion/scope/ts_scope.ts",
+    "language": "typescript",
+    "caret": 8,
+    "typed": "fakeF",
+    "kind": "scope",
+    "category": "negative",
+    "expectTop1": "fakeFlag",
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "fakeFn is declared only inside a block comment and fakeHelper only inside a string; the real param fakeFlag wins. Decision (main, 2026-11-13): such names may still appear as plain document words, ranked below every code-sourced candidate and labelled as document words; surfacing them as a declaration/symbol or above a code candidate fails.",
+    "docWordOnly": [
+      "fakeFn",
+      "fakeHelper"
+    ],
+    "forbidden": []
+  },
+  {
+    "id": "txt-01",
+    "file": "completion/scope/notes.txt",
+    "language": "plaintext",
+    "caret": 1,
+    "typed": "Kubern",
+    "kind": "scope",
+    "category": "plain",
+    "expectTop1": "Kubernetes",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Plain Text keeps document-word completion."
+  },
+  {
+    "id": "txt-02",
+    "file": "completion/scope/notes.txt",
+    "language": "plaintext",
+    "caret": 2,
+    "typed": "depl",
+    "kind": "scope",
+    "category": "plain",
+    "expectTop3": [
+      "deployment",
+      "deployed"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Two document words share the prefix."
+  },
+  {
+    "id": "txt-03",
+    "file": "completion/scope/notes.txt",
+    "language": "plaintext",
+    "caret": 3,
+    "typed": "conf",
+    "kind": "scope",
+    "category": "case",
+    "expectTop1": "configuration",
+    "expectTop3": [
+      "configuration",
+      "confirmed"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Configuration / configuration / confirmed: exact-case prefix first."
+  },
+  {
+    "id": "txt-04",
+    "file": "completion/scope/notes.txt",
+    "language": "plaintext",
+    "caret": 4,
+    "typed": "time",
+    "kind": "scope",
+    "category": "plain",
+    "expectTop1": "timeline",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Document word next to CJK text."
+  },
+  {
+    "id": "py-mem-01",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "selfThis",
+    "expectInTop10": [
+      "host",
+      "timeout",
+      "retries",
+      "connect",
+      "close"
+    ],
+    "forbidden": [
+      "token",
+      "commit"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "self. inside a method lists __init__ fields and the class's methods."
+  },
+  {
+    "id": "py-mem-02",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 2,
+    "typed": ".ti",
+    "kind": "member",
+    "category": "selfThis",
+    "expectTop1": "timeout",
+    "forbidden": [
+      "token"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Plan §1: after writing self.timeout, `self.ti` offers timeout first."
+  },
+  {
+    "id": "py-mem-03",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 3,
+    "typed": ".st",
+    "kind": "member",
+    "category": "literal",
+    "expectTop3": [
+      "startswith",
+      "strip"
+    ],
+    "expectInTop10": [
+      "startswith",
+      "strip"
+    ],
+    "forbidden": [
+      "append"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "name = \"abc\" -> str members."
+  },
+  {
+    "id": "py-mem-04",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 4,
+    "typed": ".ap",
+    "kind": "member",
+    "category": "container",
+    "expectTop1": "append",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "items = [] -> list members."
+  },
+  {
+    "id": "py-mem-05",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 5,
+    "typed": ".it",
+    "kind": "member",
+    "category": "container",
+    "expectTop1": "items",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "counts = {} -> dict members."
+  },
+  {
+    "id": "py-mem-06",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 6,
+    "typed": ".up",
+    "kind": "member",
+    "category": "return",
+    "expectTop1": "upper",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Annotated return type -> str."
+  },
+  {
+    "id": "py-mem-07",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 7,
+    "typed": ".ex",
+    "kind": "member",
+    "category": "return",
+    "expectTop1": "extend",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Unannotated function returning a list literal."
+  },
+  {
+    "id": "py-mem-08",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 8,
+    "typed": ".lo",
+    "kind": "member",
+    "category": "generic",
+    "expectTop1": "lower",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "first(xs: list[T]) -> T with list[str] argument -> str."
+  },
+  {
+    "id": "py-mem-09",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 9,
+    "typed": ".",
+    "kind": "member",
+    "category": "classField",
+    "expectInTop10": [
+      "host",
+      "timeout",
+      "retries",
+      "connect",
+      "close"
+    ],
+    "forbidden": [
+      "token",
+      "commit"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Instance of Client: fields from __init__ plus methods; Session's members must not leak in."
+  },
+  {
+    "id": "py-mem-10",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 10,
+    "typed": ".",
+    "kind": "member",
+    "category": "classField",
+    "expectInTop10": [
+      "x",
+      "y",
+      "norm"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "@dataclass fields and a @property."
+  },
+  {
+    "id": "py-mem-11",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 11,
+    "typed": ".no",
+    "kind": "member",
+    "category": "classField",
+    "expectTop1": "norm",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "@property norm."
+  },
+  {
+    "id": "py-mem-12",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 12,
+    "typed": ".up",
+    "kind": "member",
+    "category": "narrowing",
+    "expectTop1": "upper",
+    "forbidden": [
+      "bit_length"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "isinstance(value, str) narrows int | str to str."
+  },
+  {
+    "id": "py-mem-13",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 13,
+    "typed": ".na",
+    "kind": "member",
+    "category": "narrowing",
+    "expectTop1": "name",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "`maybe is not None` narrows Optional[Path] to Path."
+  },
+  {
+    "id": "py-mem-14",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 14,
+    "typed": ".lo",
+    "kind": "member",
+    "category": "generic",
+    "expectTop1": "lower",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Loop element of list[str]."
+  },
+  {
+    "id": "py-mem-15",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 15,
+    "typed": ".up",
+    "kind": "member",
+    "category": "incomplete",
+    "expectTop1": "upper",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Unclosed call two lines above; the text = \"hi\" binding is still understood."
+  },
+  {
+    "id": "py-mem-16",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 16,
+    "typed": ".pat",
+    "kind": "member",
+    "category": "stdlibModule",
+    "expectTop1": "path",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "import os -> os.path."
+  },
+  {
+    "id": "py-mem-17",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 17,
+    "typed": ".jo",
+    "kind": "member",
+    "category": "stdlibModule",
+    "expectTop1": "join",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "os.path.join."
+  },
+  {
+    "id": "py-mem-18",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 18,
+    "typed": ".",
+    "kind": "member",
+    "category": "usage",
+    "expectInTop10": [
+      "render",
+      "size"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Untyped param: members observed earlier on the same binding."
+  },
+  {
+    "id": "py-mem-19",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 19,
+    "typed": ".",
+    "kind": "member",
+    "category": "usage",
+    "expectInTop10": [
+      "id",
+      "total"
+    ],
+    "forbidden": [
+      "email",
+      "last_login"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Cross-contamination guard: order and user both have .id, but user's other members must not be offered for order."
+  },
+  {
+    "id": "py-mem-20",
+    "file": "completion/member/py_members.py",
+    "language": "python",
+    "caret": 20,
+    "typed": ".re",
+    "kind": "member",
+    "category": "return",
+    "expectTop3": [
+      "read",
+      "readline",
+      "readlines"
+    ],
+    "expectInTop10": [
+      "read",
+      "readline",
+      "readlines"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "with open(path) as fh -> TextIOWrapper."
+  },
+  {
+    "id": "js-mem-01",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "selfThis",
+    "expectInTop10": [
+      "count",
+      "step",
+      "increment",
+      "reset"
+    ],
+    "forbidden": [
+      "fruits",
+      "weigh"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "this. inside a method: constructor fields and methods."
+  },
+  {
+    "id": "js-mem-02",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 2,
+    "typed": ".co",
+    "kind": "member",
+    "category": "selfThis",
+    "expectTop1": "count",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "this.co -> count."
+  },
+  {
+    "id": "js-mem-03",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 3,
+    "typed": ".pa",
+    "kind": "member",
+    "category": "literal",
+    "expectTop3": [
+      "padEnd",
+      "padStart"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "JSDoc @param {string} gives the param a string type."
+  },
+  {
+    "id": "js-mem-04",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 4,
+    "typed": ".to",
+    "kind": "member",
+    "category": "literal",
+    "expectInTop10": [
+      "toUpperCase",
+      "toLowerCase"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "const name = 'abc' -> String.prototype members."
+  },
+  {
+    "id": "js-mem-05",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 5,
+    "typed": ".pu",
+    "kind": "member",
+    "category": "container",
+    "expectTop1": "push",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "const items = [] -> Array.prototype.push."
+  },
+  {
+    "id": "js-mem-06",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 6,
+    "typed": ".ge",
+    "kind": "member",
+    "category": "container",
+    "expectTop1": "get",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "new Map() -> Map.prototype.get."
+  },
+  {
+    "id": "js-mem-07",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 7,
+    "typed": ".",
+    "kind": "member",
+    "category": "literal",
+    "expectInTop10": [
+      "host",
+      "port"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Object-literal shape."
+  },
+  {
+    "id": "js-mem-08",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 8,
+    "typed": ".js",
+    "kind": "member",
+    "category": "return",
+    "expectTop1": "json",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "await fetch() unwraps Promise<Response>."
+  },
+  {
+    "id": "js-mem-09",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 9,
+    "typed": ".",
+    "kind": "member",
+    "category": "return",
+    "expectInTop10": [
+      "name",
+      "age"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Return value is an object literal."
+  },
+  {
+    "id": "js-mem-10",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 10,
+    "typed": ".",
+    "kind": "member",
+    "category": "classField",
+    "expectInTop10": [
+      "count",
+      "step",
+      "increment",
+      "reset"
+    ],
+    "forbidden": [
+      "fruits",
+      "weigh"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "new Counter(): fields and methods; Basket's members must not leak in."
+  },
+  {
+    "id": "js-mem-11",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 11,
+    "typed": ".tr",
+    "kind": "member",
+    "category": "narrowing",
+    "expectTop3": [
+      "trim",
+      "trimEnd",
+      "trimStart"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "typeof v === 'string' narrows to string."
+  },
+  {
+    "id": "js-mem-12",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 12,
+    "typed": ".sl",
+    "kind": "member",
+    "category": "incomplete",
+    "expectTop1": "slice",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Unclosed object literal above; text = 'x' still resolves to string."
+  },
+  {
+    "id": "js-mem-13",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 13,
+    "typed": ".",
+    "kind": "member",
+    "category": "usage",
+    "expectInTop10": [
+      "mount",
+      "width"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Untyped param: members observed earlier on the same binding."
+  },
+  {
+    "id": "js-mem-14",
+    "file": "completion/member/js_members.js",
+    "language": "javascript",
+    "caret": 14,
+    "typed": ".",
+    "kind": "member",
+    "category": "usage",
+    "expectInTop10": [
+      "id",
+      "total"
+    ],
+    "forbidden": [
+      "email",
+      "lastLogin"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Cross-contamination guard: order.id vs user.id; user's other members must not be offered for order."
+  },
+  {
+    "id": "ts-mem-01",
+    "file": "completion/member/ts_members.ts",
+    "language": "typescript",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "classField",
+    "expectInTop10": [
+      "id",
+      "email",
+      "profile"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Parameter typed with an interface."
+  },
+  {
+    "id": "ts-mem-02",
+    "file": "completion/member/ts_members.ts",
+    "language": "typescript",
+    "caret": 2,
+    "typed": ".",
+    "kind": "member",
+    "category": "narrowing",
+    "expectInTop10": [
+      "avatarUrl",
+      "bio"
+    ],
+    "forbidden": [
+      "email"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Optional chaining u.profile?. resolves Profile."
+  },
+  {
+    "id": "ts-mem-03",
+    "file": "completion/member/ts_members.ts",
+    "language": "typescript",
+    "caret": 3,
+    "typed": ".",
+    "kind": "member",
+    "category": "narrowing",
+    "expectInTop10": [
+      "kind",
+      "radius"
+    ],
+    "forbidden": [
+      "side"
+    ],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "'radius' in s narrows Shape to Circle."
+  },
+  {
+    "id": "ts-mem-04",
+    "file": "completion/member/ts_members.ts",
+    "language": "typescript",
+    "caret": 4,
+    "typed": ".fi",
+    "kind": "member",
+    "category": "generic",
+    "expectInTop10": [
+      "filter",
+      "find",
+      "findIndex"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Array<string> members."
+  },
+  {
+    "id": "ts-mem-05",
+    "file": "completion/member/ts_members.ts",
+    "language": "typescript",
+    "caret": 5,
+    "typed": ".le",
+    "kind": "member",
+    "category": "return",
+    "expectTop1": "length",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Destructured from await load(): Promise<{ data: string[] }>."
+  },
+  {
+    "id": "ts-mem-06",
+    "file": "completion/member/ts_members.ts",
+    "language": "typescript",
+    "caret": 6,
+    "typed": ".to",
+    "kind": "member",
+    "category": "generic",
+    "expectInTop10": [
+      "toFixed",
+      "toString"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "wrap<T>(value: T) with T = number -> Number members."
+  },
+  {
+    "id": "swift-decl-01",
+    "file": "completion/explicit/account.swift",
+    "language": "swift",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectInTop10": [
+      "owner",
+      "balance",
+      "deposit",
+      "statement"
+    ],
+    "forbidden": [
+      "accounts"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "let account: Account -> struct members; Bank's own members must not leak in."
+  },
+  {
+    "id": "swift-decl-02",
+    "file": "completion/explicit/account.swift",
+    "language": "swift",
+    "caret": 2,
+    "typed": ".ba",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectTop1": "balance",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Parameter typed Account."
+  },
+  {
+    "id": "go-decl-01",
+    "file": "completion/explicit/server.go",
+    "language": "go",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectInTop10": [
+      "Addr",
+      "Port",
+      "Start",
+      "Stop"
+    ],
+    "forbidden": [
+      "ID",
+      "Remote",
+      "Close"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "var srv Server -> fields plus methods with a Server receiver."
+  },
+  {
+    "id": "go-decl-02",
+    "file": "completion/explicit/server.go",
+    "language": "go",
+    "caret": 2,
+    "typed": ".",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectInTop10": [
+      "ID",
+      "Remote",
+      "Close"
+    ],
+    "forbidden": [
+      "Addr",
+      "Port"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Param c *Conn -> Conn fields and methods only."
+  },
+  {
+    "id": "rust-decl-01",
+    "file": "completion/explicit/config.rs",
+    "language": "rust",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectInTop10": [
+      "name",
+      "retries",
+      "validate",
+      "with_retries"
+    ],
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "cfg: &Config -> struct fields plus impl methods."
+  },
+  {
+    "id": "rust-decl-02",
+    "file": "completion/explicit/config.rs",
+    "language": "rust",
+    "caret": 2,
+    "typed": ".re",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectTop1": "retries",
+    "forbidden": [],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "let cfg: Config."
+  },
+  {
+    "id": "java-decl-01",
+    "file": "completion/explicit/Invoice.java",
+    "language": "java",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectInTop10": [
+      "total",
+      "customer",
+      "send"
+    ],
+    "forbidden": [
+      "build"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Invoice inv -> fields and methods."
+  },
+  {
+    "id": "cs-decl-01",
+    "file": "completion/explicit/Player.cs",
+    "language": "csharp",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectInTop10": [
+      "Score",
+      "Name",
+      "Jump"
+    ],
+    "forbidden": [
+      "Tick"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "Player p -> field, property and method."
+  },
+  {
+    "id": "c-decl-01",
+    "file": "completion/explicit/point.c",
+    "language": "c",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectInTop10": [
+      "x",
+      "y"
+    ],
+    "forbidden": [
+      "width",
+      "origin"
+    ],
+    "expectNoPopup": false,
+    "holdout": false,
+    "note": "struct point p -> x / y only; struct rect's members must not leak in."
+  },
+  {
+    "id": "cpp-decl-01",
+    "file": "completion/explicit/buffer.cpp",
+    "language": "cpp",
+    "caret": 1,
+    "typed": ".",
+    "kind": "member",
+    "category": "explicitDecl",
+    "expectInTop10": [
+      "size",
+      "clear",
+      "data"
+    ],
+    "forbidden": [
+      "flush"
+    ],
+    "expectNoPopup": false,
+    "holdout": true,
+    "note": "Buffer buf -> class members."
+  }
+]

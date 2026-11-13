@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Embedded languages</title>
+  <style>
+    /* CSS sub-language: a block comment */
+    :root { --accent: #3b82f6; }
+    body > .card::before {
+      content: "</div> is text inside a CSS string";
+      color: var(--accent);
+    }
+    @media (max-width: 600px) { .card { padding: 4px; } }
+  </style>
+  <!-- An HTML comment between blocks: <script>not a script</script> -->
+</head>
+<body>
+  <div id="app" class="card" data-count="3">Loading…</div>
+
+  <script>
+    // Classic inline script: JavaScript sub-language.
+    const app = document.getElementById('app');
+    const total = items => items.reduce((s, i) => s + i.price, 0) / 100;
+    const html = `<p class="total">${total([{ price: 250 }])} EUR</p>`;
+    if (/<\/?p>/.test(html)) {
+      app.innerHTML = html; /* a "</script>" inside a string would end the
+                               element in a browser, so none appears here */
+    }
+  </script>
+
+  <script type="module">
+    import { render } from './render.js';
+    const state = { count: Number(document.querySelector('#app').dataset.count) };
+    export const label = `count: ${state.count / 2}`;
+    render(label);
+  </script>
+
+  <script type="text/template" id="row-template">
+    <li class="row">{{ name }} — const notCode = 1; // plain template text</li>
+    <li>if (x) { return "still not JavaScript"; }</li>
+  </script>
+
+  <script type="application/json" id="config">
+    { "theme": "dark", "lines": [1, 2, 3] }
+  </script>
+
+  <p>Text after the scripts with &amp; entities and <em>markup</em>.</p>
+</body>
+</html>

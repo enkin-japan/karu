@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE catalog [
+  <!ENTITY company "Karu &amp; Co">
+]>
+<!--
+  Catalog export.
+  Comment text that looks like markup: <item id="fake">not an element</item>
+  and attribute-like text name="value".
+-->
+<catalog xmlns="urn:example:catalog"
+         xmlns:xs="http://www.w3.org/2001/XMLSchema-instance"
+         version="2"
+         generated="2026-11-13T08:30:00Z">
+  <vendor>&company;</vendor>
+  <item id="A-100" price="9.99" currency='EUR'>
+    <name>Widget &lt;small&gt;</name>
+    <description><![CDATA[
+      Raw text: <b>bold</b> stays literal, & is fine,
+      and a fake comment end --> is just text.
+      if (a < b && c > d) { return "x"; }
+    ]]></description>
+    <tags>
+      <tag>tools</tag><!-- inline comment --><tag>home</tag>
+    </tags>
+  </item>
+  <item id="B-200"
+        price="120"
+        note="multi-line
+attribute value with &quot;entities&quot;">
+    <name>Lamp</name>
+    <script type="text/javascript"><![CDATA[
+      function f() { return 1 < 2; } // CDATA keeps this as text
+    ]]></script>
+  </item>
+  <?process-me option="value"?>
+  <!-- A second
+       multi-line comment with <tags/> inside -->
+  <empty/>
+</catalog>

@@ -21,6 +21,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// index) and the highlight engine. Retained here because the storage holds
     /// its delegate weakly.
     private let observerHub = TextStorageObserverHub()
+    /// Per-window document analysis (M17 T17.1): the single owner of the
+    /// language, document version, lexical checkpoints and the declaration
+    /// snapshot shared by the highlighter, completion and the navigator.
+    /// Registered on the hub before every other observer.
+    private(set) var documentAnalysis: DocumentAnalysis!
     private var highlightEngine: HighlightEngine!
     /// Retained here because the hub only holds observers weakly (T15.5).
     private var shrinkRepaint: ShrinkRepaintObserver?
@@ -202,6 +207,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // highlight engine register with it.
         textView.textStorage?.delegate = observerHub
 
+        // Document analysis first: on every edit it bumps the version and
+        // invalidates checkpoints before any consumer reacts (M17 T17.1).
+        let analysis = DocumentAnalysis(textView: textView)
+        observerHub.add(analysis)
+        self.documentAnalysis = analysis
+
         // Attach the line-number gutter as the scroll view's vertical ruler.
         let gutter = GutterView(scrollView: scrollView,
                                 textView: textView,
@@ -213,7 +224,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         self.gutterView = gutter
 
         // Syntax highlighter: viewport-only, module-gated, foreground-only.
-        let engine = HighlightEngine(textView: textView, scrollView: scrollView)
+        let engine = HighlightEngine(textView: textView, scrollView: scrollView, analysis: analysis)
         observerHub.add(engine)
         self.highlightEngine = engine
 
@@ -246,7 +257,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
         // Prefix completion: shares the observer hub for edit notifications and
         // routes keys through the text view's completion hook. Module-gated.
-        let completion = CompletionController(textView: textView)
+        let completion = CompletionController(textView: textView, analysis: analysis)
         observerHub.add(completion)
         (textView as? EditorTextView)?.completionKeyHandler = completion
         self.completionController = completion
@@ -542,34 +553,22 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             userOverrodeLanguage = false
             didAutoDetectLanguage = false
 
-            // Detect the language by file extension: point the highlight engine
-            // at it and reuse the identifier it resolves to drive indent width.
-            // If the extension resolves nothing (unknown / no extension), fall
-            // back to sniffing the file's content. `setLanguage` builds the
-            // definition at most once.
+            // Detect the language by file extension; if the extension resolves
+            // nothing (unknown / no extension), fall back to sniffing the file's
+            // content. One `setDocumentLanguage` call points the analysis (and
+            // through it the highlighter and completion) at it, records it on
+            // the text view and re-infers the indent unit from the content.
             let ext = url.pathExtension
-            var identifier = highlightEngine.setLanguage(fileExtension: ext)
+            var identifier = LanguageRegistry.identifier(forExtension: ext)
             if identifier == nil, let sniffed = LanguageSniffer.sniff(text) {
-                identifier = highlightEngine.setLanguage(identifier: sniffed)
+                identifier = LanguageRegistry.canonicalIdentifier(sniffed)
                 didAutoDetectLanguage = true
             }
-            setEditorLanguage(identifier: identifier ?? ext.lowercased())
+            setDocumentLanguage(identifier, editorIdentifier: identifier ?? ext.lowercased())
 
-            // Point completion at the same language (for its keywords / symbol
-            // dialect) and index the freshly loaded document. Prefer the resolved
-            // identifier (covers the sniffed case); fall back to the raw
-            // extension when nothing resolved.
-            if let identifier {
-                completionController.setLanguage(identifier: identifier)
-            } else {
-                completionController.setLanguage(fileExtension: ext)
-            }
+            // Index the freshly loaded document's words (its declarations come
+            // from the snapshot the language change just produced).
             completionController.indexDocument()
-
-            // Infer the indent unit from the file's actual content (VS Code's
-            // detectIndentation), so the rainbow and Tab match what the file
-            // really uses rather than the language's fixed default.
-            redetectIndentUnit()
 
             // Loading fresh content should not go through the undo stack, and
             // the didChange notification only fires for user edits, so we
@@ -846,17 +845,25 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         didAutoDetectLanguage = true
     }
 
-    /// Single choke point for a language change: points the highlighter and the
-    /// completion module at `identifier`, records it on the text view (for indent
-    /// width / formatting), then refreshes the toolbar popup and status bar so
-    /// every entry path (menu / toolbar / sniffer / load) stays in sync.
+    /// Language change from the menu / toolbar / sniffer / run sniffing.
     private func applyLanguage(identifier: String) {
-        highlightEngine.setLanguage(identifier: identifier)
-        setEditorLanguage(identifier: identifier)
-        completionController.setLanguage(identifier: identifier)
+        setDocumentLanguage(identifier)
+    }
+
+    /// The single choke point for every language change (load, revert / Auto,
+    /// menu, toolbar, sniffer, recovered drafts via the sniffer). Points the
+    /// document analysis at `identifier` — which re-points the highlighter and
+    /// completion synchronously and invalidates every analysis — then records
+    /// `editorIdentifier` (default: `identifier`, or `""` for plain) on the
+    /// text view for indent width / formatting / folding, re-infers the indent
+    /// unit and refreshes the toolbar popup and status bar.
+    private func setDocumentLanguage(_ identifier: String?, editorIdentifier: String? = nil) {
+        documentAnalysis.setLanguage(identifier: identifier)
+        let shown = editorIdentifier ?? identifier ?? ""
+        setEditorLanguage(identifier: shown)
         redetectIndentUnit()
         toolbarController?.refreshAll()
-        statusBar.updateLanguage(identifier)
+        statusBar.updateLanguage(shown)
     }
 
     /// Records the language on the text view (it drives indent width, formatting
@@ -998,8 +1005,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         guard symbolNavigator == nil else { return }
         let navigator = SymbolNavigator(textView: textView)
         symbolNavigator = navigator
-        let identifier = highlightEngine.currentLanguageIdentifier ?? currentLanguageIdentifierValue
-        navigator.present(languageIdentifier: identifier) { [weak self] in
+        // The current declaration snapshot when highlight / completion hold
+        // one (no rescan); otherwise a transient scan, as before T17.1.
+        let locations = documentAnalysis.ensureDeclarations().scan.locations
+        navigator.present(locations: locations) { [weak self] in
             self?.symbolNavigator = nil
         }
     }
@@ -1289,30 +1298,16 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
         if let url = documentController.fileURL {
             let ext = url.pathExtension
-            var identifier = highlightEngine.setLanguage(fileExtension: ext)
+            var identifier = LanguageRegistry.identifier(forExtension: ext)
             if identifier == nil, let sniffed = LanguageSniffer.sniff(textView.string) {
-                identifier = highlightEngine.setLanguage(identifier: sniffed)
+                identifier = LanguageRegistry.canonicalIdentifier(sniffed)
                 didAutoDetectLanguage = true
             }
-            let resolved = identifier ?? ext.lowercased()
-            setEditorLanguage(identifier: resolved)
-            if let identifier {
-                completionController.setLanguage(identifier: identifier)
-            } else {
-                completionController.setLanguage(fileExtension: ext)
-            }
-            redetectIndentUnit()
-            toolbarController?.refreshAll()
-            statusBar.updateLanguage(resolved)
+            setDocumentLanguage(identifier, editorIdentifier: identifier ?? ext.lowercased())
         } else {
             // Untitled: reset to plain, then let the sniffer re-classify if the
             // buffer already holds enough content.
-            highlightEngine.setLanguage(identifier: nil)
-            setEditorLanguage(identifier: "")
-            completionController.setLanguage(identifier: nil)
-            redetectIndentUnit()
-            toolbarController?.refreshAll()
-            statusBar.updateLanguage("")
+            setDocumentLanguage(nil, editorIdentifier: "")
             maybeAutoDetectLanguage()
         }
     }
@@ -1500,6 +1495,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // focus-loss auto-save would silently write out changes the user just
         // answered "Don't Save" about.
         isClosing = true
+        // Pending analysis work never outlives its window (M17 T17.1).
+        documentAnalysis?.cancelPendingWork()
         // A run never outlives its window (T16.3b).
         tearDownRunSession()
         // Session bookkeeping (T14.8). Closing a window *by hand* is the user

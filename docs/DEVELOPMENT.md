@@ -68,6 +68,19 @@
 - 更多探针入口位于 `AppDelegate.swift`：`KARU_FOLDTEST`、`KARU_SCRATCHTEST`、
   `KARU_LINKTEST`、`KARU_SESSIONTEST`、`KARU_SCROLLTEST`、`KARU_INDENTTEST`、
   `KARU_DOTTEST`、`KARU_GHOSTTEST`。参数不统一，运行前读当前实现，不猜测调用方式。
+- 计时日志 `KARU_PERFLOG=<绝对路径>`（M17 T17.0，`App/PerfLog.swift`）：启动时一次性判定，
+  未设置时每个埋点只多一次分支、不建文件。开启后以 TSV 追加
+  `uptime_ns  event  duration_us  key=value…`，后台队列至多每 0.5 s 写一次，正常退出时补写；
+  被强杀时可能丢最后 0.5 s。事件：`completion.request`（按键事件时间戳到弹出/刷新/收起，
+  `result`、`count`、`prefixLen`、`lazyIndex`）、`completion.index`、`highlight.pass`
+  （`lang`、`painted`、`skipped`）、`analysis.declarations`（T17.1 起取代 `highlight.symbols`：每个文档版本一次的
+  共用声明扫描，`docLen`、`lang`、`version`）。用
+  `python3 -I scripts/m17/perf-summary.py <日志>` 汇总各事件的 count / p50 / p95 / max。
+  M17 基线采集套件（`KARU_M17_BASELINE=1 swift test --filter M17Baseline`）另写
+  `Tests/Fixtures/M17/baseline/` 与 `.build/m17-baseline/probes.txt`，普通 `swift test` 跳过。
+- `mem-benchmark.sh` 可用 `KARU_BENCH_APP_BIN=<二进制>` 指定被测构建（同机 A/B，跳过构建）；正式三轮之后
+  另有两轮「推断样本（参考）」（`Tests/Fixtures/M17/inference/sample_1000.py` / `.ts`，只查 99 MB 上限）。
+  各轮以 kill 结束，整体运行时应设置 `KARU_DIAGNOSTIC_DIRECTORY`，否则下一轮会恢复上一轮打开的文件。
 - 会启动 App 的验证先检查用户数据副作用。特别是草稿本探针会写示例内容，不能直接对
   用户真实草稿运行；使用现有隔离入口或由主会话先设计隔离，不声称环境变量天然隔离。
 - 内存以 ARCHITECTURE.md 的窗口尺寸和 phys_footprint 口径判断，记录系统/工具链与构建。

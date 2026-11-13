@@ -1,0 +1,6 @@
+{"ts": "2026-11-13T08:30:00Z", "level": "info", "msg": "started", "pid": 4242}
+{"ts": "2026-11-13T08:30:01Z", "level": "debug", "msg": "path // not a comment", "ok": true}
+{"ts": "2026-11-13T08:30:02Z", "level": "warn", "msg": "quote \" and /* not a comment */", "retries": 2}
+{"ts": "2026-11-13T08:30:03Z", "level": "error", "msg": "failed", "err": {"code": -1, "detail": null}}
+{"ts": "2026-11-13T08:30:04Z", "level": "info", "msg": "unicode é ✓", "tags": ["a", "b"], "ratio": 1.5e2}
+{"ts": "2026-11-13T08:30:05Z", "level": "info", "msg": "stopped", "ok": false}

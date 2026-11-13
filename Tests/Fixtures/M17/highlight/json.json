@@ -1,0 +1,24 @@
+{
+  "name": "karu-sample",
+  "version": "0.13.0",
+  "description": "Strings with // and /* that are not comments */",
+  "escapes": "quote \" backslash \\ tab \t unicode é 😀",
+  "url": "https://example.com/#anchor",
+  "count": 42,
+  "ratio": -0.75e-3,
+  "enabled": true,
+  "disabled": false,
+  "missing": null,
+  "tags": ["alpha", "beta", "with \"quotes\""],
+  "nested": {
+    "level": 2,
+    "items": [
+      { "id": 1, "label": "first", "price": 9.99 },
+      { "id": 2, "label": "second: {not an object}", "price": 120 }
+    ],
+    "empty": {},
+    "emptyList": []
+  },
+  "key with spaces": "value",
+  "": "empty key"
+}

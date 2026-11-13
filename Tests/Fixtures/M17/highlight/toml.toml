@@ -1,0 +1,52 @@
+# Application settings.
+# A comment with "quotes" and key = "value" text.
+title = "Karu settings"
+version = "0.13.0"
+url = "https://example.com/#not-a-comment"
+path = 'C:\Users\literal\no\escapes'
+escaped = "tab\t quote\" unicode \u00e9"
+
+description = """
+A basic multi-line string.
+key = "value" here is text, and # is not a comment.
+Line ending backslash joins \
+  the next line."""
+
+literal_block = '''
+Literal multi-line: \n stays two characters,
+"double quotes" and # hashes are plain text.
+'''
+
+one_line_triple = """single line triple-quoted"""
+quotes_inside = """She said "hi" and ""twice"" quoted."""
+
+[server]
+host = "127.0.0.1"
+port = 8080
+enabled = true
+ratio = 0.75
+started = 2026-11-13T08:30:00Z
+date_only = 2026-11-13
+
+[server.tls]
+cert = "/etc/karu/cert.pem"  # trailing comment
+ciphers = [
+  "TLS_AES_128_GCM_SHA256",   # first
+  "TLS_AES_256_GCM_SHA384",
+]
+
+[[plugins]]
+name = "highlight"
+options = { theme = "dark", lines = [1, 2, 3] }
+
+[[plugins]]
+name = "completion"
+script = '''
+#!/bin/sh
+echo "plugin script # not a comment"
+'''
+
+[owner."quoted key"]
+"dotted.key" = 1_000
+hex = 0xDEAD_BEEF
+inf_value = inf

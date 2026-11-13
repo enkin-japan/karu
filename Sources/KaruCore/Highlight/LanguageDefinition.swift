@@ -162,60 +162,75 @@ public struct LanguageDefinition {
 /// (T3.2) registers Markdown, JSON(L), Python, JS/Node, TypeScript, HTML,
 /// CSS. Batch 2 (T3.3) adds C, C++, C#, Java, Bash, SQL, XML/plist.
 public enum LanguageRegistry {
-    /// Extension (lowercased) → factory closure. Referencing this map does not
-    /// build any definition; only calling a closure does.
-    private static let factories: [String: () -> LanguageDefinition] = [
-        "json": JSONLanguage.make,
-        "jsonl": JSONLLanguage.make,
-        "ndjson": JSONLLanguage.make,
-        "md": MarkdownLanguage.make,
-        "markdown": MarkdownLanguage.make,
-        "py": PythonLanguage.make,
-        "pyw": PythonLanguage.make,
-        "js": JavaScriptLanguage.make,
-        "mjs": JavaScriptLanguage.make,
-        "cjs": JavaScriptLanguage.make,
-        "ts": TypeScriptLanguage.make,
-        "html": HTMLLanguage.make,
-        "htm": HTMLLanguage.make,
-        "css": CSSLanguage.make,
-        "c": CLanguage.make,
-        "h": CLanguage.make,
-        "cpp": CppLanguage.make,
-        "cc": CppLanguage.make,
-        "cxx": CppLanguage.make,
-        "hpp": CppLanguage.make,
-        "hh": CppLanguage.make,
-        "cs": CSharpLanguage.make,
-        "java": JavaLanguage.make,
-        "sh": BashLanguage.make,
-        "bash": BashLanguage.make,
-        "zsh": BashLanguage.make,
-        "sql": SQLLanguage.make,
-        "xml": XMLPlistLanguage.make,
-        "plist": XMLPlistLanguage.make,
-        "svg": XMLPlistLanguage.make,
-        "xib": XMLPlistLanguage.make,
-        "storyboard": XMLPlistLanguage.make,
-        "yaml": YAMLLanguage.make,
-        "yml": YAMLLanguage.make,
-        "toml": TOMLLanguage.make,
-        "go": GoLanguage.make,
-        "rs": RustLanguage.make,
-        "swift": SwiftLanguage.make,
+    /// Extension (lowercased) → language identifier. Referencing this map does
+    /// not build any definition; the identifier then selects the factory in
+    /// `identifierFactories`, so an extension and its identifier always resolve
+    /// to the same definition.
+    private static let extensionIdentifiers: [String: String] = [
+        "json": "json",
+        "jsonl": "jsonl",
+        "ndjson": "jsonl",
+        "md": "markdown",
+        "markdown": "markdown",
+        "py": "python",
+        "pyw": "python",
+        "js": "javascript",
+        "mjs": "javascript",
+        "cjs": "javascript",
+        "ts": "typescript",
+        "html": "html",
+        "htm": "html",
+        "css": "css",
+        "c": "c",
+        "h": "c",
+        "cpp": "cpp",
+        "cc": "cpp",
+        "cxx": "cpp",
+        "hpp": "cpp",
+        "hh": "cpp",
+        "cs": "csharp",
+        "java": "java",
+        "sh": "bash",
+        "bash": "bash",
+        "zsh": "bash",
+        "sql": "sql",
+        "xml": "xml",
+        "plist": "xml",
+        "svg": "xml",
+        "xib": "xml",
+        "storyboard": "xml",
+        "yaml": "yaml",
+        "yml": "yaml",
+        "toml": "toml",
+        "go": "go",
+        "rs": "rust",
+        "swift": "swift",
     ]
 
     /// Extensions that have a registered definition, without building any of
     /// them. Useful for detecting supported files (and for asserting laziness).
     public static var supportedExtensions: [String] {
-        Array(factories.keys)
+        Array(extensionIdentifiers.keys)
+    }
+
+    /// The identifier of the language owning `ext` (case-insensitive), or `nil`
+    /// for an unregistered extension. Builds nothing.
+    public static func identifier(forExtension ext: String) -> String? {
+        extensionIdentifiers[ext.lowercased()]
+    }
+
+    /// The canonical (registered) form of `id`, or `nil` when no language has
+    /// that identifier. Builds nothing.
+    public static func canonicalIdentifier(_ id: String) -> String? {
+        let lower = id.lowercased()
+        return identifierFactories[lower] == nil ? nil : lower
     }
 
     /// Returns a freshly built definition owning `ext` (case-insensitive), or
     /// `nil` for an unregistered extension — building nothing in that case.
     public static func definition(forExtension ext: String) -> LanguageDefinition? {
-        guard let factory = factories[ext.lowercased()] else { return nil }
-        return factory()
+        guard let id = identifier(forExtension: ext) else { return nil }
+        return definition(forIdentifier: id)
     }
 
     /// Identifier (e.g. `"python"`) → factory. Keyed by the stable language id

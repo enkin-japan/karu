@@ -50,6 +50,29 @@ struct SettingsManagementTests {
         #expect(targetModel.revision > revision)
         #expect(try SettingsArchive.export(defaults: target, commands: targetModel.commands) == data)
     }
+    /// M17 T17.1: the two new analysis modules travel like the others.
+    @Test func newAnalysisModuleKeysRoundTrip() throws {
+        let (source, cleanSource) = isolated(); defer { cleanSource() }
+        let (target, cleanTarget) = isolated(); defer { cleanTarget() }
+        source.set(false, forKey: FeatureModule.typeInference.defaultsKey)
+        source.set(true, forKey: FeatureModule.crossFileIndex.defaultsKey)
+        #expect(FeatureModule.typeInference.defaultsKey == "module.typeInference.enabled")
+        #expect(FeatureModule.crossFileIndex.defaultsKey == "module.crossFileIndex.enabled")
+        let model = ShortcutSettings(defaults: source)
+        let data = try SettingsArchive.export(defaults: source, commands: model.commands)
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(json.contains("module.typeInference.enabled") && json.contains("module.crossFileIndex.enabled"))
+        let targetModel = ShortcutSettings(defaults: target)
+        target.set(false, forKey: FeatureModule.crossFileIndex.defaultsKey)
+        try SettingsArchive.apply(try SettingsArchive.decode(data, commands: targetModel.commands),
+                                  defaults: target, shortcuts: targetModel)
+        #expect(!ModuleSettings(defaults: target).isEnabled(.typeInference))
+        #expect(ModuleSettings(defaults: target).isEnabled(.crossFileIndex))
+        // Untouched modules stay out of the file (default on).
+        let (fresh, cleanFresh) = isolated(); defer { cleanFresh() }
+        let empty = try SettingsArchive.export(defaults: fresh, commands: ShortcutSettings(defaults: fresh).commands)
+        #expect(!String(decoding: empty, as: UTF8.self).contains("typeInference"))
+    }
     @Test func invalidImportNeverPartiallyApplies() throws {
         let (defaults, clean) = isolated(); defer { clean() }
         let model = ShortcutSettings(defaults: defaults)

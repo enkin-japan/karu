@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Release notes &mdash; Karu</title>
+  <link rel="stylesheet" href="theme.css">
+</head>
+<body class="notes" data-version="0.13.0">
+  <!--
+    A multi-line comment containing markup:
+    <div class="fake">not rendered</div>
+    and attribute-like text href="https://example.com".
+  -->
+  <header id="top">
+    <h1>Release notes</h1>
+    <p>Version <strong>0.13.0</strong> &amp; earlier.</p>
+  </header>
+
+  <main>
+    <section aria-labelledby="highlights">
+      <h2 id="highlights">Highlights</h2>
+      <ul>
+        <li>Faster <code>&lt;script&gt;</code> parsing</li>
+        <li>Comments like <!-- inline --> are skipped</li>
+        <li title="multi-line
+attribute value">Attribute spanning lines</li>
+      </ul>
+    </section>
+
+    <pre>
+Preformatted text with &lt;tags&gt;, "quotes" and // slashes
+    keeps its indentation.
+    </pre>
+
+    <form action="/subscribe" method="post">
+      <label for="email">Email</label>
+      <input id="email" type="email" name="email" placeholder='you@example.com' required>
+      <button type="submit" disabled>Subscribe</button>
+    </form>
+  </main>
+
+  <!-- footer -->
+  <footer>
+    <p>&copy; 2026 Karu. <a href="https://example.com/?a=1&amp;b=2">Link</a></p>
+  </footer>
+</body>
+</html>

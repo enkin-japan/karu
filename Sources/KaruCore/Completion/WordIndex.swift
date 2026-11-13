@@ -53,7 +53,7 @@ public struct WordIndex {
     /// is the classified result of a rough, single-pass regex scan — not a
     /// parser — so a name may occasionally land in the wrong bucket; the scan
     /// errs toward *not* colouring rather than mis-colouring where cheap.
-    public struct SymbolTable: Equatable {
+    public struct SymbolTable: Equatable, Sendable {
         public let functions: Set<String>
         public let types: Set<String>
         public let variables: Set<String>
@@ -108,7 +108,7 @@ public struct WordIndex {
     /// source of truth the two scans consume — the `Set`-building
     /// `symbolTable(text:…)` and the positional `scanSymbolLocations(text:…)` —
     /// so neither copies the other's regexes.
-    private struct DeclarationPattern {
+    struct DeclarationPattern: Sendable {
         let pattern: String
         let kind: SymbolKind
         /// When non-nil, capture group 1 of `pattern` is a **list** substring —
@@ -128,7 +128,7 @@ public struct WordIndex {
 
     /// Control-flow words that look like a call (`if (…)`, `while (…)`) in the
     /// brace languages' `name(` heuristic but are not user-declared symbols.
-    private static let cLikeNonSymbols: Set<String> = [
+    static let cLikeNonSymbols: Set<String> = [
         "if", "for", "while", "switch", "catch", "return", "sizeof",
         "else", "do", "new", "delete",
     ]
@@ -137,7 +137,7 @@ public struct WordIndex {
     /// rather than user bindings, so they are dropped from the variable set (and
     /// from the navigator). Python's `self` / `cls` are the receiver names of a
     /// method's parameter list; the tokenizer already colours them as `.property`.
-    private static func nonVariableNames(for languageIdentifier: String) -> Set<String> {
+    static func nonVariableNames(for languageIdentifier: String) -> Set<String> {
         switch languageIdentifier {
         case "python": return ["self", "cls"]
         default:       return []
@@ -145,11 +145,11 @@ public struct WordIndex {
     }
 
     /// The per-language declaration patterns, in the order they should be scanned.
-    /// Empty for unsupported languages. Both symbol scans iterate this list; the
+    /// Empty for unsupported languages. `DeclarationScan` iterates this list; the
     /// shared classification rules (control-word filtering for the `name(`
     /// heuristic, and demoting a variable name that is also a function/type) are
     /// applied afterwards by whichever scan consumes it.
-    private static func declarationPatterns(for languageIdentifier: String) -> [DeclarationPattern] {
+    static func declarationPatterns(for languageIdentifier: String) -> [DeclarationPattern] {
         switch languageIdentifier {
         case "python":
             return [
@@ -228,11 +228,46 @@ public struct WordIndex {
     }
 
     /// Extracts and **classifies** declared names (functions, types, variables)
+    /// from `text` for the given language. This is a deliberately rough regex
+    /// scan, not a parser: it feeds both the highlight engine's in-document
+    /// symbol colouring and (via `symbols(text:…)`) the completion ranking.
+    /// Unsupported languages return `.empty`. Thin wrapper over
+    /// `DeclarationScan.scan`, which derives all three declaration products
+    /// from one regex pass.
+    public static func symbolTable(text: String, languageIdentifier: String) -> SymbolTable {
+        DeclarationScan.scan(text: text, languageIdentifier: languageIdentifier).table
+    }
+
+    /// One-shot positional scan for the symbol navigator (T8.4): every declared
+    /// name with the range of its **name capture group**, in document order.
+    /// Same classification as `symbolTable(text:…)`, so the navigator's list
+    /// and the highlighter's colours agree. Thin wrapper over
+    /// `DeclarationScan.scan`; builds no resident index.
+    public static func scanSymbolLocations(text: String,
+                                           languageIdentifier: String) -> [SymbolLocation] {
+        DeclarationScan.scan(text: text, languageIdentifier: languageIdentifier).locations
+    }
+
+    /// Flat set of every declared name, for the completion module's ranking
+    /// (the union of `symbolTable(text:…)`). Thin wrapper over
+    /// `DeclarationScan.scan`.
+    public static func symbols(text: String, languageIdentifier: String) -> Set<String> {
+        DeclarationScan.scan(text: text, languageIdentifier: languageIdentifier).completionSymbols
+    }
+
+    // MARK: - Legacy scans (test oracle only)
+
+    // The pre-T17.1 implementations, kept verbatim and internal so the
+    // `DeclarationScan` equivalence test can assert the shared single pass
+    // reproduces them exactly. Production code must not call these: each one
+    // re-runs (and recompiles) every declaration regex.
+
+    /// Extracts and **classifies** declared names (functions, types, variables)
     /// from `text` for the given language, in one pass per pattern. This is a
     /// deliberately rough regex scan, not a parser: it feeds both the highlight
     /// engine's in-document symbol colouring and (via `symbols(text:…)`) the
     /// completion ranking. Unsupported languages return `.empty`.
-    public static func symbolTable(text: String, languageIdentifier: String) -> SymbolTable {
+    static func legacySymbolTable(text: String, languageIdentifier: String) -> SymbolTable {
         let patterns = declarationPatterns(for: languageIdentifier)
         guard !patterns.isEmpty else { return .empty }
 
@@ -271,8 +306,8 @@ public struct WordIndex {
     /// so the navigator's list and the highlighter's colours agree. This builds
     /// no resident index (ARCHITECTURE.md §3.4 "瞬时不常驻"): the caller uses the
     /// returned array and lets it go.
-    public static func scanSymbolLocations(text: String,
-                                           languageIdentifier: String) -> [SymbolLocation] {
+    static func legacyScanSymbolLocations(text: String,
+                                          languageIdentifier: String) -> [SymbolLocation] {
         let patterns = declarationPatterns(for: languageIdentifier)
         guard !patterns.isEmpty else { return [] }
         let ns = text as NSString
@@ -338,8 +373,8 @@ public struct WordIndex {
     /// Flat set of every declared name, for the completion module's ranking.
     /// Kept as the union of `symbolTable(text:…)` so `CompletionController`
     /// stays unchanged while the highlighter gets the classified view.
-    public static func symbols(text: String, languageIdentifier: String) -> Set<String> {
-        symbolTable(text: text, languageIdentifier: languageIdentifier).all
+    static func legacySymbols(text: String, languageIdentifier: String) -> Set<String> {
+        legacySymbolTable(text: text, languageIdentifier: languageIdentifier).all
     }
 
     /// Collects declared names from a *list* pattern: for every match of

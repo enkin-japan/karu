@@ -1,0 +1,97 @@
+id	kind	category	holdout	popupShown	top1Rank	top3All	top10Found	forbiddenHits	first10
+py-scope-01	scope	param	0	1	3	yes	-	-	user_cache|user_config|user_count
+py-scope-02	scope	param	0	1	-	yes	-	-	line_style|line_width
+py-scope-03	scope	param	1	1	-	yes	-	-	retry_backoff|retry_interval|retry_limit
+py-scope-04	scope	local	0	1	2	-	-	-	total_pages|total_price
+py-scope-05	scope	shadow	0	1	-	yes	-	-	label_text|label_width
+py-scope-06	scope	loop	0	1	2	-	-	-	shipment_rate|shipment_row
+py-scope-07	scope	with	1	1	1	-	-	-	handle_in|handle_out
+py-scope-08	scope	except	0	1	1	-	-	-	parse_error|parse_errors_total
+py-scope-09	scope	comprehension	0	1	1	-	-	-	sq_value
+py-scope-10	scope	destructure	1	1	2	-	-	-	last_login|last_name
+py-scope-11	scope	closure	0	1	2	-	-	-	retry_backoff|retry_budget
+py-scope-12	scope	nested	0	1	2	-	-	-	count_errors|count_items|count_total
+py-scope-13	scope	camel	0	0	-	-	-	-	
+py-scope-14	scope	param	1	1	-	yes	-	-	user_name|user_nickname
+py-neg-01	scope	negative	0	1	-	-	-	-	fake_count|fake_name
+py-neg-02	scope	negative	1	1	-	-	-	-	fake_count|fake_name
+py-neg-03	scope	negative	0	1	1	-	-	fake_name	fake_count|fake_name
+py-neg-04	scope	negative	0	1	2	-	-	ghost_handler	ghost_handler|ghost_limit
+js-scope-01	scope	param	0	1	2	-	-	-	cartTitle|cartTotal
+js-scope-02	scope	param	1	1	1	-	-	-	eventPayload
+js-scope-03	scope	local	0	1	2	-	-	-	retryCap|retryCount
+js-scope-04	scope	destructure	0	1	2	-	-	-	userRegion|userRole
+js-scope-05	scope	destructure	1	1	1	-	-	-	restItems
+js-scope-06	scope	catch	0	1	2	-	-	-	fetchEnabled|fetchError
+js-scope-07	scope	loop	0	1	1	-	-	-	rowValue
+js-scope-08	scope	closure	1	1	1	-	-	-	counterStep
+js-scope-09	scope	camel	0	0	-	-	-	-	
+js-scope-10	scope	case	0	1	2	yes	-	-	URLValue|urlValue
+js-scope-11	scope	local	0	1	1	-	-	-	total|totals
+js-scope-12	scope	shadow	1	1	-	yes	-	-	timeout
+js-scope-13	scope	param	0	1	1	-	-	-	qty
+js-scope-14	scope	local	0	1	1	-	-	-	userCount
+js-neg-01	scope	negative	0	1	-	-	-	-	cartTotal
+js-neg-02	scope	negative	1	1	-	-	-	-	cartNote
+ts-scope-01	scope	param	0	1	1	-	-	-	patchRecord
+ts-scope-02	scope	param	1	1	2	-	-	-	RetryPolicy|retryPolicy
+ts-scope-03	scope	destructure	0	1	-	yes	-	-	originY|originX
+ts-scope-04	scope	param	0	1	1	-	-	-	pageSizeHint
+ts-scope-05	scope	local	0	1	-	yes	-	-	DisplayDensity|DisplayMode
+ts-neg-01	scope	negative	0	1	-	-	-	-	fakeFlag
+ts-neg-02	scope	negative	0	1	-	-	-	-	fakeFlag|fakeFn
+ts-neg-03	scope	negative	1	1	1	-	-	fakeFn	fakeFlag|fakeFn
+txt-01	scope	plain	0	1	1	-	-	-	Kubernetes
+txt-02	scope	plain	0	1	-	yes	-	-	deployed|deployment
+txt-03	scope	case	1	1	2	yes	-	-	Configuration|configuration|confirmed
+txt-04	scope	plain	0	1	1	-	-	-	timeline
+py-mem-01	member	selfThis	0	0	-	-	0/5	-	
+py-mem-02	member	selfThis	0	1	1	-	-	-	timeout
+py-mem-03	member	literal	0	1	-	no	0/2	-	staticmethod|StopIteration|str
+py-mem-04	member	container	0	0	-	-	-	-	
+py-mem-05	member	container	1	1	1	-	-	-	items|iter
+py-mem-06	member	return	0	0	-	-	-	-	
+py-mem-07	member	return	1	1	-	-	-	-	except|Exception
+py-mem-08	member	generic	0	1	-	-	-	-	load_name|localhost
+py-mem-09	member	classField	0	0	-	-	0/5	-	
+py-mem-10	member	classField	0	0	-	-	0/3	-	
+py-mem-11	member	classField	1	1	1	-	-	-	norm|None|nonlocal|not|NotImplementedError
+py-mem-12	member	narrowing	0	0	-	-	-	-	
+py-mem-13	member	narrowing	0	1	1	-	-	-	name|names|narrowing
+py-mem-14	member	generic	1	1	-	-	-	-	load_name|localhost
+py-mem-15	member	incomplete	0	0	-	-	-	-	
+py-mem-16	member	stdlibModule	0	1	1	-	-	-	path|pathlib
+py-mem-17	member	stdlibModule	1	0	-	-	-	-	
+py-mem-18	member	usage	0	0	-	-	0/2	-	
+py-mem-19	member	usage	0	0	-	-	0/2	-	
+py-mem-20	member	return	1	1	-	no	0/3	-	result|returns|repr|return|reversed|render|retries
+js-mem-01	member	selfThis	0	0	-	-	0/4	-	
+js-mem-02	member	selfThis	0	1	8	-	-	-	config|Counter|counter|console|const|continue|constructor|count
+js-mem-03	member	literal	1	1	-	no	-	-	parseFloat|parseInt|param
+js-mem-04	member	literal	0	1	-	-	0/2	-	total
+js-mem-05	member	container	0	0	-	-	-	-	
+js-mem-06	member	container	1	1	1	-	-	-	get
+js-mem-07	member	literal	0	0	-	-	0/2	-	
+js-mem-08	member	return	0	1	-	-	-	-	JSON
+js-mem-09	member	return	1	0	-	-	0/2	-	
+js-mem-10	member	classField	0	0	-	-	0/4	-	
+js-mem-11	member	narrowing	0	1	-	no	-	-	true|try
+js-mem-12	member	incomplete	1	0	-	-	-	-	
+js-mem-13	member	usage	0	0	-	-	0/2	-	
+js-mem-14	member	usage	0	0	-	-	0/2	-	
+ts-mem-01	member	classField	0	0	-	-	0/3	-	
+ts-mem-02	member	narrowing	0	0	-	-	0/2	-	
+ts-mem-03	member	narrowing	1	0	-	-	0/2	-	
+ts-mem-04	member	generic	0	1	-	-	0/3	-	finally
+ts-mem-05	member	return	0	1	-	-	-	-	let
+ts-mem-06	member	generic	1	1	-	-	0/2	-	total
+swift-decl-01	member	explicitDecl	0	0	-	-	0/4	-	
+swift-decl-02	member	explicitDecl	1	1	2	-	-	-	Bank|balance
+go-decl-01	member	explicitDecl	0	0	-	-	0/4	-	
+go-decl-02	member	explicitDecl	0	0	-	-	0/3	-	
+rust-decl-01	member	explicitDecl	0	0	-	-	0/4	-	
+rust-decl-02	member	explicitDecl	1	1	5	-	-	-	ref|RefCell|Result|return|retries
+java-decl-01	member	explicitDecl	0	0	-	-	0/3	-	
+cs-decl-01	member	explicitDecl	0	0	-	-	0/3	-	
+c-decl-01	member	explicitDecl	0	0	-	-	0/2	-	
+cpp-decl-01	member	explicitDecl	1	0	-	-	0/3	-	

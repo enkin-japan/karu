@@ -279,6 +279,8 @@ extension L10n {
         .moduleCompletion: "Completion",
         .moduleFormat: "Formatting",
         .moduleRun: "Run Code",
+        .moduleTypeInference: "Type Inference",
+        .moduleCrossFileIndex: "Cross-File Index",
 
         .statusLnCol: "Ln %d, Col %d",
         .statusCharOne: "%d char",
@@ -556,6 +558,8 @@ extension L10n {
         .moduleCompletion: "代码补全",
         .moduleFormat: "格式化",
         .moduleRun: "代码运行",
+        .moduleTypeInference: "类型推断",
+        .moduleCrossFileIndex: "跨文件索引",
 
         .statusLnCol: "行 %d，列 %d",
         .statusCharOne: "%d 个字符",
@@ -833,6 +837,8 @@ extension L10n {
         .moduleCompletion: "コード補完",
         .moduleFormat: "フォーマット",
         .moduleRun: "コード実行",
+        .moduleTypeInference: "型推論",
+        .moduleCrossFileIndex: "ファイル横断インデックス",
 
         .statusLnCol: "%d 行、%d 桁",
         .statusCharOne: "%d 文字",

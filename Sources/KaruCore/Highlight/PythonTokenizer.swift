@@ -1,16 +1,22 @@
 import Foundation
 
 /// Streaming lexical state for Python strings and replacement fields. State is
-/// transient per viewport pass; no per-line token cache or parser dependency.
-enum PythonTokenizer {
-    struct Frame {
+/// transient per viewport pass apart from the sparse checkpoints the document
+/// analysis keeps (`CheckpointStore`); no per-line token cache or parser
+/// dependency. `State` is a small value (`Sendable`, `Equatable`) so it can be
+/// stored in a checkpoint and compared in tests.
+public enum PythonTokenizer {
+    public struct Frame: Sendable, Equatable {
         var quote: unichar = 0 // zero means replacement expression
         var width = 0
         var formatted = false
         var brackets: [unichar] = []
         var formatSpec = false
     }
-    struct State { var frames: [Frame] = [] }
+    public struct State: Sendable, Equatable {
+        var frames: [Frame] = []
+        public init() {}
+    }
 
     private static let codeMarkers = CharacterSet(charactersIn: "\"'#")
     private static let singleMarkers = CharacterSet(charactersIn: "'\\\r\n")

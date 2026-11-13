@@ -11,6 +11,11 @@ public enum FeatureModule: String, CaseIterable, Sendable {
     case completion
     case format
     case run
+    /// M17: in-process type inference (T17.11). In T17.1 it gates nothing yet
+    /// beyond taking part in `DocumentAnalysis`'s release rule.
+    case typeInference
+    /// M17: project-folder cross-file index (T17.12). Same T17.1 status.
+    case crossFileIndex
 
     /// User-facing display name for the settings UI (localized).
     public var displayName: String {
@@ -19,6 +24,8 @@ public enum FeatureModule: String, CaseIterable, Sendable {
         case .completion: return L10n.t(.moduleCompletion)
         case .format: return L10n.t(.moduleFormat)
         case .run: return L10n.t(.moduleRun)
+        case .typeInference: return L10n.t(.moduleTypeInference)
+        case .crossFileIndex: return L10n.t(.moduleCrossFileIndex)
         }
     }
 

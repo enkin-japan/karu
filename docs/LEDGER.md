@@ -32,6 +32,109 @@
 - 本机：正常请求测试构建退出后替换为正式版并启动，版本 0.12.0 (26)、stapler 与 Gatekeeper 通过、二进制与发布包一致；
   删除同版测试构建，保留 v0.11.0 回退副本 `/Applications/.Karu-before-m16-20261112-223027.app`。
 
+## M17 高亮、补全与代码理解（2026-11-13 立项）
+
+方案与决策 A–K：[HIGHLIGHT-AND-COMPLETION-PLAN.md](HIGHLIGHT-AND-COMPLETION-PLAN.md)。一个里程碑一次做完、一次发布（暂定 v0.13.0）。
+LSP 与任何外部语言服务进程不做；类型推断、导入解析、项目文件夹跨文件索引在进程内完成，计入常驻预算。
+取消安装包体积上限（只记录）。常驻内存红线 99 MB 不变；高亮 + 补全 ≤2 MB，推断 1000 行以内 ≤10 MB，
+导入摘要 LRU ≤8 MB，索引常驻 ≤5 MB（各为配对增量）。VS Code 只作对照：T17.0 隔离安装，T17.15 卸载并核对清理。
+
+| # | 任务 | 依赖 | 负责 | 状态 |
+|---|---|---|---|---|
+| T17.0 | 基线：VS Code 隔离安装与固定版本；对照样本库；计时埋点；现版颜色、候选名次、内存与时延；VS Code 语言服务内存；Esc/⌥⎋、离屏属性、长行、TCC 实测；mem-benchmark 1000 行推断样本 | — | main + implementer（夹具、基线套件、PerfLog），main 审查 | ✅ 自动化通过；项目文件夹重启授权留 T17.12 |
+| T17.1 | 分析骨架 `DocumentAnalysis`：版本、稀疏检查点、分片调度与取消、共用声明扫描、`applyLanguage` 统一失效、两个新模块开关 | T17.0 | implementer，main 审查 | ✅ 自动化通过 |
+| T17.2 | 通用词法扫描器：档案、两种模式、检查点接入，取代从 0 起扫；Python 迁移结论 | T17.1 | main 定接口 + implementer | ⬜ |
+| T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | ⬜ |
+| T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | ⬜ |
+| T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ⬜ |
+| T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | ⬜ |
+| T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ⬜ |
+| T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ⬜ |
+| T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ⬜ |
+| T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ⬜ |
+| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ⬜ |
+| T17.12 | 项目文件夹设置与 SQLite 索引、后台全量/增量、清除与占用显示 | T17.4 | implementer | ⬜ |
+| T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ⬜ |
+| T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ⬜ |
+| T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | ⬜ |
+
+- T17.0 进展（main，2026-11-13）：
+  - **VS Code 对照环境**：官方更新服务器 darwin-arm64 包，1.146.0（commit `69047191`，2026-11-10），Microsoft Developer ID 签名、
+    Gatekeeper `Notarized Developer ID`。装在 `~/KaruM17-VSCode/`，`--user-data-dir` / `--extensions-dir` 均指向其下独立目录；
+    设置固定：遥测关、更新关、扩展自动更新关、语义高亮关、主题 Dark Modern、工作区信任关。扩展：ms-python.python 2026.10.0、
+    vscode-pylance 2026.4.1（连带 debugpy 2026.6.0、vscode-python-envs 1.42.0）；TypeScript 为内置 6.0.3。
+    安装前已保存 `~/Library` 与 `~` 的条目快照（`~/KaruM17-VSCode/pre-install-*.txt`），T17.15 卸载时据此核对。
+  - **默认主题已变**：1.146 的默认主题是 Dark 2026 / Light 2026（各自 include Modern，再覆盖约 50 条语法色，GitHub 风格：
+    关键字 #ff7b72、字符串 #a5d6ff、函数 #d2a8ff、参数 #ffa657）。方案第 6 节按 Dark/Light Modern 写的 9 个新增色值，
+    已用 1.146 的主题文件逐项核对，全部一致；另发现 Karu 现有类型色 #4EC9B2 与主题的 #4EC9B0 差 2，属笔误。
+    用户决策（2026-11-13，决策 L）：对标 Dark/Light Modern，不跟随 2026。
+  - **VS Code 语言服务内存**（phys_footprint，打开文件并完成诊断后静置；未触发补全请求，VS Code 在本机工具权限下不能输入）：
+    Pylance 服务进程：打开空 .py 437 MB，再打开 1000 行样本 483 MB（+46 MB），之后回落到 340–384 MB；
+    TS：语法服务 83→94 MB、语义服务 93→96 MB（两者合计 176→190 MB，+14 MB），另有 typings 安装进程 35 MB；
+    扩展宿主 135–140 MB、JSON 语言服务 19 MB 不计入。即：外部语言服务的固定成本是 Karu 全部 99 MB 红线的 2–4 倍，
+    与决策 H 的判断一致。样本：`Tests/Fixtures/M17/inference/sample_1000.{py,ts}`（生成脚本 `scripts/m17/gen-inference-samples.py`，
+    931 / 967 行，Python 可编译，TS 在 `--strict` 下 0 诊断）。
+  - **高亮参照脚本**：`scripts/m17/vscode-tokens.js` 用 VS Code 自带的 vscode-textmate、oniguruma、语法和主题（以其 Electron 的
+    node 模式运行）把样本着色为 UTF-16 区间 TSV，`scripts/m17/compare-colors.py` 与 Karu 的导出逐字符比较。VS Code 无内置 TOML 语法，
+    TOML 无参照。
+  - **TCC**：非沙盒应用经「打开」收到 `~/Documents` 下的 a.py，读 a.py 立即成功；读同目录 b.py、列目录都被阻塞（>8 s），
+    即触发「文稿」访问授权弹窗，而不是直接拒绝。结论：第 9 节「无项目文件夹时不读同目录」的约束必须保留。
+    「设置里添加的项目文件夹重启后是否需要再次授权」未测：探针应用的屏幕控制授权未获批，留到 T17.12 用真实设置界面实测
+    （方案已备安全作用域书签与重新选择两种处理）。探针在 `~/KaruM17-VSCode/tccprobe/`，测试文件在 `~/Documents/KaruTCCProbe/`，T17.15 一并删除。
+  - **Esc / ⌥⎋**（v0.12.0，后台按键送达）：编辑区按 Esc 不弹任何列表；按 ⌥⎋ 弹出系统的 `__NSTextViewCompletionWindow`，
+    内容是系统词典单词（interesting、interest、internet…），与 Karu 的补全无关；再按 Esc 可关闭。第 1 节「Esc 很可能弹出系统列表」的推测不成立，
+    需要处理的是 ⌥⎋ 路径（第 5.1 节已计划重写 `complete(_:)`）。限制：按键在 Karu 非前台时送达。
+
+- T17.0 收尾（implementer 实现夹具、基线套件与 PerfLog，main 审查 diff 并补 VS Code 侧）：
+  - **新增**：`Tests/Fixtures/M17/`（20 种语言的跨行边界样本 + `embedded/` 下 HTML、Markdown 围栏、JSX、TSX；`completion/cases.json`
+    共 96 例：作用域 46（含负例 9）、成员 40、显式声明 10，holdout 28 例；`interaction-checklist.md` 48 项）；
+    `Tests/KaruCoreTests/M17BaselineTests.swift`（`KARU_M17_BASELINE=1` 才运行，5 项）；`Sources/KaruCore/App/PerfLog.swift`
+    （`KARU_PERFLOG=<path>`，关闭时只多一次分支；`completion.request/index`、`highlight.pass/symbols` 四个埋点）；
+    `scripts/m17/{gen-inference-samples.py,vscode-tokens.js,compare-colors.py,perf-summary.py}`；mem-benchmark 增加
+    `KARU_BENCH_APP_BIN` 与「推断样本（参考）」两轮。基线产物在 `Tests/Fixtures/M17/baseline/`（karu 与 vscode-dark_modern 两组着色 TSV，
+    以及候选名次与汇总）。
+  - **验证**：全量 971 tests / 40 suites 通过（新套件默认跳过）；基线套件 5/5，连续两次产物一致；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **现版着色**：边界样本与 VS Code Dark Modern 逐字符比对（非空白 UTF-16 单元）总一致率 **39.0%**；JSON 97.9%、JSONL 99.6%，
+    JS 12.4%、YAML 22.2%、C 25.3% 最低。差异集中在块注释跨行、heredoc、原样字符串、YAML 块标量、CDATA、围栏代码，以及新增类别
+    （控制流关键字、参数、常量）。VS Code 无内置 TOML 语法，TOML 无参照。
+  - **现版候选**（完整表见 `baseline/completion-summary.md`）：作用域类 top1 16/32、期望前三全中 11/11、负例中注释与字符串内误弹 6/6；
+    `py-scope-01` 的 `user_count` 排第 3（`user_cache|user_config|user_count`）；成员类前十命中 0/78，点号零前缀从不弹出。
+    原记为「违禁名命中」的 3 例（注释或字符串里的伪声明 `fake_name`、`ghost_handler`、`fakeFn`）按方案 §1、§5.2 改判为
+    `docWordOnly`：允许作为文档词出现，但只能排在所有代码来源候选之后，以声明身份出现或排在代码候选之前才算失败（main 决定）。
+  - **探针**（debug 构建，墙钟）：
+    1. 离屏属性：约 10 MB 多样名字 Python，800×600 从头滚到尾后，前景色 run 从 488 个涨到 719,306 个、覆盖全文 50.6%，旧区从不清理。
+       证实第 6 节「离屏属性累积」风险，T17.2/T17.7 需要按差集清理。
+    2. 超长行：5 MB 单行 JSON，首次着色 4758 ms、重绘 4483 ms，全在主线程，画 161 万个 run。第 6 节超长行分片是必须项。
+    3. 声明扫描（约 10 MB）：多样名字 WordIndex 818 ms、symbols 427 ms、scanSymbolLocations 505 ms；重复块 216 / 323 / 677 ms。
+    4. 热查询 `WordIndex.suggestions`：前缀 `in`（7,265 匹配）中位数 141 ms，`pa`（21,789）300 ms，无匹配 64 ms。
+       远超第 11 节 p95 ≤8 ms，T17.5 的有界匹配集与复用是必须项（release 下会快些，未单独测）。
+  - **内存**（`KARU_DIAGNOSTIC_DIRECTORY` 隔离）：32 / 51 / 63 MB，参考轮 sample_1000.py 46 MB、.ts 47 MB，全部低于 99 MB。
+    不隔离时上一轮被 kill 的会话会被恢复，读数被污染（参考轮曾读到 91/95 MB），正式对照必须隔离。
+  - 工作区里的 `.impeccable/config.json` 是设计检查插件生成的忽略配置（对 html 夹具的误报），与产品无关，提交前决定是否保留。
+
+- T17.1（implementer 实现，main 审查 diff 并修一处）：
+  - **新增** `Sources/KaruCore/Analysis/`：`DeclarationScan`（一次正则扫描同时产出导航位置、高亮符号表、补全符号集；
+    旧三函数改为薄包装，等价测试覆盖全部 M17 夹具、三个旧测试文件的输入和 22 个语言标识，含顺序完全一致）、
+    `CheckpointStore`（约 64 KB 一个、只丢弃编辑行起之后的；Python 高亮已改用，编辑不再清空全部检查点）、
+    `AnalysisScheduler`（主线程 4 ms 分片、按 owner/版本取消、键窗口优先；本步声明扫描仍是单片，T17.4 换 token 扫描后分片）、
+    `DocumentAnalysis`（每窗口一个，先于其他观察者注册；持有版本、语言、检查点、声明快照）。
+    窗口所有语言入口（加载、重新载入/自动、菜单、工具栏、识别、运行时识别）统一走 `setDocumentLanguage`。
+  - **修复**：切换语言后第一次补全请求即用新语言的声明（此前要等下一次编辑的去抖重建）。
+  - **声明扫描次数**：同一版本只扫一次（高亮、补全、导航共用）；此前高亮 0.07 s、补全 0.15 s 各扫一遍，导航打开再扫一遍。
+    高亮不再有自己的编辑去抖，改为收到新快照后重绘；补全的新符号由 0.15 s 提前到 0.07 s 生效。
+  - **内存**：首轮 mem-benchmark 发现快照常驻 41 万个 `SymbolLocation`（约 16.6 MB，large.py 读到 98 MB），implementer 改为紧凑存储
+    （名字驻留 + 打包字节流，约 2 B/条，该文件 829 KB），正则改为按需编译。修复后两轮 36 / 56 / 65、参考 50 / 50，
+    同一会话的 T17.0 前构建为 36 / 56–57 / 66、参考 50 / 49–50：持平或略低。比 T17.0 记录（32 / 51 / 63）普遍高约 4 MB，
+    T17.0 前构建同样偏高，判定为环境漂移。
+  - **main 审查修改**：补全的 0.15 s 去抖重建原先调用 `ensureDeclarations()`，若分析的扫描任务被延后，会再同步扫一次全文；
+    改为只采用现成快照，否则沿用旧符号、等 `.declarations` 通知。
+  - **新模块开关**：`typeInference`、`crossFileIndex`（默认开、三语文案，设置窗口与工具栏模块菜单都会列出，本步只参与释放规则）。
+    设置窗口内容高度约 660 → 704 pt。**兼容性**：含这两个键的导出文件，v0.12.0 导入会整份拒绝（"invalid value"），不会部分应用；
+    只有用户改过这两个开关才会出现在导出里。发布说明需写明（与 M16 语言列表同类）。
+  - **验证**：全量 992 tests / 43 suites 通过（新增 21）；visual-smoke VISUAL OK、FOLD GEOMETRY OK；基线重生成后 karu 着色 TSV 逐字节一致，
+    候选列表全部一致（`forbiddenHits` 列 3→0 来自 T17.0 的 `docWordOnly` 改判，非 T17.1 引起）。
+  - 方案 §3 的导航口径已改为「优先复用快照，高亮与补全都关时才临时扫描」。
+
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 
 用户决策（2026-11-12）：常驻内存三场景上限统一上调为 99 MB，目标值不变，新增常驻内存仍须评估并汇报；
