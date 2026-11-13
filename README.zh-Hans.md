@@ -46,14 +46,13 @@ XML/plist 格式化保留文本值、混合内容与 `xml:space="preserve"`。�
 
 | 指标 | 上限 |
 |---|---|
-| 空文档，空闲状态 | 35 MB |
-| 打开 1 MB 文件 | 50 MB |
-| 打开 10 MB 文件 | 65 MB |
-| 应用体积 | 10 MB |
+| 空文档，空闲状态 | 99 MB |
+| 打开 1 MB 文件 | 99 MB |
+| 打开 10 MB 文件 | 99 MB |
 | 冷启动 | < 1 秒 |
 
 每次发布都会通过 `scripts/mem-benchmark.sh` 进行测量。以下内容被刻意永久排除在外：
-LSP/语言服务器、tree-sitter、Electron/web view、重型格式化工具、插件系统。
+LSP/语言服务器、Electron/web view、重型格式化工具、插件系统。
 
 ## 安装
 

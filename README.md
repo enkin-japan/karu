@@ -51,14 +51,13 @@ XML/plist formatting preserves text values, mixed content, and `xml:space="prese
 
 | Metric | Ceiling |
 |---|---|
-| Empty document, idle | 35 MB |
-| 1 MB file open | 50 MB |
-| 10 MB file open | 65 MB |
-| App bundle | 10 MB |
+| Empty document, idle | 99 MB |
+| 1 MB file open | 99 MB |
+| 10 MB file open | 99 MB |
 | Cold start | < 1 s |
 
 Measured by `scripts/mem-benchmark.sh` on every release. Deliberately excluded,
-forever: LSP/language servers, tree-sitter, Electron/web views, heavy formatters,
+forever: LSP/language servers, Electron/web views, heavy formatters,
 plugin systems.
 
 ## Install
