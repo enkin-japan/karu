@@ -1,0 +1,347 @@
+{
+  "01-eof-dot.ts": {
+    "topLevel": [
+      "TAX_RATE",
+      "Summary",
+      "summarize",
+      "firstCustomer"
+    ],
+    "enclosing": [
+      "firstCustomer"
+    ],
+    "params": [
+      "orders"
+    ],
+    "receiver": "orders[0].customer"
+  },
+  "02-mid-dot.ts": {
+    "topLevel": [
+      "Json",
+      "loadJson",
+      "dumpJson",
+      "EMPTY"
+    ],
+    "enclosing": [
+      "loadJson"
+    ],
+    "params": [
+      "path"
+    ],
+    "receiver": "JSON.parse(raw)"
+  },
+  "03-partial-ident.ts": {
+    "topLevel": [
+      "Todo",
+      "TodoList"
+    ],
+    "enclosing": [
+      "TodoList",
+      "titles"
+    ],
+    "params": [],
+    "receiver": "this.items"
+  },
+  "04-unclosed-call.ts": {
+    "topLevel": [
+      "BASE_URL",
+      "getInvoice",
+      "formatId"
+    ],
+    "enclosing": [
+      "getInvoice"
+    ],
+    "params": [
+      "id",
+      "locale"
+    ],
+    "receiver": null
+  },
+  "05-unclosed-array.ts": {
+    "topLevel": [
+      "ROLES",
+      "defaultPermissions",
+      "buildMenu"
+    ],
+    "enclosing": [
+      "buildMenu"
+    ],
+    "params": [
+      "role"
+    ],
+    "receiver": null
+  },
+  "06-unclosed-object.ts": {
+    "topLevel": [
+      "Options",
+      "makeOptions",
+      "makeClient"
+    ],
+    "enclosing": [
+      "makeClient"
+    ],
+    "params": [
+      "baseUrl"
+    ],
+    "receiver": null
+  },
+  "07-half-keyword.ts": {
+    "topLevel": [
+      "Stack"
+    ],
+    "enclosing": [
+      "Stack",
+      "pop"
+    ],
+    "params": [],
+    "receiver": null
+  },
+  "08-unterminated-string.ts": {
+    "topLevel": [
+      "GREETINGS",
+      "banner",
+      "shout"
+    ],
+    "enclosing": [
+      "banner"
+    ],
+    "params": [
+      "user",
+      "hour"
+    ],
+    "receiver": null
+  },
+  "09-missing-open-brace.ts": {
+    "topLevel": [
+      "Token",
+      "tokenize",
+      "countTokens"
+    ],
+    "enclosing": [
+      "tokenize"
+    ],
+    "params": [
+      "source"
+    ],
+    "receiver": "word"
+  },
+  "10-missing-close-brace.ts": {
+    "topLevel": [
+      "Logger",
+      "timed"
+    ],
+    "enclosing": [
+      "timed"
+    ],
+    "params": [
+      "label",
+      "work"
+    ],
+    "receiver": "log"
+  },
+  "11-nested-function-in-method.ts": {
+    "topLevel": [
+      "ReportBuilder"
+    ],
+    "enclosing": [
+      "ReportBuilder",
+      "render",
+      "joinRow"
+    ],
+    "params": [
+      "cells",
+      "sep"
+    ],
+    "receiver": "cells"
+  },
+  "12-arrow.ts": {
+    "topLevel": [
+      "User",
+      "emailsOf",
+      "indexById"
+    ],
+    "enclosing": [
+      "emailsOf",
+      "<anon>"
+    ],
+    "params": [
+      "user"
+    ],
+    "receiver": "user"
+  },
+  "13-chained-receiver.ts": {
+    "topLevel": [
+      "Resolver"
+    ],
+    "enclosing": [
+      "Resolver",
+      "resolve"
+    ],
+    "params": [
+      "name"
+    ],
+    "receiver": "registry.lookup(name)[0].meta"
+  },
+  "14-await-paren-receiver.ts": {
+    "topLevel": [
+      "Snapshot",
+      "refresh",
+      "clear"
+    ],
+    "enclosing": [
+      "refresh"
+    ],
+    "params": [
+      "key"
+    ],
+    "receiver": "(await load())"
+  },
+  "15-await-call-chain.ts": {
+    "topLevel": [
+      "nickname",
+      "nicknames"
+    ],
+    "enclosing": [
+      "nickname"
+    ],
+    "params": [
+      "id"
+    ],
+    "receiver": "fetchUser(id).profile"
+  },
+  "16-incomplete-generic-type.ts": {
+    "topLevel": [
+      "LIMIT",
+      "indexWords",
+      "longest"
+    ],
+    "enclosing": [
+      "indexWords"
+    ],
+    "params": [
+      "words"
+    ],
+    "receiver": null
+  },
+  "17-incomplete-annotation.ts": {
+    "topLevel": [
+      "Settings",
+      "applySettings"
+    ],
+    "enclosing": [
+      "applySettings"
+    ],
+    "params": [
+      "settings",
+      "force"
+    ],
+    "receiver": null
+  },
+  "18-stray-brace-paren.ts": {
+    "topLevel": [
+      "VERSION",
+      "versionParts",
+      "Release"
+    ],
+    "enclosing": [
+      "Release",
+      "summary"
+    ],
+    "params": [],
+    "receiver": "this.notes"
+  },
+  "19-incomplete-import.ts": {
+    "topLevel": [
+      "readText",
+      "ENCODING"
+    ],
+    "enclosing": [],
+    "params": [],
+    "receiver": null
+  },
+  "20-top-syntax-error.ts": {
+    "topLevel": [
+      "lerp",
+      "Easing"
+    ],
+    "enclosing": [
+      "Easing",
+      "inverse"
+    ],
+    "params": [
+      "t"
+    ],
+    "receiver": "Easing"
+  },
+  "21-generic-constraint.ts": {
+    "topLevel": [
+      "HasId",
+      "byId",
+      "first",
+      "pluck"
+    ],
+    "enclosing": [],
+    "params": [],
+    "receiver": null
+  },
+  "22-optional-chaining.ts": {
+    "topLevel": [
+      "ServerConfig",
+      "AppConfig",
+      "describe",
+      "hasTls"
+    ],
+    "enclosing": [
+      "describe"
+    ],
+    "params": [
+      "config"
+    ],
+    "receiver": "config?.server"
+  },
+  "23-ctor-param-properties.ts": {
+    "topLevel": [
+      "Transport",
+      "Mailer"
+    ],
+    "enclosing": [
+      "Mailer",
+      "constructor"
+    ],
+    "params": [
+      "transport",
+      "sender",
+      "retries"
+    ],
+    "receiver": "this.transport"
+  },
+  "24-enum-type-alias.ts": {
+    "topLevel": [
+      "Level",
+      "Handler",
+      "Sink",
+      "handlers",
+      "register",
+      "emit"
+    ],
+    "enclosing": [
+      "emit"
+    ],
+    "params": [
+      "msg",
+      "level"
+    ],
+    "receiver": "Level[level]"
+  },
+  "25-async-arrow-in-method.ts": {
+    "topLevel": [
+      "Poller"
+    ],
+    "enclosing": [
+      "Poller",
+      "start",
+      "<anon>"
+    ],
+    "params": [],
+    "receiver": "this"
+  }
+}

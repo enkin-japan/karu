@@ -1,0 +1,383 @@
+{
+  "01-eof-dot.py": {
+    "topLevel": [
+      "TAX_RATE",
+      "OrderBook"
+    ],
+    "enclosing": [
+      "OrderBook",
+      "first_customer"
+    ],
+    "params": [
+      "self"
+    ],
+    "receiver": "self.orders[0]"
+  },
+  "02-mid-dot.py": {
+    "topLevel": [
+      "log",
+      "read_payload",
+      "write_payload",
+      "Cache"
+    ],
+    "enclosing": [
+      "read_payload"
+    ],
+    "params": [
+      "raw",
+      "strict"
+    ],
+    "receiver": "data"
+  },
+  "03-partial-ident.py": {
+    "topLevel": [
+      "CURRENCY",
+      "summarize_cart",
+      "apply_coupon"
+    ],
+    "enclosing": [
+      "summarize_cart"
+    ],
+    "params": [
+      "cart",
+      "coupon"
+    ],
+    "receiver": "cart"
+  },
+  "04-unclosed-call.py": {
+    "topLevel": [
+      "SCALE",
+      "Geometry",
+      "unit_circle"
+    ],
+    "enclosing": [
+      "Geometry",
+      "scaled_area"
+    ],
+    "params": [
+      "self",
+      "factor",
+      "precision"
+    ],
+    "receiver": null
+  },
+  "05-unclosed-list.py": {
+    "topLevel": [
+      "DEFAULT_HOSTS",
+      "normalize",
+      "build_routes"
+    ],
+    "enclosing": [
+      "build_routes"
+    ],
+    "params": [
+      "prefix",
+      "version"
+    ],
+    "receiver": null
+  },
+  "06-unclosed-dict.py": {
+    "topLevel": [
+      "LOG_LEVELS",
+      "load_defaults",
+      "make_settings"
+    ],
+    "enclosing": [
+      "make_settings"
+    ],
+    "params": [
+      "env",
+      "debug"
+    ],
+    "receiver": null
+  },
+  "07-half-keyword.py": {
+    "topLevel": [
+      "Inventory",
+      "restock"
+    ],
+    "enclosing": [
+      "Inventory",
+      "reserve"
+    ],
+    "params": [
+      "self",
+      "sku",
+      "qty"
+    ],
+    "receiver": null
+  },
+  "08-unterminated-string.py": {
+    "topLevel": [
+      "GREETING_HOURS",
+      "make_banner",
+      "farewell"
+    ],
+    "enclosing": [
+      "make_banner"
+    ],
+    "params": [
+      "user",
+      "now"
+    ],
+    "receiver": null
+  },
+  "09-missing-colon.py": {
+    "topLevel": [
+      "ROOT",
+      "collect_files",
+      "count_files"
+    ],
+    "enclosing": [
+      "collect_files"
+    ],
+    "params": [
+      "base",
+      "suffix"
+    ],
+    "receiver": "p"
+  },
+  "10-indentation-error.py": {
+    "topLevel": [
+      "DEFAULTS",
+      "load_config",
+      "save_config"
+    ],
+    "enclosing": [
+      "load_config"
+    ],
+    "params": [
+      "path"
+    ],
+    "receiver": "cfg"
+  },
+  "11-nested-function-in-method.py": {
+    "topLevel": [
+      "Exporter"
+    ],
+    "enclosing": [
+      "Exporter",
+      "run",
+      "clean"
+    ],
+    "params": [
+      "row",
+      "strict"
+    ],
+    "receiver": "row"
+  },
+  "12-lambda.py": {
+    "topLevel": [
+      "PAGE_SIZE",
+      "rank_users",
+      "names_of"
+    ],
+    "enclosing": [
+      "rank_users",
+      "<anon>"
+    ],
+    "params": [
+      "u"
+    ],
+    "receiver": "u"
+  },
+  "13-chained-receiver.py": {
+    "topLevel": [
+      "_cache",
+      "Resolver"
+    ],
+    "enclosing": [
+      "Resolver",
+      "resolve"
+    ],
+    "params": [
+      "self",
+      "name",
+      "default"
+    ],
+    "receiver": "registry.lookup(name)[0].meta"
+  },
+  "14-await-receiver.py": {
+    "topLevel": [
+      "MAX_RETRIES",
+      "run_job",
+      "fetch_all",
+      "main"
+    ],
+    "enclosing": [
+      "fetch_all"
+    ],
+    "params": [
+      "session",
+      "urls"
+    ],
+    "receiver": "(await session.get(url))"
+  },
+  "15-incomplete-annotation.py": {
+    "topLevel": [
+      "Registry",
+      "connect",
+      "Pool"
+    ],
+    "enclosing": [
+      "connect"
+    ],
+    "params": [
+      "host",
+      "port"
+    ],
+    "receiver": null
+  },
+  "16-stray-paren.py": {
+    "topLevel": [
+      "log",
+      "schedule",
+      "Worker"
+    ],
+    "enclosing": [
+      "Worker",
+      "drain"
+    ],
+    "params": [
+      "self"
+    ],
+    "receiver": "job"
+  },
+  "17-incomplete-import.py": {
+    "topLevel": [
+      "read_env",
+      "Env"
+    ],
+    "enclosing": [],
+    "params": [],
+    "receiver": null
+  },
+  "18-decorator-without-def.py": {
+    "topLevel": [
+      "app",
+      "current_user",
+      "health"
+    ],
+    "enclosing": [],
+    "params": [],
+    "receiver": null
+  },
+  "19-top-syntax-error.py": {
+    "topLevel": [
+      "mean_of",
+      "Series"
+    ],
+    "enclosing": [
+      "Series",
+      "spread"
+    ],
+    "params": [
+      "self"
+    ],
+    "receiver": "self.values"
+  },
+  "20-fstring-unterminated.py": {
+    "topLevel": [
+      "Greeter",
+      "greet_all"
+    ],
+    "enclosing": [
+      "Greeter",
+      "hello"
+    ],
+    "params": [
+      "self",
+      "user",
+      "loud"
+    ],
+    "receiver": "user"
+  },
+  "21-try-without-except.py": {
+    "topLevel": [
+      "TIMEOUT",
+      "probe",
+      "parse_banner"
+    ],
+    "enclosing": [
+      "probe"
+    ],
+    "params": [
+      "host",
+      "port"
+    ],
+    "receiver": "banner.decode()"
+  },
+  "22-module-level-dot.py": {
+    "topLevel": [
+      "config",
+      "DEBUG",
+      "is_debug",
+      "Flags"
+    ],
+    "enclosing": [],
+    "params": [],
+    "receiver": "settings_loader.Settings.load()"
+  },
+  "23-self-dot-in-init.py": {
+    "topLevel": [
+      "Account"
+    ],
+    "enclosing": [
+      "Account",
+      "__init__"
+    ],
+    "params": [
+      "self",
+      "owner",
+      "balance"
+    ],
+    "receiver": "self"
+  },
+  "24-double-subscript-receiver.py": {
+    "topLevel": [
+      "EPSILON",
+      "transpose",
+      "diagonal",
+      "trace"
+    ],
+    "enclosing": [
+      "diagonal"
+    ],
+    "params": [
+      "matrix",
+      "offset"
+    ],
+    "receiver": "matrix[i][i]"
+  },
+  "25-super-call.py": {
+    "topLevel": [
+      "Base",
+      "Child"
+    ],
+    "enclosing": [
+      "Child",
+      "__init__"
+    ],
+    "params": [
+      "self",
+      "name",
+      "args",
+      "kwargs"
+    ],
+    "receiver": "super()"
+  },
+  "26-comprehension-dot.py": {
+    "topLevel": [
+      "column_names",
+      "pick_columns"
+    ],
+    "enclosing": [
+      "column_names"
+    ],
+    "params": [
+      "rows",
+      "wanted"
+    ],
+    "receiver": "row"
+  }
+}

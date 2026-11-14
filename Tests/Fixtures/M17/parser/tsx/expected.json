@@ -1,0 +1,96 @@
+{
+  "01-jsx-child-expr.tsx": {
+    "topLevel": [
+      "ProfileProps",
+      "Profile",
+      "DEFAULT_AVATAR"
+    ],
+    "enclosing": [
+      "Profile"
+    ],
+    "params": [
+      "user",
+      "onClose"
+    ],
+    "receiver": "user"
+  },
+  "02-attribute-expr.tsx": {
+    "topLevel": [
+      "SearchProps",
+      "SearchBox"
+    ],
+    "enclosing": [
+      "SearchBox"
+    ],
+    "params": [
+      "form",
+      "onChange"
+    ],
+    "receiver": "form"
+  },
+  "03-unclosed-jsx-element.tsx": {
+    "topLevel": [
+      "Article"
+    ],
+    "enclosing": [
+      "Article"
+    ],
+    "params": [
+      "post"
+    ],
+    "receiver": "post.summary"
+  },
+  "04-generic-arrow-component.tsx": {
+    "topLevel": [
+      "ListProps",
+      "List"
+    ],
+    "enclosing": [
+      "List"
+    ],
+    "params": [
+      "props"
+    ],
+    "receiver": "props.items"
+  },
+  "05-arrow-component-missing-paren.tsx": {
+    "topLevel": [
+      "CardProps",
+      "Card",
+      "Footer"
+    ],
+    "enclosing": [
+      "Card"
+    ],
+    "params": [
+      "title",
+      "body"
+    ],
+    "receiver": "body"
+  },
+  "06-handler-arrow.tsx": {
+    "topLevel": [
+      "Counter"
+    ],
+    "enclosing": [
+      "Counter",
+      "<anon>"
+    ],
+    "params": [],
+    "receiver": "count"
+  },
+  "07-map-callback.tsx": {
+    "topLevel": [
+      "Item",
+      "Menu"
+    ],
+    "enclosing": [
+      "Menu",
+      "<anon>"
+    ],
+    "params": [
+      "item"
+    ],
+    "receiver": "item"
+  }
+}
