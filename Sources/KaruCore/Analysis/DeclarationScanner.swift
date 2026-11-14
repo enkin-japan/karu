@@ -17,7 +17,8 @@ struct DeclarationBuilder: Sendable {
     private(set) var names: [String] = []
     private var nameIndex: [String: Int32] = [:]
     /// Per name: 1 listed function / method, 2 listed class / type,
-    /// 4 listed other, 8 declared at all (scope-only included).
+    /// 4 listed other, 8 declared at all (scope-only included), 16 called
+    /// (a table-only reference, T17.4b), 32 referenced as a type (table-only).
     private var masks: [UInt8] = []
     private(set) var encoded: [UInt8] = []
     private var lastLocation = 0
@@ -92,6 +93,47 @@ struct DeclarationBuilder: Sendable {
         return index
     }
 
+    /// Records a table-only reference (T17.4b, the brace languages that the
+    /// regex path coloured by `name(` calls and `class` / `struct` names):
+    /// the name enters the colour table / completion symbols as a function
+    /// (unless it is also a type) or a type, but is no declaration — no
+    /// location, no binding.
+    mutating func noteReference(_ text: NSString, _ token: DeclToken, kind: WordIndex.SymbolKind) {
+        guard token.end > token.start else { return }
+        let name = text.substring(with: NSRange(location: token.start, length: token.end - token.start))
+        let index: Int
+        if let known = nameIndex[name] {
+            index = Int(known)
+        } else {
+            index = names.count
+            nameIndex[name] = Int32(index)
+            names.append(name)
+            masks.append(0)
+        }
+        masks[index] |= kind == .type ? 32 : 16
+    }
+
+    /// Interns a name without declaring it (scope names of namespaces /
+    /// impls; no table entry).
+    mutating func intern(_ text: NSString, _ token: DeclToken) -> Int32 {
+        guard token.end > token.start else { return -1 }
+        let name = text.substring(with: NSRange(location: token.start, length: token.end - token.start))
+        if let known = nameIndex[name] { return known }
+        let index = Int32(names.count)
+        nameIndex[name] = index
+        names.append(name)
+        masks.append(0)
+        return index
+    }
+
+    /// Names a scope after it was opened (a Go method's scope opens at its
+    /// receiver, before the name).
+    mutating func nameScope(_ id: Int32, _ name: Int32) {
+        let i = Int(id)
+        guard i >= 0, i < scopeName.count else { return }
+        scopeName[i] = name
+    }
+
     // MARK: - Scopes
 
     /// Opens a scope starting at or after every scope opened so far.
@@ -153,8 +195,13 @@ struct DeclarationBuilder: Sendable {
                 let i = classifyCursor
                 classifyCursor += 1
                 let mask = masks[i]
-                if mask & 1 != 0 { functions.insert(names[i]) }
-                if mask & 2 != 0 { types.insert(names[i]) }
+                // A call is a function unless the name is (also) a type; the
+                // regex path's control-word filter applies to calls.
+                if mask & 1 != 0
+                    || mask & 16 != 0 && mask & (2 | 32) == 0 && !WordIndex.cLikeNonSymbols.contains(names[i]) {
+                    functions.insert(names[i])
+                }
+                if mask & (2 | 32) != 0 { types.insert(names[i]) }
                 if mask & 4 != 0 { variableCandidates.append(i) }
             default:
                 return true
@@ -207,7 +254,8 @@ struct DeclarationBuilder: Sendable {
 ///   at lexer safe points, the tokenizer is chunk-independent, and the
 ///   walkers only decide once their lookahead is available or the text has
 ///   ended). `finish(_:)` runs to completion (`DeclarationScan.scan`).
-/// - Languages without a walker run the regex pass in a single step.
+/// - Languages without a walker (no declarations: Bash, SQL, data formats)
+///   finish in a single step with empty products.
 public struct DeclarationScanner: Sendable {
     public let languageIdentifier: String
     private var walker: WalkerScan?
@@ -259,6 +307,7 @@ public struct DeclarationScanner: Sendable {
 /// The walker-language state behind `DeclarationScanner`.
 struct WalkerScan: Sendable {
     let python: Bool
+    let brace: BraceLanguage?
     let scanner: LexicalScanner
     var lexState = LexicalScanState()
     var position = 0
@@ -267,6 +316,7 @@ struct WalkerScan: Sendable {
     var buffer = DeclTokenBuffer()
     var pythonWalker: PythonDeclarationWalker?
     var jsWalker: JavaScriptDeclarationWalker?
+    var braceWalker: BraceDeclarationWalker?
     var builder: DeclarationBuilder
     var moduleScope: Int32 = -1
     /// 0 scanning, 1 finishing.
@@ -274,13 +324,40 @@ struct WalkerScan: Sendable {
 
     init(languageIdentifier: String) {
         python = languageIdentifier == "python"
-        scanner = LexicalScanner(profile: python ? PythonLanguage.analysisProfile : JavaScriptLanguage.lexicalProfile)
-        tokenizer = DeclTokenizer(python: python)
+        brace = BraceLanguage(identifier: languageIdentifier)
         builder = DeclarationBuilder(languageIdentifier: languageIdentifier)
-        if python {
+        if let brace {
+            scanner = LexicalScanner(profile: brace.lexicalProfile)
+            tokenizer = DeclTokenizer(brace: brace)
+            braceWalker = BraceDeclarationWalker(language: brace)
+        } else if python {
+            scanner = LexicalScanner(profile: PythonLanguage.analysisProfile)
+            tokenizer = DeclTokenizer(python: true)
             pythonWalker = PythonDeclarationWalker()
         } else {
+            scanner = LexicalScanner(profile: JavaScriptLanguage.lexicalProfile)
+            tokenizer = DeclTokenizer(python: false)
             jsWalker = JavaScriptDeclarationWalker(typescript: languageIdentifier == "typescript")
+        }
+    }
+
+    private mutating func process(_ text: NSString, final: Bool) {
+        if python {
+            pythonWalker!.process(&buffer, text, final: final, &builder)
+        } else if brace != nil {
+            braceWalker!.process(&buffer, text, final: final, &builder)
+        } else {
+            jsWalker!.process(&buffer, text, final: final, &builder)
+        }
+    }
+
+    private mutating func finishWalker(at end: Int) {
+        if python {
+            pythonWalker!.finish(at: end, &builder)
+        } else if brace != nil {
+            braceWalker!.finish(at: end, &builder)
+        } else {
+            jsWalker!.finish(at: end, &builder)
         }
     }
 
@@ -289,6 +366,7 @@ struct WalkerScan: Sendable {
             documentLength = text.length
             moduleScope = builder.openScope(.module, at: 0)
             jsWalker?.begin(moduleScope: moduleScope)
+            braceWalker?.begin(moduleScope: moduleScope)
         }
         let length = documentLength
         if phase == 1 {
@@ -298,7 +376,7 @@ struct WalkerScan: Sendable {
             // The text changed between steps (the caller's contract is that it
             // does not): never read it again; finish with what was emitted.
             buffer.removeAll()
-            if python { pythonWalker!.finish(at: position, &builder) } else { jsWalker!.finish(at: position, &builder) }
+            finishWalker(at: position)
             builder.closeScope(moduleScope, at: length)
             phase = 1
             return false
@@ -317,13 +395,9 @@ struct WalkerScan: Sendable {
             tokenizer.finish(at: length, into: &buffer)
         }
         let final = position >= length
-        if python {
-            pythonWalker!.process(&buffer, text, final: final, &builder)
-        } else {
-            jsWalker!.process(&buffer, text, final: final, &builder)
-        }
+        process(text, final: final)
         if final {
-            if python { pythonWalker!.finish(at: length, &builder) } else { jsWalker!.finish(at: length, &builder) }
+            finishWalker(at: length)
             builder.closeScope(moduleScope, at: length)
             buffer.removeAll()
             phase = 1

@@ -10,6 +10,13 @@ import Testing
 // (code-only declarations, scopes), so the legacy oracle now covers the
 // regex languages only; the walker languages are checked for the products'
 // mutual consistency here and in DeclarationScopeTests.
+//
+// T17.4b: the seven brace languages moved too, so no language runs the regex
+// path any more. The oracle remains for the languages without declarations
+// (empty products) and as the coverage reference: on each language's own
+// fixtures, every name the regex path found in *code* is still in the table
+// unless it is a keyword (the walker reads only code, so the regex path's
+// hits inside comments and strings are the fakes that are gone).
 
 private enum ScanPaths {
     static let root: URL = URL(fileURLWithPath: #filePath)
@@ -161,6 +168,7 @@ private func equivalenceInputs() throws -> [(label: String, text: String)] {
 
     var compared = 0
     var nonEmpty = 0
+    var coverageChecked = 0
     for input in inputs {
         for language in allLanguageIdentifiers {
             let scan = DeclarationScan.scan(text: input.text, languageIdentifier: language)
@@ -172,6 +180,10 @@ private func equivalenceInputs() throws -> [(label: String, text: String)] {
                 #expect(listed.isSubset(of: scan.table.all), "\(input.label) [\(language)]")
                 #expect(scan.locationCount == scan.locations.count)
                 #expect(WordIndex.symbolTable(text: input.text, languageIdentifier: language) == scan.table)
+                if !scan.locations.isEmpty { nonEmpty += 1 }
+                if let brace = BraceLanguage(identifier: language), isOwnFixture(input.label, language) {
+                    coverageChecked += checkLegacyCoverage(input, brace, scan)
+                }
                 compared += 1
                 continue
             }
@@ -192,6 +204,40 @@ private func equivalenceInputs() throws -> [(label: String, text: String)] {
     // The comparison must have exercised real declarations, not just empties.
     #expect(compared == inputs.count * allLanguageIdentifiers.count)
     #expect(nonEmpty >= 100)
+    #expect(coverageChecked >= 150)
+}
+
+/// The language's own fixtures (`highlight/` and `completion/`).
+private func isOwnFixture(_ label: String, _ language: String) -> Bool {
+    guard label.hasPrefix("highlight/") || label.hasPrefix("completion/") else { return false }
+    let suffixes: [String: [String]] = ["swift": [".swift"], "go": [".go"], "rust": [".rs"], "java": [".java"],
+                                        "csharp": [".cs"], "c": [".c"], "cpp": [".cpp"]]
+    return suffixes[language]?.contains { label.hasSuffix($0) } ?? false
+}
+
+/// Every regex-path hit that lies in a code segment is still coloured
+/// (function, type or variable), unless the name is a keyword of the
+/// language; returns the number of hits checked.
+private func checkLegacyCoverage(_ input: (label: String, text: String), _ language: BraceLanguage,
+                                 _ scan: DeclarationScan) -> Int {
+    let ns = input.text as NSString
+    var nonCode: [NSRange] = []
+    var state = LexicalScanState()
+    LexicalScanner(profile: language.lexicalProfile).segments(ns, from: 0, to: ns.length, state: &state) { range, segment in
+        if case .code = segment { return }
+        if case .interpolationDelimiter = segment { return }
+        nonCode.append(range)
+    }
+    let identifier = scan.languageIdentifier
+    let keywords = Set(LanguageRegistry.definition(forIdentifier: identifier)?.keywords ?? [])
+    var checked = 0
+    for hit in WordIndex.legacyScanSymbolLocations(text: input.text, languageIdentifier: identifier) {
+        if nonCode.contains(where: { NSLocationInRange(hit.range.location, $0) }) { continue }
+        if keywords.contains(hit.name) || language.keywords.lookup(hit.name) != .none { continue }
+        #expect(scan.table.all.contains(hit.name), "\(input.label): \(hit.name) (\(hit.kind)) lost")
+        checked += 1
+    }
+    return checked
 }
 
 @Test func declarationScanProductsAreMutuallyConsistent() {

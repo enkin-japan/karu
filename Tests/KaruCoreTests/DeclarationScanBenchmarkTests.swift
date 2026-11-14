@@ -4,8 +4,11 @@ import Testing
 
 // M17 T17.4a — size and slicing measurements of the declaration scan on the
 // 10 MB Python document of `scripts/mem-benchmark.sh` and a 10 MB JS
-// document. Opt-in (`KARU_DECL_BENCH=1 swift test --filter DeclarationScanBenchmark`);
-// prints a report, asserts only sanity. Debug-build timings.
+// document; T17.4b adds ~10 MB C, Java and Swift documents built by
+// repeating the M17 fixtures. Opt-in (`KARU_DECL_BENCH=1 swift test --filter
+// DeclarationScanBenchmark`); prints a report, asserts only sanity.
+// Debug-build timings. The "legacy regex scan" row is the T17.1 regex pass
+// (what these languages ran before their walkers).
 
 private let benchEnabled = ProcessInfo.processInfo.environment["KARU_DECL_BENCH"] == "1"
 
@@ -39,6 +42,17 @@ struct DeclarationScanBenchmarkTests {
                                     encoding: .utf8))
         block = block.replacingOccurrences(of: "\u{27E8}\\d+\u{27E9}", with: "", options: .regularExpression)
         return String(repeating: block + "\n", count: (10 * 1024 * 1024) / block.utf8.count + 1)
+    }
+
+    /// ~10 MB of the language's M17 fixtures, repeated.
+    private static func repeatedFixtures(_ paths: [String]) throws -> String {
+        let fixtures = root.appendingPathComponent("Tests/Fixtures/M17")
+        var block = ""
+        for path in paths {
+            block += try String(contentsOf: fixtures.appendingPathComponent(path), encoding: .utf8) + "\n"
+        }
+        block = block.replacingOccurrences(of: "\u{27E8}\\d+\u{27E9}", with: "", options: .regularExpression)
+        return String(repeating: block, count: (10 * 1024 * 1024) / block.utf8.count + 1)
     }
 
     private static func setBytes(_ set: Set<String>) -> Int {
@@ -80,8 +94,20 @@ struct DeclarationScanBenchmarkTests {
 
     @Test func report() throws {
         var lines: [String] = []
-        for (label, language, text) in [("10 MB Python (mem-benchmark large.py)", "python", Self.largePython()),
-                                         ("10 MB JavaScript", "javascript", try Self.largeJavaScript())] {
+        let only = ProcessInfo.processInfo.environment["KARU_DECL_BENCH_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
+        var documents: [(String, String, () throws -> String)] = [
+            ("10 MB Python (mem-benchmark large.py)", "python", { Self.largePython() }),
+            ("10 MB JavaScript", "javascript", { try Self.largeJavaScript() }),
+            ("10 MB C (highlight/c.c + point.c)", "c",
+             { try Self.repeatedFixtures(["highlight/c.c", "completion/explicit/point.c"]) }),
+            ("10 MB Java (highlight/java.java + Invoice.java)", "java",
+             { try Self.repeatedFixtures(["highlight/java.java", "completion/explicit/Invoice.java"]) }),
+            ("10 MB Swift (highlight/swift.swift + account.swift)", "swift",
+             { try Self.repeatedFixtures(["highlight/swift.swift", "completion/explicit/account.swift"]) }),
+        ]
+        if let only { documents = documents.filter { only.contains($0.1) } }
+        for (label, language, make) in documents {
+            let text = try make()
             let ns = text as NSString
             let legacy = DeclarationScan.regexScan(ns, languageIdentifier: language)
             let start = Date()
@@ -92,7 +118,7 @@ struct DeclarationScanBenchmarkTests {
             let old = Self.bytes(legacy)
             lines.append("\(label): \(ns.length) units")
             lines.append("  legacy regex scan: \(old.total) B (names \(old.names), decls \(old.decls) B, \(legacy.locationCount) locations)")
-            lines.append("  T17.4a scan:       \(new.total) B (names \(new.names), decls \(new.decls) B, outline \(new.outline) B for \(scan.scopeCount) scopes, \(scan.declarations.count) declarations, \(scan.locationCount) listed locations)")
+            lines.append("  walker scan:       \(new.total) B (names \(new.names), decls \(new.decls) B, outline \(new.outline) B for \(scan.scopeCount) scopes, \(scan.declarations.count) declarations, \(scan.locationCount) listed locations)")
             lines.append("  growth: \(new.total - old.total) B")
             lines.append(String(format: "  one-shot %.0f ms; sliced: %d slices, total %.0f ms, longest slice %.2f ms",
                                 oneShot, sliced.count, sliced.total, sliced.longest))

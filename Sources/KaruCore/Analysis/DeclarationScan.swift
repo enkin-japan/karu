@@ -10,15 +10,23 @@ import Foundation
 ///   highlighter's colours);
 /// - `completionSymbols`: the table's union (completion ranking);
 /// - the **scope outline** with `visibleBindings(at:)` / `scopeChain(at:)`
-///   (Python and JS/TS; T17.5 weights candidates with it).
+///   (T17.5 weights candidates with it).
 ///
-/// **Two paths.** Python, JavaScript and TypeScript run the token-based,
-/// resumable `DeclarationScanner` (T17.4a): declarations are read from the
-/// lexer's code segments only (never from comments or strings), with a
-/// hand-written walker per family that also records parameters, locals,
-/// destructuring, imports and the scope outline. The other languages keep
-/// the T17.1 regex pass (`WordIndex.declarationPatterns`) unchanged until
-/// T17.4b; they have no outline.
+/// **Walkers.** Every language with declarations runs the token-based,
+/// resumable `DeclarationScanner`: declarations are read from the lexer's
+/// code segments only (never from comments, strings, character literals or
+/// raw strings), with a hand-written walker per family that also records
+/// parameters, locals, destructuring and the scope outline — Python and JS /
+/// TS (T17.4a), and Swift, Go, Rust, Java, C#, C, C++ in one shared brace
+/// walker with per-language rules (`BraceDeclarationWalker`, T17.4b). The
+/// T17.1 regex pass (`regexScan`, `WordIndex.declarationPatterns`) remains
+/// only as the test / benchmark reference of the old behaviour.
+///
+/// **Table-only references** (Java, C#, C, C++): the regex path coloured
+/// every `name(` call and `class` / `struct` name; the walker keeps that
+/// colour coverage by entering calls (functions unless also a type) and
+/// `new T` / `class T` / `struct T` (types) into `table` and
+/// `completionSymbols` without making them declarations.
 ///
 /// **Listed vs scope-only declarations.** Every declaration carries a rich
 /// `DeclarationKind`. The table, `completionSymbols` and `locations` keep
@@ -31,7 +39,8 @@ import Foundation
 /// capture names are scope-only (VS Code's Python grammar paints no variable
 /// references, so colouring more names would only add disagreement until
 /// T17.7 classifies by position). JavaScript / TypeScript list everything
-/// (its grammar paints parameters, locals, members and types). Rich kinds map
+/// (its grammar paints parameters, locals, members and types). The brace
+/// languages list per category (`BraceDeclarationWalker.listing`). Rich kinds map
 /// to the legacy three: function / method → function; class / type → type;
 /// the rest → variable.
 ///
@@ -335,18 +344,27 @@ public struct DeclarationScan: Sendable, Equatable {
     /// Walks the scope chain innermost → module; the nearest scope's binding
     /// of a name shadows outer ones (within one scope the first visible
     /// declaration wins). Rules:
+    /// - **Brace languages** (T17.4b): within one scope the latest
+    ///   declaration before the offset wins (a body local hides a parameter
+    ///   of the same function scope; Rust `let` shadowing).
     /// - A declaration belongs to the innermost scope containing its location,
     ///   except JS `var` (nearest function / arrow / module scope), Python
     ///   `global` (module) and `nonlocal` (the function enclosing its own).
     /// - **Class scopes**: once the chain has crossed a function, lambda or
     ///   comprehension, an enclosing class scope's names are skipped (Python's
     ///   rule; for JS / TS methods and fields likewise, but generic type
-    ///   parameters stay visible).
+    ///   parameters stay visible; for Go, Rust and C likewise, but nested
+    ///   types stay visible). **Implicit members** (T17.4b): in Java, C#, C++
+    ///   and Swift every member of an enclosing type body (fields, methods,
+    ///   nested types — also C++ / C# namespace members) stays visible inside
+    ///   its methods (implicit `this` / `self`).
     /// - **JS TDZ**: `let` / `const` / `class` are visible only after their
     ///   declaration when no function boundary lies between the offset and
     ///   their scope; `var`, functions, parameters, imports and types anywhere
-    ///   in their scope. Python names are visible anywhere in their scope.
-    /// - Regex-path languages (no outline): every declaration, depth 0.
+    ///   in their scope. The brace languages apply the same rule to their
+    ///   locals / file-level variables (`.variable`): a local is visible after
+    ///   its declaration only. Python names are visible anywhere in their scope.
+    /// - Languages without an outline: every declaration, depth 0.
     ///
     /// Offsets refer to this scan's text version; mapping through later
     /// edits is the caller's job (T17.5).
@@ -362,6 +380,8 @@ public struct DeclarationScan: Sendable, Equatable {
             return out
         }
         let python = languageIdentifier == "python"
+        let brace = BraceLanguage(identifier: languageIdentifier)
+        let implicitMembers = brace?.implicitMembers ?? false
         let chain = chainRecords(at: offset)
         guard !chain.isEmpty else { return [] }
         // Chain position by scope index → depth (0 = innermost).
@@ -423,12 +443,17 @@ public struct DeclarationScan: Sendable, Equatable {
             }
             guard let depth = depthOf[stack[owner].index] else { return }
             // Class scope seen from inside a function.
-            if chain[chain.count - 1 - depth].kind == .class, crossed[depth] {
-                if python || kind != .type { return }
+            if chain[chain.count - 1 - depth].kind == .class, crossed[depth], !implicitMembers {
+                if python { return }
+                if brace == nil ? kind != .type : kind != .type && kind != .class { return }
             }
-            // JS temporal dead zone.
-            if !python, location >= offset, !crossed[depth], kind == .variable || kind == .class { return }
-            if let current = best[nameIndex], current.depth <= depth { return }
+            // JS temporal dead zone; brace-language locals after their declaration.
+            if !python, location >= offset, !crossed[depth],
+               kind == .variable || kind == .class && brace == nil { return }
+            if let current = best[nameIndex] {
+                if current.depth < depth { return }
+                if current.depth == depth, brace == nil || location >= offset { return }
+            }
             best[nameIndex] = Best(depth: depth, location: location, kind: kind)
         }
 
@@ -440,23 +465,24 @@ public struct DeclarationScan: Sendable, Equatable {
 
     // MARK: - Scan
 
-    /// Languages read by the token-based walkers (T17.4a).
+    /// Languages read by the token-based walkers (T17.4a; the seven brace
+    /// languages since T17.4b): every language with declaration patterns.
     static func usesWalker(_ languageIdentifier: String) -> Bool {
         languageIdentifier == "python" || languageIdentifier == "javascript" || languageIdentifier == "typescript"
+            || BraceLanguage(identifier: languageIdentifier) != nil
     }
 
     /// Scans `text` for `languageIdentifier`'s declarations to completion.
-    /// Python / JS / TS: the resumable `DeclarationScanner` run in one go
+    /// Walker languages: the resumable `DeclarationScanner` run in one go
     /// (the sliced path through `DocumentAnalysis` yields an equal value).
-    /// Other languages: the T17.1 regex pass. Unsupported languages (and
-    /// empty text) yield empty products.
+    /// Unsupported languages (and empty text) yield empty products.
     public static func scan(text: String, languageIdentifier: String) -> DeclarationScan {
         let ns = text as NSString
         var scanner = DeclarationScanner(languageIdentifier: languageIdentifier)
         return scanner.finish(ns)
     }
 
-    // MARK: - Regex path (languages without a walker)
+    // MARK: - Regex path (T17.1; the test / benchmark reference since T17.4b)
 
     /// A declaration pattern with its regexes compiled once per process.
     private struct Compiled: @unchecked Sendable {
@@ -510,8 +536,11 @@ public struct DeclarationScan: Sendable, Equatable {
         let name: UInt32
     }
 
-    /// The T17.1 single regex pass (every regex runs exactly once), for the
-    /// languages without a walker. Reproduces the legacy scans exactly.
+    /// The T17.1 single regex pass (every regex runs exactly once).
+    /// Reproduces the legacy scans exactly. Since T17.4b every language with
+    /// patterns has a walker, so production only reaches it for languages
+    /// without patterns (an empty result); it remains the reference of the
+    /// old behaviour for tests and the declaration-scan benchmark.
     static func regexScan(_ ns: NSString, languageIdentifier: String) -> DeclarationScan {
         let patterns = patternCache.patterns(for: languageIdentifier)
         guard !patterns.isEmpty, ns.length > 0 else { return empty(languageIdentifier, length: ns.length) }

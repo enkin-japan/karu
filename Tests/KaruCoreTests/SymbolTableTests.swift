@@ -178,8 +178,9 @@ private func isolatedDefaults() -> UserDefaults {
     #expect(table.functions.contains("while") == false)
     #expect(table.functions.contains("return") == false)
 
-    // C has no variable heuristic; that bucket stays empty.
-    #expect(table.variables.isEmpty)
+    // T17.4b: C lists parameters and struct fields as variables (VS Code
+    // colours them); locals and globals stay scope-only.
+    #expect(table.variables == ["n", "x"])
 }
 
 // MARK: - Unsupported languages

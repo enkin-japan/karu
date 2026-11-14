@@ -145,12 +145,14 @@ public struct WordIndex {
     }
 
     /// The per-language declaration patterns, in the order they should be scanned.
-    /// Empty for unsupported languages. `DeclarationScan`'s regex path iterates
-    /// this list for the languages without a declaration walker (since T17.4a
-    /// the Python and JS/TS entries only feed the legacy oracle below); the
-    /// shared classification rules (control-word filtering for the `name(`
-    /// heuristic, and demoting a variable name that is also a function/type) are
-    /// applied afterwards by whichever scan consumes it.
+    /// Empty for unsupported languages. Since T17.4b every language listed here
+    /// runs a token-based declaration walker (Python and JS/TS since T17.4a,
+    /// the seven brace languages since T17.4b), so these patterns only feed
+    /// `DeclarationScan.regexScan` and the legacy scans below — the test and
+    /// benchmark reference of the pre-walker behaviour; the shared
+    /// classification rules (control-word filtering for the `name(` heuristic,
+    /// and demoting a variable name that is also a function/type) are applied
+    /// afterwards by whichever scan consumes it.
     static func declarationPatterns(for languageIdentifier: String) -> [DeclarationPattern] {
         switch languageIdentifier {
         case "python":
@@ -230,12 +232,11 @@ public struct WordIndex {
     }
 
     /// Extracts and **classifies** declared names (functions, types, variables)
-    /// from `text` for the given language. This is a deliberately rough regex
-    /// scan, not a parser: it feeds both the highlight engine's in-document
-    /// symbol colouring and (via `symbols(text:…)`) the completion ranking.
-    /// Unsupported languages return `.empty`. Thin wrapper over
-    /// `DeclarationScan.scan`, which derives all three declaration products
-    /// from one pass (token walkers for Python / JS / TS, regexes otherwise).
+    /// from `text` for the given language: it feeds both the highlight
+    /// engine's in-document symbol colouring and (via `symbols(text:…)`) the
+    /// completion ranking. Unsupported languages return `.empty`. Thin wrapper
+    /// over `DeclarationScan.scan`, which derives all three declaration
+    /// products from one token-walker pass over code segments.
     public static func symbolTable(text: String, languageIdentifier: String) -> SymbolTable {
         DeclarationScan.scan(text: text, languageIdentifier: languageIdentifier).table
     }

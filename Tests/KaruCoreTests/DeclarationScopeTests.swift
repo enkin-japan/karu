@@ -8,6 +8,10 @@ import Testing
 // `scopeChain` answer the scope fixtures, every listed construct binds what
 // it should, broken input never hangs or yields out-of-range scopes, and the
 // sliced scanner equals the one-shot scan.
+//
+// T17.4b: the fixture-wide checks (code segments only, document order,
+// robustness, slicing) also run the seven brace languages' fixtures; their
+// construct tests live in DeclarationScopeStaticTests.
 
 private enum ScopePaths {
     static let root = URL(fileURLWithPath: #filePath)
@@ -48,10 +52,13 @@ private func language(of path: String) -> String? {
     if path.hasSuffix(".py") { return "python" }
     if path.hasSuffix(".js") || path.hasSuffix(".jsx") { return "javascript" }
     if path.hasSuffix(".ts") || path.hasSuffix(".tsx") { return "typescript" }
+    let brace: [String: String] = [".swift": "swift", ".go": "go", ".rs": "rust", ".java": "java", ".cs": "csharp",
+                                   ".c": "c", ".cpp": "cpp"]
+    for (suffix, language) in brace where path.hasSuffix(suffix) { return language }
     return nil
 }
 
-/// Every Python / JS / TS fixture under the M17 tree (markers stripped).
+/// Every fixture of a walker language under the M17 tree (markers stripped).
 private func walkerFixtures() throws -> [(path: String, language: String, text: String)] {
     var out: [(String, String, String)] = []
     let base = ScopePaths.fixtures.path + "/"
@@ -78,7 +85,8 @@ private func visible(_ marked: Marked, _ language: String, at n: Int) -> [String
 
 /// The non-code segments of `text` under the walker language's profile.
 private func nonCodeRanges(_ text: String, _ language: String) -> [NSRange] {
-    let profile = language == "python" ? PythonLanguage.analysisProfile : JavaScriptLanguage.lexicalProfile
+    let profile = BraceLanguage(identifier: language)?.lexicalProfile
+        ?? (language == "python" ? PythonLanguage.analysisProfile : JavaScriptLanguage.lexicalProfile)
     let scanner = LexicalScanner(profile: profile)
     var state = LexicalScanState()
     var out: [NSRange] = []
@@ -133,7 +141,8 @@ struct DeclarationScopeTests {
         let required = ["completion/scope/py_params.py", "completion/scope/py_locals.py",
                         "completion/scope/py_negative.py", "completion/scope/js_scope.js",
                         "completion/scope/ts_scope.ts", "highlight/python.py", "highlight/javascript.js",
-                        "highlight/typescript.ts"]
+                        "highlight/typescript.ts", "highlight/swift.swift", "highlight/go.go", "highlight/rust.rs",
+                        "highlight/java.java", "highlight/csharp.cs", "highlight/c.c", "highlight/cpp.cpp"]
         let all = try walkerFixtures()
         for path in required { #expect(all.contains { $0.path == path }, "missing fixture \(path)") }
         var checked = 0
@@ -146,7 +155,7 @@ struct DeclarationScopeTests {
                 checked += 1
             }
         }
-        #expect(checked > 300)
+        #expect(checked > 500)
     }
 
     @Test func baselineNegativeNamesAreNotDeclarations() throws {
@@ -718,7 +727,7 @@ struct DeclarationScopeRobustnessTests {
                 run(edited, "\(item.path) delete \(at)")
             }
         }
-        #expect(variants >= 4000)
+        #expect(variants >= 29 * 400)   // T17.4b: 15 Python / JS / TS + 14 brace-language fixtures
         #expect(slowest < 1)
     }
 
@@ -727,6 +736,10 @@ struct DeclarationScopeRobustnessTests {
         let block: String
         if language == "python" {
             block = try fixture("completion/scope/py_locals.py") + "\n" + fixture("highlight/python.py") + "\n"
+        } else if language == "c" {
+            block = try fixture("highlight/c.c") + "\n" + fixture("completion/explicit/point.c") + "\n"
+        } else if language == "swift" {
+            block = try fixture("highlight/swift.swift") + "\n" + fixture("completion/explicit/account.swift") + "\n"
         } else {
             block = try fixture("completion/scope/js_scope.js") + "\n" + fixture("highlight/javascript.js") + "\n"
                 + (language == "typescript" ? try fixture("highlight/typescript.ts") : "") + "\n"
@@ -767,7 +780,7 @@ struct DeclarationScopeRobustnessTests {
     }
 
     @Test func slicedScanEqualsOneShotOnAMegabyte() throws {
-        for language in ["python", "typescript"] {
+        for language in ["python", "typescript", "c", "swift"] {
             let text = try Self.generated(language)
             let oneShot = scan(text, language)
             #expect(oneShot.scopeCount > 100)
@@ -792,13 +805,18 @@ struct DeclarationScopeRobustnessTests {
         }
     }
 
-    @Test func regexLanguagesStillScanInOneStep() {
-        var scanner = DeclarationScanner(languageIdentifier: "swift")
-        let done = scanner.step("func a() {}" as NSString, budgetUnits: 1)
+    @Test func languagesWithoutAWalkerScanInOneStep() {
+        // T17.4b: every language with declarations has a walker; the rest
+        // finish in one step with empty products.
+        for language in ["swift", "go", "rust", "java", "csharp", "c", "cpp"] {
+            #expect(DeclarationScan.usesWalker(language))
+        }
+        var scanner = DeclarationScanner(languageIdentifier: "bash")
+        let done = scanner.step("f() { local a=1; }" as NSString, budgetUnits: 1)
         #expect(done)
-        #expect(scanner.scan?.table.functions == ["a"])
+        #expect(scanner.scan?.table == .empty)
         #expect(scanner.scan?.scopeCount == 0)
-        #expect(scanner.scan?.visibleBindings(at: 0).map(\.name) == ["a"])
+        #expect(scanner.scan?.visibleBindings(at: 0).isEmpty == true)
     }
 }
 

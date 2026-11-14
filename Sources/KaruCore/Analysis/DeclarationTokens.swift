@@ -1,6 +1,7 @@
 import Foundation
 
-// M17 T17.4a — the lightweight token stream the declaration walkers read.
+// M17 T17.4a — the lightweight token stream the declaration walkers read
+// (T17.4b: also the seven brace languages).
 //
 // Built from the generic lexical scanner's *code* segments only (strings,
 // comments and regex literals become a single `literal` token, or nothing),
@@ -54,6 +55,17 @@ enum DeclKeyword: UInt8, Sendable {
     case `static`, get, set, `public`, `private`, protected, readonly, override, accessor
     case this, `super`, `catch`, `switch`, `do`, `throw`, void, delete, `true`, `false`, null
     case undefined, satisfies, keyof, infer, debugger, using
+    // Brace languages (T17.4b): Swift, Go, Rust, Java, C#, C, C++.
+    case `func`, fn, `struct`, `protocol`, `extension`, actor, `guard`, `repeat`, `defer`, initializer
+    case `deinit`, `subscript`, `typealias`, `operator`, `inout`, `where`, `throws`, `rethrows`, selfValue
+    case `nil`, `fallthrough`, go, chan, map, range, select, package, goto, impl, trait, mod, use
+    case mut, ref, pub, crate, unsafe, loop, move, union, extern, foreach, out, params, record, event
+    case delegate, sealed, lock, fixed, checked, base, sizeof, typedef, template, typename, inline
+    case virtual, noexcept, decltype, nullptr, when, nameof, dyn
+    /// A primitive type word (`int`, `char`, `boolean`, `decimal`, `string` in C#, …).
+    case primitiveType
+    /// A declaration modifier with no other role (`final`, `mutating`, `volatile`, `transient`, …).
+    case modifier
 }
 
 /// Per-family keyword lookup without allocating a `String` per identifier:
@@ -76,6 +88,13 @@ struct DeclKeywords: Sendable {
     @inline(__always)
     func lookup(pack: UInt64, length: Int) -> DeclKeyword {
         table[pack << 4 | UInt64(length)] ?? .none
+    }
+
+    /// The keyword `word` is in this table (`.none` otherwise); for tests.
+    func lookup(_ word: String) -> DeclKeyword {
+        let units = Array(word.utf16)
+        guard (2...12).contains(units.count), units.allSatisfy({ $0 >= 97 && $0 <= 122 }) else { return .none }
+        return lookup(pack: units.reduce(0) { $0 << 5 | UInt64($1 - 96) }, length: units.count)
     }
 
     static let python = DeclKeywords([
@@ -105,6 +124,93 @@ struct DeclKeywords: Sendable {
         ("override", .override), ("accessor", .accessor), ("satisfies", .satisfies),
         ("keyof", .keyof), ("infer", .infer), ("is", .is), ("using", .using),
     ])
+
+    // MARK: Brace languages (T17.4b)
+
+    /// Words every brace language shares the meaning of.
+    private static let braceCommon: [(String, DeclKeyword)] = [
+        ("if", .if), ("else", .else), ("for", .for), ("while", .while), ("switch", .switch), ("case", .case),
+        ("default", .default), ("break", .break), ("continue", .continue), ("return", .return),
+    ]
+
+    private static func words(_ list: String, _ keyword: DeclKeyword) -> [(String, DeclKeyword)] {
+        list.split(separator: " ").map { (String($0), keyword) }
+    }
+
+    static let swift = DeclKeywords(braceCommon + [
+        ("func", .func), ("class", .class), ("struct", .struct), ("enum", .enum), ("protocol", .protocol),
+        ("extension", .extension), ("actor", .actor), ("var", .var), ("let", .let), ("guard", .guard),
+        ("in", .in), ("repeat", .repeat), ("do", .do), ("fallthrough", .fallthrough), ("throw", .throw),
+        ("throws", .throws), ("rethrows", .rethrows), ("try", .try), ("catch", .catch), ("defer", .defer),
+        ("import", .import), ("init", .initializer), ("deinit", .deinit), ("subscript", .subscript),
+        ("typealias", .typealias), ("operator", .operator), ("inout", .inout), ("static", .static),
+        ("public", .public), ("private", .private), ("override", .override), ("where", .where), ("is", .is),
+        ("as", .as), ("self", .selfValue), ("super", .super), ("nil", .nil), ("true", .true), ("false", .false),
+        ("get", .get), ("set", .set), ("async", .async), ("await", .await),
+    ] + words("fileprivate internal open final lazy weak unowned mutating nonmutating required convenience "
+              + "dynamic indirect optional nonisolated prefix postfix infix", .modifier))
+
+    static let go = DeclKeywords(braceCommon + [
+        ("func", .func), ("var", .var), ("const", .const), ("type", .type), ("struct", .struct),
+        ("interface", .interface), ("map", .map), ("chan", .chan), ("package", .package), ("import", .import),
+        ("range", .range), ("select", .select), ("go", .go), ("defer", .defer), ("goto", .goto),
+        ("fallthrough", .fallthrough),
+    ])
+
+    static let rust = DeclKeywords(braceCommon + [
+        ("fn", .fn), ("let", .let), ("mut", .mut), ("ref", .ref), ("pub", .pub), ("crate", .crate),
+        ("impl", .impl), ("trait", .trait), ("struct", .struct), ("enum", .enum), ("union", .union),
+        ("mod", .mod), ("use", .use), ("const", .const), ("static", .static), ("type", .type),
+        ("where", .where), ("as", .as), ("match", .match), ("loop", .loop), ("in", .in), ("move", .move),
+        ("unsafe", .unsafe), ("extern", .extern), ("async", .async), ("await", .await), ("dyn", .dyn),
+        ("self", .selfValue), ("super", .super), ("true", .true), ("false", .false), ("box", .modifier),
+    ])
+
+    static let java = DeclKeywords(braceCommon + [
+        ("class", .class), ("interface", .interface), ("enum", .enum), ("record", .record),
+        ("extends", .extends), ("implements", .implements), ("package", .package), ("import", .import),
+        ("public", .public), ("private", .private), ("protected", .protected), ("static", .static),
+        ("abstract", .abstract), ("const", .const), ("new", .new), ("this", .this), ("super", .super),
+        ("do", .do), ("try", .try), ("catch", .catch), ("finally", .finally), ("throw", .throw),
+        ("throws", .throws), ("goto", .goto), ("instanceof", .instanceof), ("assert", .assert),
+        ("void", .void), ("var", .var), ("yield", .yield), ("true", .true), ("false", .false), ("null", .null),
+    ] + words("boolean byte char short int long float double", .primitiveType)
+      + words("final native synchronized transient volatile strictfp sealed permits", .modifier))
+
+    static let csharp = DeclKeywords(braceCommon + [
+        ("class", .class), ("struct", .struct), ("interface", .interface), ("enum", .enum),
+        ("record", .record), ("namespace", .namespace), ("using", .using), ("public", .public),
+        ("private", .private), ("protected", .protected), ("static", .static), ("abstract", .abstract),
+        ("override", .override), ("readonly", .readonly), ("const", .const), ("new", .new), ("this", .this),
+        ("base", .base), ("do", .do), ("try", .try), ("catch", .catch), ("finally", .finally),
+        ("throw", .throw), ("goto", .goto), ("foreach", .foreach), ("in", .in), ("out", .out), ("ref", .ref),
+        ("params", .params), ("is", .is), ("as", .as), ("typeof", .typeof), ("sizeof", .sizeof),
+        ("nameof", .nameof), ("operator", .operator), ("delegate", .delegate), ("event", .event),
+        ("lock", .lock), ("fixed", .fixed), ("checked", .checked), ("unchecked", .checked),
+        ("unsafe", .unsafe), ("extern", .extern), ("sealed", .sealed), ("void", .void), ("var", .var),
+        ("async", .async), ("await", .await), ("yield", .yield), ("get", .get), ("set", .set),
+        ("init", .initializer), ("when", .when), ("where", .where), ("true", .true), ("false", .false),
+        ("null", .null),
+    ] + words("bool byte sbyte char short ushort int uint long ulong float double decimal string object "
+              + "dynamic nint nuint", .primitiveType)
+      + words("internal virtual volatile partial implicit explicit stackalloc required file scoped", .modifier))
+
+    private static let cWords: [(String, DeclKeyword)] = braceCommon + [
+        ("struct", .struct), ("union", .union), ("enum", .enum), ("typedef", .typedef), ("const", .const),
+        ("static", .static), ("extern", .extern), ("inline", .inline), ("sizeof", .sizeof), ("do", .do),
+        ("goto", .goto), ("void", .void),
+    ] + words("char short int long float double signed unsigned bool auto", .primitiveType)
+      + words("volatile register restrict", .modifier)
+
+    static let c = DeclKeywords(cWords)
+
+    static let cpp = DeclKeywords(cWords + [
+        ("class", .class), ("namespace", .namespace), ("using", .using), ("template", .template),
+        ("typename", .typename), ("public", .public), ("private", .private), ("protected", .protected),
+        ("virtual", .virtual), ("operator", .operator), ("new", .new), ("delete", .delete), ("this", .this),
+        ("try", .try), ("catch", .catch), ("throw", .throw), ("noexcept", .noexcept), ("decltype", .decltype),
+        ("nullptr", .nullptr), ("true", .true), ("false", .false),
+    ] + words("explicit friend mutable constexpr consteval constinit", .modifier))
 }
 
 /// One token. Positions are absolute UTF-16 offsets.
@@ -179,8 +285,18 @@ struct DeclTokenBuffer: Sendable {
 /// `class`, `return`, `import`, …) indented no deeper: the bracket depth is
 /// reset there and a `newline` is emitted first. Comment-only and blank lines
 /// produce nothing.
+///
+/// **Brace languages** (T17.4b, `brace` set): `->` is `thinArrow`, `::` is
+/// one `dot` (paths read like member access), `:=` is `walrus` (Go), and an
+/// interpolation delimiter (`\(` / `)` in Swift, `{` / `{{` / `}` in C#) is
+/// one `interpOpen` / `interpClose`. Every continuation unit read past a chunk
+/// end (`>`, `:`, `=`, digits, letters) is code in these languages too.
 struct DeclTokenizer: Sendable {
     let python: Bool
+    /// One of the seven brace languages (T17.4b).
+    let brace: Bool
+    /// `$` may start / continue an identifier (JS, Swift `$0`, Java).
+    let dollar: Bool
     let keywords: DeclKeywords
 
     /// Units before this offset were consumed by a token of the previous chunk.
@@ -198,7 +314,17 @@ struct DeclTokenizer: Sendable {
 
     init(python: Bool) {
         self.python = python
+        self.brace = false
+        self.dollar = !python
         self.keywords = python ? .python : .javascript
+    }
+
+    /// A tokenizer for one of the seven brace languages.
+    init(brace language: BraceLanguage) {
+        python = false
+        brace = true
+        dollar = language == .swift || language == .java
+        keywords = language.keywords
     }
 
     // MARK: - Text access
@@ -253,6 +379,21 @@ struct DeclTokenizer: Sendable {
                         i += 1
                     }
                 }
+            case .interpolationDelimiter where brace:
+                // One opener / closer per delimiter (`\(`, `)`, `{{`, `}`).
+                previousWasLiteral = false
+                var i = range.location
+                while i < NSMaxRange(range) {
+                    let u = units.at(i)
+                    if u == 123 || u == 40 {
+                        push(DeclToken(kind: .interpOpen, start: i, end: i + 1), &units, &out)
+                        break
+                    } else if u == 125 || u == 41 {
+                        push(DeclToken(kind: .interpClose, start: i, end: i + 1), &units, &out)
+                        break
+                    }
+                    i += 1
+                }
             case .interpolationDelimiter:
                 previousWasLiteral = false
                 var i = range.location
@@ -302,7 +443,7 @@ struct DeclTokenizer: Sendable {
     private mutating func tokenizeCode(_ units: inout Units, from: Int, to: Int, length: Int,
                                        into out: inout DeclTokenBuffer) {
         var i = max(from, consumedUpTo)
-        let dollar = !python
+        let dollar = self.dollar
         while i < to {
             let c = units.at(i)
             // Blanks.
@@ -327,7 +468,7 @@ struct DeclTokenizer: Sendable {
             let start = i
             // Identifiers (JS `#private` too).
             var isPrivate = false
-            if !python, c == 35, i + 1 < length, Self.isIdentifierStart(units.at(i + 1), dollar: true) {
+            if !python, !brace, c == 35, i + 1 < length, Self.isIdentifierStart(units.at(i + 1), dollar: true) {
                 isPrivate = true
                 i += 1
             }
@@ -378,8 +519,10 @@ struct DeclTokenizer: Sendable {
             case 59: kind = .semicolon
             case 64:                                   // @  @=
                 if python, next(1) == 61 { kind = .augAssign; width = 2 } else { kind = .at }
-            case 58:                                   // :  :=
-                if python, next(1) == 61 { kind = .walrus; width = 2 } else { kind = .colon }
+            case 58:                                   // :  :=  (brace: ::)
+                if python || brace, next(1) == 61 { kind = .walrus; width = 2 }
+                else if brace, next(1) == 58 { kind = .dot; width = 2 }
+                else { kind = .colon }
             case 61:                                   // =  ==  ===  =>
                 if next(1) == 61 { kind = .op; width = next(2) == 61 ? 3 : 2 }
                 else if next(1) == 62 { kind = .arrow; width = 2 }
@@ -403,7 +546,7 @@ struct DeclTokenizer: Sendable {
             case 33:                                   // !  !=  !==
                 if next(1) == 61 { width = next(2) == 61 ? 3 : 2 } else { kind = .bang }
             case 45:                                   // -  ->  -=  --
-                if next(1) == 62, python { kind = .thinArrow; width = 2 }
+                if next(1) == 62, python || brace { kind = .thinArrow; width = 2 }
                 else if next(1) == 61 { kind = .augAssign; width = 2 }
                 else if next(1) == 45 { width = 2 }
             case 43:                                   // +  +=  ++
