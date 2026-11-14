@@ -142,6 +142,7 @@
 - 试点：T17.2 接入 JavaScript、TypeScript、Rust 来验证档案，其余语言在 T17.3 接入。
 - **超长行（T17.2b）**：扫描器 `advance` / `segments(…stoppingAtSafePointFrom:)` 返回目标之后第一个安全切点（token 边界，不在代理对、标识符、CRLF 中间，代码里前一单元不是可回看的前缀字符）。行长超过 `longLineThreshold`（8192）时色带停在行内，长行内部也记检查点。JSON/JSONL 用只含字符串的档案，键由 `propertyStringFollower` 判定。
 - **T17.3 通用扩展**：`LexicalProfile.keepsStringRules`（HTML/XML 属性值、C `#include <…>` 仍走 `.string` 规则）；`AtomForm.precededBy`（`AtomContext`：往回跳过空白看前一字符或单词，只读文本，JS 正则与除号的判定）。
+- **T17.3b 行块钩子**：`lineCommentPrecededBy`（行注释的前置字符）；`StringForm.precededBy` + `AtomContext.lineStart`（字符串开头的文本上下文）；`lineBlocks`（`.heredoc` / `.indentedBlock` / `.fence`，正文报告为 `LexicalSegment.block(kind)`，帧带 `inBody`，开头行剩余部分仍是代码）；`keepsCommentRules`（Markdown 借注释色的规则）。
 
 ## 5. 候选怎么选、怎么排
 

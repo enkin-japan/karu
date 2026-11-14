@@ -128,7 +128,9 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func bashShebangLine() {
     let bash = BashLanguage.make()
     let pairs = spans(bash, "#!/bin/bash")
-    #expect(kind(of: "#!/bin/bash", in: pairs) == .type)
+    // M17 T17.3: the profile's `#` comment covers the shebang, as in VS Code
+    // (was `.type` from a line rule).
+    #expect(kind(of: "#!/bin/bash", in: pairs) == .comment)
 }
 
 @Test func bashVariableExpansion() {

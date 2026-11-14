@@ -57,7 +57,10 @@ public struct LanguageRule {
 ///   the code segments the scanner reports, and rules of kind `.string` /
 ///   `.comment` are skipped there — the profile is authoritative for those
 ///   (`.string` rules still run when the profile `keepsStringRules`: HTML /
-///   XML attribute values, C's `#include <header>`).
+///   XML attribute values, C's `#include <header>`, Markdown inline code;
+///   `.comment` rules when it `keepsCommentRules`: Markdown block quotes).
+///   Line blocks (Bash heredocs, YAML block scalars, Markdown fences) are
+///   profile constructs too: their bodies are one token each.
 ///   JSON / JSONL are profiled too (a string-only profile), so a slice that
 ///   starts in the middle of a long line knows whether it is inside a string.
 ///
@@ -67,7 +70,8 @@ public struct LanguageRule {
 /// context), and a profiled range may stop at a scanner safe point
 /// (`tokens(in:range:stoppingAtSafePointFrom:state:)`).
 ///
-/// Python keeps its own `PythonTokenizer` (string prefixes, f-string fields).
+/// Python keeps its own `PythonTokenizer` (string prefixes, f-string fields);
+/// every other registered language is profiled.
 public struct LanguageDefinition {
     /// Lines longer than this (UTF-16 units) are sliced: the highlighter
     /// colours only the part of them near the viewport, and the rules see a
@@ -165,10 +169,12 @@ public struct LanguageDefinition {
     /// segments become one `.string` / `.comment` token each (a multi-line
     /// string is one token; with `propertyStringFollower`, a key string is
     /// `.property`), interpolation delimiters `.punctuation`, atoms their
-    /// form's kind; inside code segments the regex `rules` run line by line
-    /// exactly as in `tokenize(line:)` (anchored, transparent bounds, `^` only
-    /// at a real line start), limited to the segment and skipping rules of
-    /// kind `.comment` and — unless the profile `keepsStringRules` — `.string`.
+    /// form's kind, line-block segments one token of their body kind (also
+    /// `.plain`, which keeps symbol colouring out); inside code segments the
+    /// regex `rules` run line by line exactly as in `tokenize(line:)`
+    /// (anchored, transparent bounds, `^` only at a real line start), limited
+    /// to the segment and skipping rules of kind `.comment` and `.string`
+    /// unless the profile `keepsCommentRules` / `keepsStringRules`.
     /// In a line longer than `longLineThreshold` they see the segment plus
     /// `ruleContext` units on either side.
     ///
@@ -256,7 +262,8 @@ public struct LanguageDefinition {
                 let (ls, base) = ruleWindow(lr, from: loc, to: matchUpTo)
                 applyRules(in: ls, from: loc - base, to: matchUpTo - base, offset: base,
                            skipStringsAndComments: lexicalScanner != nil,
-                           keepStrings: lexicalProfile?.keepsStringRules ?? false) { token in
+                           keepStrings: lexicalProfile?.keepsStringRules ?? false,
+                           keepComments: lexicalProfile?.keepsCommentRules ?? false) { token in
                     if matchUpTo > upTo {
                         let clipped = NSIntersectionRange(token.range, NSRange(location: loc, length: upTo - loc))
                         if clipped.length > 0 { out.append((clipped, token.kind)) }
@@ -348,6 +355,7 @@ public struct LanguageDefinition {
             case .comment: out.append((segment, .comment))
             case .interpolationDelimiter: out.append((segment, .punctuation))
             case .atom(let atomKind): out.append((segment, atomKind))
+            case .block(let blockKind): out.append((segment, blockKind))
             }
         }
         return (out, stopped)
@@ -356,9 +364,10 @@ public struct LanguageDefinition {
     /// The rule loop: at each position of `line[from..<to]` the first rule
     /// that matches there wins; unmatched positions advance by one unit.
     /// Emits ranges shifted by `offset`. `skipStringsAndComments` skips
-    /// `.comment` rules, and `.string` rules unless `keepStrings`.
+    /// `.comment` rules unless `keepComments`, and `.string` rules unless
+    /// `keepStrings`.
     private func applyRules(in line: String, from: Int, to: Int, offset: Int,
-                            skipStringsAndComments: Bool, keepStrings: Bool = false,
+                            skipStringsAndComments: Bool, keepStrings: Bool = false, keepComments: Bool = false,
                             _ append: ((range: NSRange, kind: TokenKind)) -> Void) {
         var location = from
         while location < to {
@@ -366,7 +375,7 @@ public struct LanguageDefinition {
             let searchRange = NSRange(location: location, length: to - location)
             for rule in rules {
                 if skipStringsAndComments,
-                   rule.kind == .comment || (rule.kind == .string && !keepStrings) { continue }
+                   (rule.kind == .comment && !keepComments) || (rule.kind == .string && !keepStrings) { continue }
                 // `.anchored` forces the match to begin exactly at `location`,
                 // giving us "first rule that matches here wins" priority.
                 // `.withTransparentBounds` lets `\b` / lookbehind see the text

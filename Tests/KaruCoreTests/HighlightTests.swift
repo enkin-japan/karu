@@ -450,18 +450,24 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
 }
 
 @Test func unprofiledLanguagesKeepPerLineTokens() {
-    // JSON is profiled since long-line slicing (a string-only profile).
-    for def in [YAMLLanguage.make(), MarkdownLanguage.make(), BashLanguage.make()] {
-        #expect(def.lexicalProfile == nil && def.lexicalScanner == nil)
-        // No state is carried: each line tokenizes exactly as on its own.
-        let source = "let s = \"\"\"x\n/* a\nb */ \"\"\";\n"
-        let lines = documentSpans(def, source)
-        for (index, line) in source.components(separatedBy: "\n").dropLast().enumerated() {
-            let ns = line as NSString
-            let expected = def.tokenize(line: line).map { (ns.substring(with: $0.range), $0.kind) }
-            #expect(lines[index].map(\.text) == expected.map(\.0))
-            #expect(lines[index].map(\.kind) == expected.map(\.1))
-        }
+    // Every registered language but Python (own tokenizer) is profiled since
+    // M17 T17.3, so the per-line path is exercised with a synthetic
+    // unprofiled definition (string and comment rules of its own).
+    let def = LanguageDefinition(identifier: "unprofiled-test", fileExtensions: [], rules: [
+        LanguageRule(pattern: #"/\*.*?(?:\*/|$)"#, kind: .comment),
+        LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
+        LanguageRule(pattern: #"\b(?:let|b)\b"#, kind: .keyword),
+    ])
+    #expect(def.lexicalProfile == nil && def.lexicalScanner == nil)
+    // No state is carried: each line tokenizes exactly as on its own.
+    let source = "let s = \"\"\"x\n/* a\nb */ \"\"\";\n"
+    let lines = documentSpans(def, source)
+    #expect(lines[1].contains { $0.kind == .comment })
+    for (index, line) in source.components(separatedBy: "\n").dropLast().enumerated() {
+        let ns = line as NSString
+        let expected = def.tokenize(line: line).map { (ns.substring(with: $0.range), $0.kind) }
+        #expect(lines[index].map(\.text) == expected.map(\.0))
+        #expect(lines[index].map(\.kind) == expected.map(\.1))
     }
 }
 

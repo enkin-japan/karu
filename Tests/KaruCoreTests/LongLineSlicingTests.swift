@@ -79,7 +79,7 @@ private struct SafePointOracle {
         if previous == 13 && current == 10 { return false }
         let code: Bool
         switch state.frames.last {
-        case nil, .interpolation?: code = true
+        case nil, .interpolation?, .heredoc(_, _, false)?: code = true
         default: code = false
         }
         return !(code && lookback.contains(previous))
@@ -190,6 +190,14 @@ private let fragments: [String: [String]] = [
              "'\\''", "/*", "*/", "//", "\\", "#", "r", "b", "\n", "\r\n", " ", "abc", "42", "😀", "(", ")", "!"],
     "json": ["\"", "\\", "\\\"", "{", "}", ":", ",", "[", "]", "1.5", "-2", "true", "null", " ", "\n", "\r\n",
              "😀", "abc", "\"k\":", "\"v\""],
+    "bash": ["<<", "<<-", "<<<", "EOF", "\tEOF", "'EOF'", "\"EOF\"", "\\EOF", "\n", "\r\n", "\r", " ", "\t", "#",
+             "$#", "${", "$(", ")", "}", "`", "\"", "'", "$'", "\\", "\\\"", "a", "x1", "😀", ";", "|", "&", "(",
+             "\nEOF\n", "\n\tEOF\r\n", "<<EOF\n", "<<-EOF\n"],
+    "yaml": ["|", ">", "|-", ">+", "|2", "-", "- ", ":", ": ", "?", "#", " #", "\"", "'", "''", "\\", "\\\"", "\n",
+             "\r\n", "\r", " ", "  ", "    ", "\t", "key", "a", "😀", "[", ",", "{", "---",
+             ": |\n  ", "\n- |\n", "\n  ", "\n    "],
+    "markdown": ["```", "````", "~~~", "~~~~", "`", "~", "   ", " ", "    ", "\n", "\r\n", "\r", "<!--", "-->", "--",
+                 "<", "a", "js", "😀", "#", "*", "\t", "\n```\n", "\n~~~~\n", "\n   ```js\n"],
     "synthetic": ["\"", "r\"", "r#\"", "\"#", "rb##\"", "\"##", "R\"d(", ")d\"", "R\"(", ")\"", "#\"", "\\(", "\\#(",
                   ")", "(", "\\", "#", "'''", "''''", "'", "'x'", "b'x'", "`", "f`", "F`", "${", "{", "{{", "}",
                   "%", "%%", "//", "/*", "*/", "(*", "*)", "\n", "\r\n", "\r", " ", "abc", "x1", "😀", "R", "b",
@@ -215,7 +223,7 @@ struct LongLineSlicingScannerTests {
         ("javascript", "javascript"), ("typescript", "javascript"), ("rust", "rust"), ("json", "json"),
         ("synthetic", "synthetic"), ("c", "c"), ("cpp", "cpp"), ("csharp", "csharp"), ("java", "java"),
         ("go", "go"), ("css", "css"), ("sql", "sql"), ("swift", "swift"), ("toml", "toml"), ("html", "html"),
-        ("xml", "xml"),
+        ("xml", "xml"), ("bash", "bash"), ("yaml", "yaml"), ("markdown", "markdown"),
     ]
 
     @Test(arguments: languages)
@@ -261,6 +269,14 @@ struct LongLineSlicingScannerTests {
         ("sql", "SELECT 'it''s\r\nmulti' AS \"a\"\"b\", `c` -- note 'x\n/* block\n*/ FROM t"),
         ("xml", "<a b=\"c\"><![CDATA[ x ]] <!-- ]]> <!-- c\r\n --> <d/>😀 &amp;"),
         ("toml", "a = \"\"\"x\\\r\ny\"\"\" # c\nb = '''z'''\n\"k\" = 'v' # \"q\""),
+        // Line blocks: targets inside `<<-EOF`, on terminator / closer lines,
+        // in fence marker runs and block-scalar indentation, between CR and LF.
+        ("bash", "cat <<-EOF | grep \"x\" # c\r\n\t\tbody $x\r\n\tEOF\r\necho $# ${#x} a#b <<< 'w'\n"
+            + "cat <<'Q' \"$(echo \")\")\"\nq 😀\nQ x\nQ\r\ncat <<\\E\nE"),
+        ("yaml", "a: |-\r\n  body # x\r\n\r\n  more\r\nb: 'it''s'\n- |\n  item\n- k: >+ # c\n    deep\n  o: \"q\\\"\r\n"
+            + "  r\" # c\nd: don't \"x\"\n  | x\n?  |2\n   z"),
+        ("markdown", "````js\r\nbody <!-- x\r\n```\r\n  ````  \r\ntext `c` <!-- a\r\n--> b\n~~~\n~~~~\n``` a`b\n"
+            + "    ```\n   ~~~\n😀\n   ~~~ \r\nend"),
         ("synthetic", "x = R\"d(a)\"b)d\" + R\"(z)\" + rb##\"q\"#r\"## + #\"a\\(b)c\\#(d)e\"# + \"p\\(f(1))q\"\r\n"
             + "''' a '' b '''' c ''' + ''''x'''' + b'x' + '\\u{1F600}' + F`a${b}c{d}{{e` + %a%%b%\r"
             + "/* a /* b */ c */ (* d /* e *) f😀g // end\nabc_def"),

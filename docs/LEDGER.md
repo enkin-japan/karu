@@ -45,7 +45,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.1 | 分析骨架 `DocumentAnalysis`：版本、稀疏检查点、分片调度与取消、共用声明扫描、`applyLanguage` 统一失效、两个新模块开关 | T17.0 | implementer，main 审查 | ✅ 自动化通过 |
 | T17.2 | 通用词法扫描器：档案、两种模式、检查点接入，取代从 0 起扫；Python 迁移结论 | T17.1 | main 定接口 + implementer | ✅ 自动化通过；Python 保留原 tokenizer |
 | T17.2b | 超长行分片（方案 §6 第 2 条）：扫描器安全切点、色带行内切片、行内检查点、JSON 接入档案 | T17.2 | main 定接口 + implementer | ✅ 自动化通过；未在真机打开长行实测 |
-| T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | 🔶 T17.3a ✅（C 系、标记语言、JS 正则）；T17.3b（Bash、YAML、Markdown 钩子）进行中 |
+| T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | ✅ 自动化通过；除 Python 外全部语言有档案，一致率 39.0% → 77.7% |
 | T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | ⬜ |
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ⬜ |
 | T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | ⬜ |
@@ -249,6 +249,36 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - implementer 有一次全量运行中 `ToolchainManagerTests.installingCancelInstallAndUninstallFromTheRows` 失败，重跑通过，判为时序抖动，与本次无关。
   - **性能**（debug，约 10 MB、无检查点冷算到末尾）：C 45 ms、SQL 209、C++ 268、JS 133、XML 338、Swift 526、C# 546 ms，均低于 1 s。
   - **未做**：mem-benchmark（本步只多语言档案，随语言定义释放）、真机交互、release 耗时。
+
+- T17.3b 行块钩子：Bash、YAML、Markdown（main 定接口，implementer 实现，main 审查 diff，2026-11-14）：
+  - **新接口**（写入方案 §4）：
+    - `LexicalProfile.lineCommentPrecededBy`：行注释只在文档开头、换行之后，或前一单元属于该集合时成立（Bash `" \t;|&()"`，YAML `" \t"`）。
+    - `StringForm.precededBy: AtomContext?` 与 `AtomContext.lineStart`：字符串开头的文本上下文（YAML 引号只在标量开头才算字符串）。
+    - `LexicalProfile.lineBlocks`：`.heredoc` / `.indentedBlock` / `.fence`，各带 `bodyKind`；新帧 `.heredoc`、`.indentedBlock`、`.fence`，都有 `inBody` 标志（开头行剩余部分仍按代码处理，遇到换行才进入正文）；新片段 `LexicalSegment.block(kind)`，正文里不跑规则。
+    - `LexicalProfile.keepsCommentRules`（implementer 增补，main 认可）：Markdown 的引用块、删除线规则借用注释色，需要在代码段里保留。
+  - **与设计的偏差（main 认可）**：
+    - YAML 父缩进：原公式（行缩进 + 每个 `- ` 加 2）会让 `- |` 的正文立刻结束。改为取行首空白和各个 `- ` 之后的列号；指示符紧跟在 `- ` 后时取最后一个 `-` 的列。
+    - YAML 指示符行和 backtick fence 的 info string 改为推迟判定：先压入 `inBody: false` 的帧，行内出现非法内容（YAML 出现空白和注释以外的字符，fence 的 info 里出现反引号）就取消。这样不需要向前读到 `to` 之后，切分保证不受影响。
+  - **与 VS Code 的一致率**（本步开工时现跑 → 本次）：bash 39.5 → **59.6**；yaml 22.2 → **53.5**；markdown 62.6 → **76.9**；embedded/fences.md 50.8 → 64.2；
+    **全部样本 75.7% → 77.7%**。其余样本 TSV 逐字节不变。
+  - **妥协（入账）**：
+    - Bash：一行只跟踪第一个 heredoc；未加引号的 heredoc 正文整体按字符串处理（VS Code 会给 `$var` 着色）；算术里的 `x<<y` 会被当成 heredoc。
+    - YAML：显式缩进指示符（`|2-` 的 `2`）不参与判定；超过 4096 单元仍找不到行首时，任何非空行都会结束块标量。
+    - Markdown：引用块里、缩进 4 格以上的 fence 不识别；内联代码里的 `<!--` 会开启注释；fence 内嵌语言留给 T17.8。
+  - **剩余差异**：
+    - Bash：函数调用名、字符串里的 `$var`、插值定界符的颜色。
+    - YAML：普通标量（VS Code 着字符串色）、键色（我们 `.property` 蓝 `#9CDCFE`，VS Code `#569CD6`）。
+    - Markdown：引用块整行着注释色（VS Code 只给 `>` 着色）。
+    - 以上属 T17.7 类别配色或 T17.8。
+  - **改动的旧测试期望**：shebang 改为 `.comment`（与 VS Code 一致）；```` ```swift ```` 开头行改为 `.plain`（fence 属于块，VS Code 不着色）；`unprofiledLanguagesKeepPerLineTokens` 改用合成的无档案定义。现在除 Python（自有 tokenizer）外，所有已注册语言都有档案。
+  - **测试**：
+    - 结构测试覆盖验收清单的全部项。
+    - 三种语言加入四路一致性、随机切分、安全点随机文本和对抗样本（切点落在 `<<-EOF` 内、结束行、fence 标记串、块标量缩进、CR 与 LF 之间）。
+    - 引擎级测试：真实 NSTextView 中修改 heredoc 结束行、在 YAML 块结束行前插入缩进，再撤销；近处、远处重绘都与全量扫描一致。
+    - 全量 **1045 tests / 52 suites** 通过（main 复跑）；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **性能**（debug，约 10 MB，冷算到末尾）：bash 779 ms（离 1 s 最近）、yaml 201、markdown 144 ms。
+  - **未做**：真机交互、release 耗时；夹具都是 LF，CRLF 只由随机文本和对抗样本覆盖。
+  - **T17.3 完成**：除 Python 外，全部语言接入通用扫描器；全部样本一致率由 T17.0 的 39.0% 升到 77.7%。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

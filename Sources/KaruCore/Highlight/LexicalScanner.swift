@@ -14,11 +14,15 @@ import Foundation
 /// **Ranges.** Both accept any `[from, to)`, not necessarily line-aligned. The
 /// scanner never reads at or beyond `to`; it may read *before* `from`, but
 /// only the single unit in front of a string / atom prefix (the word-boundary
-/// guard), an atom's lookbehind context (16 units), an atom's `precededBy`
-/// context (up to `LexicalProfile.AtomContext.reach` units of whitespace,
-/// then the unit or word before it) or, when stopping at a safe point, the
-/// unit in front of `from` itself. The atom reads depend on the text alone,
-/// never on the state, so they cannot break the split guarantee below.
+/// guard), an atom's lookbehind context (16 units), an atom's or string's
+/// `precededBy` context (up to `LexicalProfile.AtomContext.reach` units of
+/// whitespace, then the unit or word before it), the unit in front of a line
+/// comment opener (`lineCommentPrecededBy`), the unit in front of a position
+/// tested for a line start (line blocks; `from` included), a block-scalar
+/// indicator's line up to `blockScalarLineReach` units back or, when stopping
+/// at a safe point, the unit in front of `from` itself. These reads depend on
+/// the text alone, never on the state, so they cannot break the split
+/// guarantee below.
 ///
 /// **Split guarantee.** For a split point `b` in `[a, c)`, scanning `a..<b`
 /// then `b..<c` gives the same end state as scanning `a..<c`, and the
@@ -26,9 +30,14 @@ import Foundation
 /// of the same kind (each call emits maximal runs *within its own range*) —
 /// provided `b` does not fall strictly inside a token: an opener (including a
 /// string prefix, lead and hashes), a closer, an escape sequence, an
-/// interpolation delimiter, an atom match or a surrogate pair. Line starts
-/// are always safe (no token crosses a line break: escape + newline counts as
-/// one escape).
+/// interpolation delimiter, an atom match or a surrogate pair — or, for line
+/// blocks, a heredoc opener (`<<-'EOF'`, a `<<<`), a block-scalar indicator
+/// with its indicators, a fence opener's leading spaces and marker run, a
+/// heredoc terminator or fence closer line through its first line-break unit,
+/// and in a block-scalar body a line's leading blanks through the first other
+/// unit (the indentation check). Line starts are always safe (no token
+/// crosses a line break: escape + newline counts as one escape; a line
+/// block's line-start checks run at the line start, from the text after it).
 ///
 /// **Safe points** (long-line slicing, plan §6 item 2) are what the
 /// `stoppingAtSafePointFrom:` variants return: a token boundary that is also
@@ -37,8 +46,10 @@ import Foundation
 /// prefix, hashed lead / hashes, C++ `R`, atom prefix) could include. Resuming
 /// there floors those lookbacks at the safe point instead of at the single
 /// pass's earlier code start, so this last condition keeps them identical.
-/// Checkpoints and the highlighter split only at line starts and at returned
-/// safe points.
+/// A line-block body is treated like string content (no lookback); a line
+/// start in a body or in code is always friendly, and stopping there leaves
+/// its line-start checks to the resumed pass. Checkpoints and the
+/// highlighter split only at line starts and at returned safe points.
 ///
 /// **Lines.** CR, LF and CRLF terminate lines. A line comment, and a
 /// single-line string not continued by escape + newline, end at the
@@ -79,6 +90,7 @@ public struct LexicalScanner: Sendable {
 
     private struct StringSpec: Sendable {
         let prefixes: [[unichar]]          // longest first
+        let context: AtomContext?
         let prefixRequired: Bool
         let prefixCaseInsensitive: Bool
         let opening: Opening
@@ -103,6 +115,14 @@ public struct LexicalScanner: Sendable {
         let characters: Set<unichar>
         let words: Set<[unichar]>
         let longestWord: Int
+        let lineStart: Bool
+
+        init(_ c: LexicalProfile.AtomContext) {
+            characters = Set(c.characters.utf16)
+            words = Set(c.words.filter { !$0.isEmpty }.map { Array($0.utf16) })
+            longestWord = c.words.map(\.utf16.count).max() ?? 0
+            lineStart = c.lineStart
+        }
     }
 
     private struct Atom: Sendable {
@@ -114,6 +134,8 @@ public struct LexicalScanner: Sendable {
     }
 
     private let lineComments: [[unichar]]
+    /// `lineCommentPrecededBy`, compiled.
+    private let lineCommentContext: Set<unichar>?
     private let blocks: [Block]
     private let strings: [StringSpec]
     private let atoms: [Atom]
@@ -121,7 +143,15 @@ public struct LexicalScanner: Sendable {
     private let interpolationMarkers: CharacterSet
     /// Units a backward lookback in code may include (see "Safe points").
     private let lookbackUnits: CharacterSet
+    /// Body kinds of the profile's line blocks (nil: no such form).
+    private let heredocKind: TokenKind?
+    private let indentedKind: TokenKind?
+    private let fenceKind: TokenKind?
     private static let lineBreaks = CharacterSet(charactersIn: "\r\n")
+    /// Anything but a space or tab (the rest of a block-scalar opener line).
+    private static let nonBlank = CharacterSet(charactersIn: " \t").inverted
+    /// A backtick fence's info string: a backtick drops the fence.
+    private static let backtickInfoMarkers = CharacterSet(charactersIn: "`\r\n")
 
     private static let cr: unichar = 13
     private static let lf: unichar = 10
@@ -134,6 +164,9 @@ public struct LexicalScanner: Sendable {
     /// How far ahead of a token boundary a safe-point search looks for the
     /// next marker before falling back to scanning one more token.
     private static let safePointWindow = 256
+    /// How far back a block-scalar indicator looks for its line start (the
+    /// parent indentation); beyond it, any non-blank body line ends the scalar.
+    static let blockScalarLineReach = 4_096
 
     public init(profile: LexicalProfile) {
         precondition(profile.blockComments.count < 256 && profile.strings.count < 256
@@ -157,6 +190,7 @@ public struct LexicalScanner: Sendable {
         }
 
         lineComments = profile.lineComments.filter { !$0.isEmpty }.map(units)
+        lineCommentContext = profile.lineCommentPrecededBy.map { Set($0.utf16) }
         blocks = profile.blockComments.map { form in
             let open = units(form.open), close = units(form.close)
             precondition(!open.isEmpty && !close.isEmpty, "LexicalProfile: empty block comment delimiter")
@@ -208,6 +242,7 @@ public struct LexicalScanner: Sendable {
             }
             if !form.multiline { content += [Self.cr, Self.lf] }
             specs.append(StringSpec(prefixes: longestFirst(form.prefixes),
+                                    context: form.precededBy.map(AtomContext.init),
                                     prefixRequired: form.prefixRequired && !form.prefixes.isEmpty,
                                     prefixCaseInsensitive: form.prefixCaseInsensitive,
                                     opening: opening, anchor: anchor, closeAnchor: closeAnchor,
@@ -220,17 +255,35 @@ public struct LexicalScanner: Sendable {
         atoms = profile.atoms.map { form in
             // swiftlint:disable:next force_try
             let regex = try! NSRegularExpression(pattern: form.pattern)
-            let context = form.precededBy.map { c in
-                AtomContext(characters: Set(c.characters.utf16),
-                            words: Set(c.words.filter { !$0.isEmpty }.map(units)),
-                            longestWord: c.words.map(\.utf16.count).max() ?? 0)
-            }
             return Atom(regex: RegexBox(regex: regex), first: Set(form.firstCharacters.utf16),
-                        kind: form.kind, prefixes: longestFirst(form.prefixes), context: context)
+                        kind: form.kind, prefixes: longestFirst(form.prefixes),
+                        context: form.precededBy.map(AtomContext.init))
         }
+
+        var heredoc: TokenKind?, indented: TokenKind?, fence: TokenKind?
+        for form in profile.lineBlocks {
+            switch form {
+            case .heredoc(let kind):
+                precondition(heredoc == nil, "LexicalProfile: at most one heredoc form")
+                heredoc = kind
+            case .indentedBlock(let kind):
+                precondition(indented == nil, "LexicalProfile: at most one indented block form")
+                indented = kind
+            case .fence(let kind):
+                precondition(fence == nil, "LexicalProfile: at most one fence form")
+                fence = kind
+            }
+        }
+        heredocKind = heredoc
+        indentedKind = indented
+        fenceKind = fence
 
         var code: [unichar] = lineComments.map { $0[0] } + blocks.map { $0.open[0] } + strings.map(\.anchor)
         for atom in atoms { code += atom.first }
+        if heredoc != nil { code.append(60) }               // <
+        if indented != nil { code += [124, 62] }            // | >
+        // Line breaks end a heredoc opener line and lead to line starts.
+        if !profile.lineBlocks.isEmpty { code += [Self.cr, Self.lf] }
         codeMarkers = set(code)
         var interp = code + [Self.cr, Self.lf] + Array("()[]{}".utf16)
         for spec in strings { interp += spec.interpolations.map(\.close) }
@@ -355,7 +408,28 @@ public struct LexicalScanner: Sendable {
         case nil, .interpolation?: return .code
         case .lineComment?, .blockComment?: return .comment
         case .string?: return .string
+        case .heredoc(_, _, let inBody)?: return inBody ? .block(heredocKind ?? .string) : .code
+        case .indentedBlock(_, let inBody)?: return inBody ? .block(indentedKind ?? .string) : .code
+        case .fence?: return .block(fenceKind ?? .plain)
         }
+    }
+
+    @inline(__always)
+    private static func isLineBreak(_ u: unichar) -> Bool { u == cr || u == lf }
+
+    /// Length of a line-comment opener at `p` that counts there
+    /// (`lineCommentPrecededBy`), or nil. Reads `p - 1` at most backward.
+    private func lineCommentLength(_ text: NSString, at p: Int, to: Int,
+                                   matches: ([unichar], Int, Int) -> Bool) -> Int? {
+        let c = text.character(at: p)
+        for opener in lineComments where opener[0] == c && matches(opener, p, to) {
+            if let context = lineCommentContext, p > 0 {
+                let previous = text.character(at: p - 1)
+                if !Self.isLineBreak(previous) && !context.contains(previous) { continue }
+            }
+            return opener.count
+        }
+        return nil
     }
 
     @inline(__always)
@@ -435,6 +509,82 @@ public struct LexicalScanner: Sendable {
             limit < to && isLowSurrogate(limit) ? limit + 1 : limit
         }
 
+        // MARK: Line blocks (all reads text-only and before `to`)
+
+        /// `p` (< `to`) starts a line: the document start, or after LF, or
+        /// after a CR not followed by LF (CRLF counts once).
+        func startsLine(_ p: Int) -> Bool {
+            guard p > 0 else { return true }
+            let previous = at(p - 1)
+            return previous == Self.lf || (previous == Self.cr && at(p) != Self.lf)
+        }
+        /// End of a closing line once `q` is past its significant text and
+        /// blanks: after its first line-break unit, or the document end; nil
+        /// when anything else follows or `to` cuts the line first.
+        func closingLineEnd(_ q: Int) -> Int? {
+            if q == to { return to == length ? q : nil }
+            return Self.isLineBreak(at(q)) ? q + 1 : nil
+        }
+        /// The heredoc terminator line at line start `ls`, through its line
+        /// break unit (or the document end), or nil.
+        func heredocTerminatorEnd(_ ls: Int, _ terminator: String, stripTabs: Bool) -> Int? {
+            var q = ls
+            if stripTabs { while q < to, at(q) == 9 { q += 1 } }
+            for u in terminator.utf16 {
+                guard q < to, at(q) == u else { return nil }
+                q += 1
+            }
+            return closingLineEnd(q)
+        }
+        /// After up to 3 spaces from line start `ls`: the position, or nil
+        /// when a fourth space follows.
+        func afterFenceIndent(_ ls: Int) -> Int? {
+            var q = ls
+            while q < to, at(q) == 32 {
+                if q - ls == 3 { return nil }
+                q += 1
+            }
+            return q
+        }
+        /// A fence opener at line start `ls`: marker, run length, run end.
+        func fenceOpener(_ ls: Int) -> (marker: unichar, length: Int, end: Int)? {
+            guard let q = afterFenceIndent(ls), q < to else { return nil }
+            let marker = at(q)
+            guard marker == 96 || marker == 126 else { return nil }
+            var end = q
+            while end < to, at(end) == marker { end += 1 }
+            return end - q >= 3 ? (marker, end - q, end) : nil
+        }
+        /// The closing fence line at line start `ls`, through its line break
+        /// unit (or the document end), or nil.
+        func fenceCloserEnd(_ ls: Int, marker: unichar, length: Int) -> Int? {
+            guard var q = afterFenceIndent(ls) else { return nil }
+            let runStart = q
+            while q < to, at(q) == marker { q += 1 }
+            guard q - runStart >= length else { return nil }
+            while q < to, at(q) == 32 || at(q) == 9 { q += 1 }
+            return closingLineEnd(q)
+        }
+        /// A block-scalar body line at line start `ls` ends the scalar: it is
+        /// indented ≤ `parentIndent` and not blank. When `to` cuts its
+        /// leading blanks before that is known, it stays in the body.
+        func dedents(_ ls: Int, parentIndent: Int) -> Bool {
+            var q = ls
+            while q < to, at(q) == 32 {
+                if q - ls >= parentIndent { return false }   // deeper than the parent
+                q += 1
+            }
+            while q < to, at(q) == 32 || at(q) == 9 { q += 1 }
+            return q < to && !Self.isLineBreak(at(q))
+        }
+        /// Past the body text of the current line: after its next line break
+        /// unit, or the plain-run end at `limit`.
+        func skipBodyLine(_ limit: Int) -> Int {
+            let hit = text.rangeOfCharacter(from: Self.lineBreaks, options: [],
+                                            range: NSRange(location: pos, length: limit - pos))
+            return hit.location == NSNotFound ? afterPlainRun(limit) : hit.location + 1
+        }
+
         /// `q` is split-safe in a context of this kind (`q` at a token
         /// boundary). Reads at most `q - 1` and `q`, never at `to`.
         func friendly(_ q: Int, code: Bool) -> Bool {
@@ -460,6 +610,13 @@ public struct LexicalScanner: Sendable {
             // closer straddling the window end must not yield a stop inside it.
             case .blockComment(let form, _)?: markers = blocks[Int(form)].markers; code = false
             case .string(let form, _, _)?: markers = strings[Int(form)].contentMarkers; code = false
+            case .heredoc(_, _, false)?: markers = codeMarkers; code = true
+            // A body is like string content: only line breaks matter.
+            case .heredoc(_, _, true)?, .indentedBlock(_, true)?, .fence(_, _, true)?:
+                markers = Self.lineBreaks; code = false
+            case .indentedBlock(_, false)?: markers = Self.nonBlank; code = false
+            case .fence(let marker, _, false)?:
+                markers = marker == 96 ? Self.backtickInfoMarkers : Self.lineBreaks; code = false
             }
             let windowEnd = min(to, pos + Self.safePointWindow)
             // A forward search starting on a low surrogate skips the next
@@ -485,12 +642,94 @@ public struct LexicalScanner: Sendable {
             // Phase A: before the target, marker searches end there.
             let limit = target.map { pos < $0 ? $0 : to } ?? to
             guard let top = state.frames.last else {
+                // A fence opens only at a line start, before anything else.
+                if fenceKind != nil, startsLine(pos), let fence = fenceOpener(pos),
+                   Self.push(.fence(marker: fence.marker, length: UInt16(min(fence.length, Int(UInt16.max))),
+                                    inBody: false), &state) {
+                    emitter.mark(pos, contextKind(state))
+                    pos = fence.end
+                    continue
+                }
                 pos = scanCode(text, pos, to, limit, &state, &emitter, &codeStart, inInterpolation: false,
                                matches: matches, prefixStart: prefixStart, boundary: boundary)
                 if pos == limit, limit < to { pos = afterPlainRun(limit) }
                 continue
             }
             switch top {
+            case .heredoc(_, _, false):
+                // The rest of the opener line: code; its line break starts the body.
+                pos = scanCode(text, pos, to, limit, &state, &emitter, &codeStart, inInterpolation: false,
+                               matches: matches, prefixStart: prefixStart, boundary: boundary)
+                if pos == limit, limit < to { pos = afterPlainRun(limit) }
+
+            case .heredoc(let terminator, let stripTabs, true):
+                if startsLine(pos), let end = heredocTerminatorEnd(pos, terminator, stripTabs: stripTabs) {
+                    // The terminator line is code, like the opener's delimiter.
+                    state.frames.removeLast()
+                    emitter.mark(pos, contextKind(state))
+                    pos = end
+                    codeStart = end
+                    break
+                }
+                pos = skipBodyLine(limit)
+
+            case .fence(let marker, let length, false):
+                let markers = marker == 96 ? Self.backtickInfoMarkers : Self.lineBreaks
+                let hit = text.rangeOfCharacter(from: markers, options: [],
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
+                let p = hit.location
+                if Self.isLineBreak(at(p)) {
+                    state.frames[state.frames.count - 1] = .fence(marker: marker, length: length, inBody: true)
+                    pos = p + 1
+                } else {
+                    // A backtick in a backtick fence's info string: no fence.
+                    state.frames.removeLast()
+                    emitter.mark(p, contextKind(state))
+                    pos = p
+                    codeStart = p
+                }
+
+            case .fence(let marker, let length, true):
+                if startsLine(pos), let end = fenceCloserEnd(pos, marker: unichar(marker), length: Int(length)) {
+                    state.frames.removeLast()
+                    pos = end
+                    codeStart = end
+                    emitter.mark(end, contextKind(state))
+                    break
+                }
+                pos = skipBodyLine(limit)
+
+            case .indentedBlock(let parentIndent, false):
+                // The rest of the indicator line: blanks and a comment only.
+                let hit = text.rangeOfCharacter(from: Self.nonBlank, options: [],
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
+                let p = hit.location
+                if Self.isLineBreak(at(p)) {
+                    state.frames[state.frames.count - 1] = .indentedBlock(parentIndent: parentIndent, inBody: true)
+                    pos = p + 1
+                    emitter.mark(pos, contextKind(state))
+                } else if let count = lineCommentLength(text, at: p, to: to, matches: matches),
+                          Self.push(.lineComment, &state) {
+                    emitter.mark(p, .comment)
+                    pos = p + count
+                } else {
+                    // Anything else: no block scalar; the line goes on as code.
+                    state.frames.removeLast()
+                    emitter.mark(p, contextKind(state))
+                    pos = p
+                }
+
+            case .indentedBlock(let parentIndent, true):
+                if startsLine(pos), dedents(pos, parentIndent: Int(parentIndent)) {
+                    state.frames.removeLast()
+                    emitter.mark(pos, contextKind(state))
+                    codeStart = pos
+                    break
+                }
+                pos = skipBodyLine(limit)
+
             case .interpolation:
                 pos = scanCode(text, pos, to, limit, &state, &emitter, &codeStart, inInterpolation: true,
                                matches: matches, prefixStart: prefixStart, boundary: boundary)
@@ -688,6 +927,13 @@ public struct LexicalScanner: Sendable {
         let c = text.character(at: p)
 
         if c == Self.cr || c == Self.lf {
+            if case .heredoc(let terminator, let stripTabs, false)? = state.frames.last {
+                // The heredoc opener line ends: the body starts.
+                state.frames[state.frames.count - 1] = .heredoc(terminator: terminator, stripTabs: stripTabs,
+                                                                inBody: true)
+                emitter.mark(p + 1, contextKind(state))
+                return p + 1
+            }
             if inInterpolation, let cut = lineEndCut(state) {
                 state.frames.removeSubrange(cut...)
                 codeStart = p + 1
@@ -695,10 +941,9 @@ public struct LexicalScanner: Sendable {
             return p + 1
         }
 
-        for opener in lineComments where opener[0] == c && matches(opener, p, to) {
-            guard Self.push(.lineComment, &state) else { break }
+        if let count = lineCommentLength(text, at: p, to: to, matches: matches), Self.push(.lineComment, &state) {
             emitter.mark(p, .comment)
-            return p + opener.count
+            return p + count
         }
 
         for (index, block) in blocks.enumerated() where block.open[0] == c && matches(block.open, p, to) {
@@ -726,6 +971,19 @@ public struct LexicalScanner: Sendable {
             emitter.mark(match.end, .code)
             codeStart = match.end
             return match.end
+        }
+
+        if heredocKind != nil, c == 60, let opener = heredocOpener(text, at: p, to: to, state: state) {
+            if let terminator = opener.terminator {
+                // At the depth cap the opener stays code.
+                _ = Self.push(.heredoc(terminator: terminator, stripTabs: opener.stripTabs, inBody: false), &state)
+            }
+            return opener.end
+        }
+
+        if indentedKind != nil, c == 124 || c == 62, let header = blockScalarHeader(text, at: p, to: to) {
+            _ = Self.push(.indentedBlock(parentIndent: header.parentIndent, inBody: false), &state)
+            return header.end
         }
 
         if inInterpolation, case .interpolation(let form, let k, let depth)? = state.frames.last {
@@ -763,7 +1021,7 @@ public struct LexicalScanner: Sendable {
             case .string(let form, _, _):
                 if strings[Int(form)].multiline { return cut }
                 cut = index
-            case .blockComment:
+            case .blockComment, .heredoc, .indentedBlock, .fence:
                 return cut
             case .interpolation, .lineComment:
                 continue
@@ -835,6 +1093,7 @@ public struct LexicalScanner: Sendable {
             if case .hashed(let lead, _, _, _) = spec.opening, lead.isEmpty { hashesOnly = true }
             if !hashesOnly { return nil }
         }
+        if let context = spec.context, !Self.allows(context, before: tokenStart, in: text) { return nil }
         return Opened(tokenStart: tokenStart, contentStart: contentStart, count: count, delimiter: delimiter)
     }
 
@@ -866,6 +1125,93 @@ public struct LexicalScanner: Sendable {
         return (start, p + match.range.length)
     }
 
+    // MARK: - Line-block openers
+
+    /// A heredoc opener at `p` (a `<`): `end` past the delimiter and
+    /// `terminator` = the delimiter word; a here-string `<<<` gives `end`
+    /// past it and no terminator. Nil when `p` opens neither, or while the
+    /// stack already holds a heredoc whose body has not started (only the
+    /// first heredoc of a line is tracked). Reads forward only, before `to`.
+    private func heredocOpener(_ text: NSString, at p: Int, to: Int,
+                               state: LexicalScanState) -> (end: Int, terminator: String?, stripTabs: Bool)? {
+        @inline(__always) func at(_ i: Int) -> unichar { text.character(at: i) }
+        guard p + 1 < to, at(p + 1) == 60 else { return nil }
+        for frame in state.frames {
+            if case .heredoc(_, _, false) = frame { return nil }
+        }
+        if p + 2 < to, at(p + 2) == 60 { return (p + 3, nil, false) }   // <<< here-string
+        var q = p + 2
+        var stripTabs = false
+        if q < to, at(q) == 45 { stripTabs = true; q += 1 }               // <<-
+        while q < to, at(q) == 32 || at(q) == 9 { q += 1 }
+        guard q < to else { return nil }
+        var quote: unichar?
+        switch at(q) {
+        case 39, 34: quote = at(q); q += 1                                 // ' "
+        case 92: q += 1                                                     // backslash
+        default: break
+        }
+        let wordStart = q
+        func isWordHead(_ u: unichar) -> Bool { u == 95 || (65...90).contains(u) || (97...122).contains(u) }
+        guard q < to, isWordHead(at(q)) else { return nil }
+        q += 1
+        while q < to, isWordHead(at(q)) || (48...57).contains(at(q)) { q += 1 }
+        let word = text.substring(with: NSRange(location: wordStart, length: q - wordStart))
+        if let quote {
+            guard q < to, at(q) == quote else { return nil }
+            q += 1
+        }
+        return (q, word, stripTabs)
+    }
+
+    /// A block-scalar header at `p` (a `|` or `>`): `end` past its
+    /// indicators and the parent indentation (see
+    /// `LexicalScanState.Frame.indentedBlock`), or nil when the unit before
+    /// it (after blanks) is not `:`, `-`, `?`, a line break or the document
+    /// start. Reads back over the opener line (≤ `blockScalarLineReach`)
+    /// and forward over at most two indicators, before `to`.
+    private func blockScalarHeader(_ text: NSString, at p: Int, to: Int) -> (end: Int, parentIndent: UInt16)? {
+        @inline(__always) func at(_ i: Int) -> unichar { text.character(at: i) }
+        let floor = max(0, p - LexicalProfile.AtomContext.reach)
+        var q = p - 1
+        while q >= floor, at(q) == 32 || at(q) == 9 { q -= 1 }
+        if q >= 0 {
+            guard q >= floor else { return nil }
+            let u = at(q)
+            guard Self.isLineBreak(u) || u == 58 || u == 45 || u == 63 else { return nil }   // : - ?
+        }
+        var end = p + 1
+        var sign = false, digit = false
+        while end < to {
+            let u = at(end)
+            if !sign, u == 45 || u == 43 { sign = true } else if !digit, (49...57).contains(u) { digit = true } else { break }
+            end += 1
+        }
+
+        // Parent indentation from the opener line's start.
+        let reachStart = max(0, p - Self.blockScalarLineReach)
+        let hit = text.rangeOfCharacter(from: Self.lineBreaks, options: .backwards,
+                                        range: NSRange(location: reachStart, length: p - reachStart))
+        let lineStart: Int
+        if hit.location != NSNotFound {
+            lineStart = hit.location + 1
+        } else if reachStart == 0 {
+            lineStart = 0
+        } else {
+            return (end, UInt16.max)
+        }
+        var c = lineStart
+        while c < p, at(c) == 32 { c += 1 }
+        var lastMarker: Int?
+        while c + 1 < p, at(c) == 45, at(c + 1) == 32 || at(c + 1) == 9 {   // "- "
+            lastMarker = c
+            c += 1
+            while c < p, at(c) == 32 || at(c) == 9 { c += 1 }
+        }
+        let column = (c == p ? lastMarker ?? c : c) - lineStart
+        return (end, UInt16(min(column, Int(UInt16.max))))
+    }
+
     /// `AtomContext` check: reads only text before `start` — at most
     /// `LexicalProfile.AtomContext.reach` units of whitespace, then the unit
     /// or word ending there (≤ the longest word + 1 units) — independent of
@@ -875,7 +1221,11 @@ public struct LexicalScanner: Sendable {
         var q = start - 1
         while q >= floor {
             let u = text.character(at: q)
-            guard u == 32 || u == 9 || u == cr || u == lf else { break }
+            if u == cr || u == lf {
+                if context.lineStart { return true }   // first on its line
+            } else if u != 32 && u != 9 {
+                break
+            }
             q -= 1
         }
         if q < 0 { return true }              // document start

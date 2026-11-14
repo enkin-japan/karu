@@ -1,20 +1,23 @@
 import Foundation
 
-/// Bash/zsh shell script definition (v1, line-based).
+/// Bash/zsh shell script definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - A shebang (`#!…`) is only recognised as such at the very start of the
-///   line (`^#!`); this is exact for the first line of a script, but a
-///   `#!` appearing later in a line (rare, and not a shebang there) would
-///   also match since there is no "line 1 only" state.
-/// - Variable expansion (`$VAR`, `${VAR}`) is only tokenized when it appears
-///   outside a string; a `$VAR` inside a double-quoted string is not split
-///   out separately because the whole quoted string is matched as one token
-///   first (mirroring the other languages' string-priority behaviour).
-///   Single-quoted strings never expand variables in real Bash, which this
-///   matches naturally.
-/// - Command substitution (`` `…` `` / `$(…)`) and here-docs are not
-///   specially recognised.
+/// Comments, strings and heredocs come from `lexicalProfile` (M17 T17.3):
+/// - `#` starts a comment only at a line start or after a blank or one of
+///   `;|&()` (`lineCommentPrecededBy`), so `$#`, `${#x}` and `a#b` stay code;
+///   a shebang is a comment, as in VS Code.
+/// - `'…'` is raw and may span lines; `$'…'` has `\` escapes; `"…"` spans
+///   lines with `\` escapes and `$(…)`, `${…}` and `` `…` `` interpolations
+///   scanned as code (nested quotes inside included: `"$(echo ")")"`).
+/// - Heredocs (`<<EOF`, `<<-EOF` with tab-stripped terminator, `<<'EOF'`,
+///   `<<"EOF"`, `<<\EOF`; `<<<` is a here-string): the body is one string
+///   token, the opener and terminator lines stay code (VS Code leaves them
+///   uncoloured).
+///
+/// Compromises (plan §4 "什么时候妥协"): only the first heredoc of a line is
+/// tracked (`cat <<A <<B`); an unquoted heredoc body is not interpolated
+/// (VS Code colours `$var` / `$(…)` inside it); `x<<y` in arithmetic reads
+/// as a heredoc opener; top-level `` `…` `` and `$(…)` are plain code.
 public enum BashLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -35,34 +38,43 @@ public enum BashLanguage {
         "false",
     ]
 
+    /// Comments, strings, interpolations and heredocs (see the type comment).
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["#"],
+        lineCommentPrecededBy: " \t;|&()",
+        strings: [
+            .init(prefixes: ["$"], prefixRequired: true, delimiter: .fixed(open: "'", close: "'"), multiline: true),
+            .init(delimiter: .fixed(open: "'", close: "'"), multiline: true, escape: nil),
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: true,
+                  interpolations: [.init(open: "$(", close: ")"), .init(open: "${", close: "}"),
+                                   .init(open: "`", close: "`")]),
+        ],
+        lineBlocks: [.heredoc(bodyKind: .string)]
+    )
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
             identifier: "bash",
             fileExtensions: ["sh", "bash", "zsh"],
             rules: [
-                // Shebang (line-start only, via `^`).
-                LanguageRule(pattern: #"^#!.*"#, kind: .type),
-                // Comment.
-                LanguageRule(pattern: #"#.*"#, kind: .comment),
-                // Strings.
-                LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
-                LanguageRule(pattern: #"'[^']*'"#, kind: .string),
                 // Variable expansion.
                 LanguageRule(pattern: #"\$\{[^}]*\}"#, kind: .property),
                 LanguageRule(pattern: #"\$\w+"#, kind: .property),
                 // Keywords.
                 LanguageRule(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
                 // Common commands / builtins after keywords; a word that is both
-                // (e.g. `set`) already matched as a keyword. Comments, strings
-                // and `$…` expansions are consumed earlier, so a command word
-                // inside one is never reached here.
+                // (e.g. `set`) already matched as a keyword. Rules only run in
+                // code segments, and `$…` expansions are consumed earlier, so a
+                // command word inside a string, comment or heredoc is never
+                // reached here.
                 LanguageRule(pattern: "\\b(?:\(builtins.joined(separator: "|")))\\b", kind: .builtin),
                 // Numbers.
                 LanguageRule(pattern: #"(?<![\w.])\d+(?:\.\d+)?"#, kind: .number),
             ],
             keywords: keywords,
-            builtins: builtins
+            builtins: builtins,
+            lexicalProfile: lexicalProfile
         )
     }
 }

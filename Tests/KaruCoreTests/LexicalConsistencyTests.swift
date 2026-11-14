@@ -95,6 +95,39 @@ private func tokenInteriors(_ ns: NSString, _ profile: LexicalProfile,
         guard case .atom = kind else { continue }
         for k in 1..<max(1, range.length) { out.insert(range.location + k) }
     }
+    return out.union(lineBlockInteriors(ns, profile))
+}
+
+/// Positions strictly inside a line-block token (`LexicalScanner` "Split
+/// guarantee"), over-approximated from the text alone: heredoc openers and
+/// every line that could be a terminator (through its line break unit),
+/// block-scalar indicators and every line's leading blanks through the first
+/// other unit, fence openers' leading spaces and marker runs and every line
+/// that could close a fence (through its line break unit).
+private func lineBlockInteriors(_ ns: NSString, _ profile: LexicalProfile) -> Set<Int> {
+    var out = Set<Int>()
+    func insert(_ regex: String, options: NSRegularExpression.Options = [.anchorsMatchLines],
+                through: Bool = false) {
+        let re = try! NSRegularExpression(pattern: regex, options: options)
+        for match in re.matches(in: ns as String, range: NSRange(location: 0, length: ns.length)) {
+            let r = match.range
+            let last = through ? NSMaxRange(r) : NSMaxRange(r) - 1
+            if last >= r.location + 1 { for k in (r.location + 1)...last { out.insert(k) } }
+        }
+    }
+    for form in profile.lineBlocks {
+        switch form {
+        case .heredoc:
+            insert(#"<<<|<<-?[ \t]*(?:'[A-Za-z_]\w*'|"[A-Za-z_]\w*"|\\?[A-Za-z_]\w*)"#)
+            insert(#"^\t*[A-Za-z_]\w*$"#, through: true)
+        case .indentedBlock:
+            insert(#"[|>][-+1-9]{0,2}"#)
+            insert(#"^[ \t]*"#, through: true)
+        case .fence:
+            insert(#"^ {0,3}(?:`{3,}|~{3,})"#)
+            insert(#"^ {0,3}(?:`{3,}|~{3,})[ \t]*$"#, through: true)
+        }
+    }
     return out
 }
 
@@ -191,7 +224,8 @@ struct LexicalConsistencyTests {
         ("javascript.js", "javascript"), ("typescript.ts", "typescript"), ("rust.rs", "rust"),
         ("c.c", "c"), ("cpp.cpp", "cpp"), ("csharp.cs", "csharp"), ("java.java", "java"), ("go.go", "go"),
         ("css.css", "css"), ("sql.sql", "sql"), ("swift.swift", "swift"), ("toml.toml", "toml"),
-        ("html.html", "html"), ("xml.xml", "xml"),
+        ("html.html", "html"), ("xml.xml", "xml"), ("bash.sh", "bash"), ("yaml.yaml", "yaml"),
+        ("markdown.md", "markdown"), ("embedded/fences.md", "markdown"),
     ]
 
     @Test(arguments: pilots)
@@ -205,8 +239,9 @@ struct LexicalConsistencyTests {
         var oneState = LexicalScanState()
         var one: [(NSRange, LexicalSegment)] = []
         scanner.segments(ns, from: 0, to: ns.length, state: &oneState) { one.append(($0, $1)) }
-        #expect(one.contains { $0.1 == .comment })
+        #expect(one.contains { $0.1 == .comment } || pilot.file == "embedded/fences.md")
         #expect(scanner.profile.strings.isEmpty || one.contains { $0.1 == .string })
+        #expect(scanner.profile.lineBlocks.isEmpty || one.contains { if case .block = $0.1 { true } else { false } })
 
         let interiors = tokenInteriors(ns, scanner.profile, segments: one)
         let safe = (1..<ns.length).filter { isSafeSplit(ns, $0, interiors: interiors) }
@@ -258,6 +293,10 @@ struct LexicalConsistencyTests {
     /// Go raw string re-pairing the backticks, a CSS comment, an SQL string
     /// re-pairing the quotes, a nesting Swift comment that never closes, a
     /// TOML literal block, an HTML comment and an XML CDATA section.
+    ///
+    /// T17.3b: a Bash heredoc whose terminator never comes, a YAML quoted
+    /// scalar that re-pairs the quotes below, and Markdown fences longer
+    /// than any closer in the document.
     static let fourWay: [(file: String, language: String, opener: String, anchor: String)] = [
         ("javascript.js", "javascript", "`", "\nfunction priceLabel"),
         ("typescript.ts", "typescript", "${", "User: ${user.name}"),
@@ -274,6 +313,10 @@ struct LexicalConsistencyTests {
         ("toml.toml", "toml", "'''", "[server]"),
         ("html.html", "html", "<!--", "  <footer>"),
         ("xml.xml", "xml", "<![CDATA[", "  </item>"),
+        ("bash.sh", "bash", "cat <<ZZZ ", "usage() {"),
+        ("yaml.yaml", "yaml", "\"", "jobs:"),
+        ("markdown.md", "markdown", "````", "### Code"),
+        ("embedded/fences.md", "markdown", "`````", "Bash:"),
     ]
 
     /// Reference = one sequential pass from offset 0. (i) Head-to-tail (bands
@@ -509,9 +552,10 @@ struct LexicalConsistencyEngineTests {
     /// Colours `painter` holds over the overlap of its band and a fresh
     /// engine's band painted at the same offset over the same text.
     private func expectMatchesFresh(_ painter: Painter, at offset: Int, _ label: String,
+                                    language: String = "javascript",
                                     sourceLocation: SourceLocation = #_sourceLocation) -> [ObjectIdentifier?] {
         painter.paint(at: offset)
-        let fresh = Painter(text: painter.textView.string, language: "javascript")
+        let fresh = Painter(text: painter.textView.string, language: language)
         fresh.paint(at: offset)
         guard let a = painter.engine.paintedRange, let b = fresh.engine.paintedRange else {
             Issue.record("\(label): nothing painted", sourceLocation: sourceLocation)
@@ -569,6 +613,68 @@ struct LexicalConsistencyEngineTests {
         _ = expectMatchesFresh(scrolled, at: target, "after undo")
         #expect(scrolled.colours(in: probe) == original)
         _ = expectMatchesFresh(scrolled, at: Int(Double(length) * 0.8), "after undo (far)")
+    }
+
+    /// T17.3b line blocks: an edit inside a Bash heredoc terminator line
+    /// (`EOF` → `EOFX`: the body runs on to the next terminator) and inside
+    /// a YAML block scalar's dedent line (indented: the indented mapping below
+    /// joins the block), then undo — each repaint equals a fresh engine's
+    /// full scan, near the edit and far below, and the edit really changes
+    /// the colours there. Both layouts put the edited line before a
+    /// checkpoint whose state the edit changes (`editLayout`).
+    nonisolated static let lineBlockEdits: [(language: String, anchor: String, opener: String, column: Int, insert: String)] = [
+        ("bash", "EOF\n}\n\nwrite_config", "X", 3, "X"),
+        ("yaml", "next:", "  ", 0, "  "),
+    ]
+
+    @Test(arguments: lineBlockEdits)
+    func lineBlockEditsRepaintLikeAFreshScan(
+        _ sample: (language: String, anchor: String, opener: String, column: Int, insert: String)
+    ) async throws {
+        let def = try #require(LanguageRegistry.definition(forIdentifier: sample.language))
+        let source: String
+        if sample.language == "yaml" {
+            // A block scalar whose dedent line `next:` owns a long indented
+            // mapping (the fixture, indented by two).
+            let indented = try fixture("yaml.yaml").split(separator: "\n", omittingEmptySubsequences: false)
+                .map { $0.isEmpty ? "" : "  " + $0 }.joined(separator: "\n")
+            source = "top: |\n  text\nnext:\n" + indented
+        } else {
+            source = try fixture("bash.sh")
+        }
+        let layout = try editLayout(source, def: def, anchor: sample.anchor, opener: sample.opener, step: 100)
+        let text = layout.doc
+        let language = sample.language
+
+        let painter = Painter(text: text, language: language)
+        let length = painter.length
+        for tenth in 0...7 { painter.paint(at: length * tenth / 10) }
+        #expect(painter.engine.analysis.checkpoints.entries.map(\.offset).contains(layout.checkpoint))
+        let target = layout.checkpoint + 64
+        let probe = NSRange(location: layout.editAt + 40, length: layout.checkpoint + 200 - (layout.editAt + 40))
+        _ = expectMatchesFresh(painter, at: target, "\(language): scroll vs jump", language: language)
+        let original = painter.colours(in: probe)
+
+        let editAt = layout.editAt + sample.column
+        let inserted = (sample.insert as NSString).length
+        painter.replace(NSRange(location: editAt, length: 0), with: sample.insert)
+        #expect(painter.engine.analysis.checkpoints.entries.allSatisfy { $0.offset < layout.editAt })
+        await pump(0.3)
+        _ = expectMatchesFresh(painter, at: target + inserted, "\(language): after edit", language: language)
+        let edited = painter.colours(in: NSRange(location: probe.location + inserted, length: probe.length))
+        #expect(edited != original, "\(language): the edit did not change the colours")
+        _ = expectMatchesFresh(painter, at: Int(Double(length) * 0.8), "\(language): after edit (far)",
+                               language: language)
+
+        let undo = try #require(painter.textView.undoManager)
+        #expect(undo.canUndo)
+        undo.undo()
+        #expect(painter.textView.string == text)
+        await pump(0.3)
+        _ = expectMatchesFresh(painter, at: target, "\(language): after undo", language: language)
+        #expect(painter.colours(in: probe) == original)
+        _ = expectMatchesFresh(painter, at: Int(Double(length) * 0.8), "\(language): after undo (far)",
+                               language: language)
     }
 
     @Test func colourIsHeldOnlyInTheCurrentBand() async throws {

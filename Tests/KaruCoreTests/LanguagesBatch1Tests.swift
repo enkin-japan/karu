@@ -66,7 +66,9 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     #expect(kind(of: "- ", in: spans(md, "- item")) == .property)
     #expect(kind(of: "1. ", in: spans(md, "1. item")) == .property)
     #expect(kind(of: "> quoted", in: spans(md, "> quoted")) == .comment)
-    #expect(kind(of: "```swift", in: spans(md, "```swift")) == .comment)
+    // M17 T17.3: a fence opener line belongs to the fenced block, uncoloured
+    // like VS Code's fence of an unknown language (was `.comment`).
+    #expect(kind(of: "```swift", in: spans(md, "```swift")) == .plain)
 }
 
 // MARK: - Python
