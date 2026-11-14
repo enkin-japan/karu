@@ -65,6 +65,12 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     设置固定：遥测关、更新关、扩展自动更新关、语义高亮关、主题 Dark Modern、工作区信任关。扩展：ms-python.python 2026.10.0、
     vscode-pylance 2026.4.1（连带 debugpy 2026.6.0、vscode-python-envs 1.42.0）；TypeScript 为内置 6.0.3。
     安装前已保存 `~/Library` 与 `~` 的条目快照（`~/KaruM17-VSCode/pre-install-*.txt`），T17.15 卸载时据此核对。
+  - **对照环境位置变更（2026-11-14，系统盘清理）**：`~/KaruM17-VSCode` 整个目录已迁到外接盘
+    `/Volumes/enkin/project-support/KaruM17-VSCode/`，原位置现在是指向它的符号链接，本台账里所有 `~/KaruM17-VSCode/...` 路径照常可用。
+    迁移后逐文件 SHA-256 与原件一致（仅访达的 `.DS_Store` 不同），`codesign --verify --deep --strict` 通过；迁移后未重新启动 VS Code 实测。
+    `download/vscode.zip`（安装包，388 MB）已删除，需要重装时按上面的版本与 commit 从官方更新服务器重新下载。
+    对 T17.15 的影响：卸载时要同时删除 `~/KaruM17-VSCode` 符号链接和外接盘上的实际目录；外接盘未挂载时对照环境不可用。
+    `~/Documents/KaruTCCProbe/` 未动。迁移总记录见 `/Volumes/enkin/project-support/README.md`。
   - **默认主题已变**：1.146 的默认主题是 Dark 2026 / Light 2026（各自 include Modern，再覆盖约 50 条语法色，GitHub 风格：
     关键字 #ff7b72、字符串 #a5d6ff、函数 #d2a8ff、参数 #ffa657）。方案第 6 节按 Dark/Light Modern 写的 9 个新增色值，
     已用 1.146 的主题文件逐项核对，全部一致；另发现 Karu 现有类型色 #4EC9B2 与主题的 #4EC9B0 差 2，属笔误。
