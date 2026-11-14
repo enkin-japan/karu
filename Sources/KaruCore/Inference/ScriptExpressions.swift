@@ -108,6 +108,12 @@ extension ScriptEvaluator {
         case .nonNull:
             return n.parts.first.map { eval($0, f).withoutNone } ?? .unknown
         case .importCall:
+            // `import('m')` (T17.13): a promise of the module object.
+            if let arg = (n.firstChild(.args)?.parts ?? n.parts).first, arg.kind == .string,
+               let source = ScriptTypes.unquoted(string(arg)),
+               let key = imports?.script(source) {
+                return .instance(ScriptTypes.promise, [tables.moduleNamespaceValue(key)])
+            }
             return .instance(ScriptTypes.promise, [.unknown])
         default:
             return .unknown
@@ -287,7 +293,11 @@ extension ScriptEvaluator {
         let cs = n.parts
         guard let calleeNode = cs.first else { return .unknown }
         if calleeNode.kind == .keywordLit, string(calleeNode) == "super" { return .none }
-        if calleeNode.kind == .name, string(calleeNode) == "require", f.env["require"] == nil { return .unknown }
+        if calleeNode.kind == .name, string(calleeNode) == "require", f.env["require"] == nil {
+            // `require('m')` (T17.13): the module object / `module.exports`.
+            guard let source = requireSource(n), let key = imports?.script(source) else { return .unknown }
+            return tables.moduleNamespaceValue(key)
+        }
         let typeArgs = cs.first { $0.kind == .typeArgs }.map { $0.parts.map { typeOf($0, f) } } ?? []
         var callee = eval(calleeNode, f)
         if n.has(SyntaxFlags.optional) { callee = callee.withoutNone }
@@ -372,8 +382,8 @@ extension ScriptEvaluator {
         case .signature(let sig):
             return callSignature(sig, args)
         case .tableFunction(let module, let name):
-            let section: TSGlobalSymbol.Section = module == "dom" ? .dom : .es
-            guard let symbol = tables.store.tsSymbol(name, in: section), let fn = symbol.function else { return .unknown }
+            let section = ScriptTypeTables.functionScope(module: module, name: name)
+            guard let symbol = tables.symbol(name, in: section), let fn = symbol.function else { return .unknown }
             return selectOverload(fn.overloads, section: section, classParams: [], base: [:], args, typeArgs: typeArgs)
         case .tableMember(let owner, let name):
             guard let info = tables.classInfo(owner), let member = info.decl.member(named: name) else { return .unknown }
@@ -461,7 +471,7 @@ extension ScriptEvaluator {
 
     /// The first overload the arguments fit (arity, lenient types); its
     /// return type with the solved type variables (unsolved → constraint).
-    func selectOverload(_ overloads: [TypeTable.Signature], section: TSGlobalSymbol.Section, classParams: [String],
+    func selectOverload(_ overloads: [TypeTable.Signature], section: ScriptScope, classParams: [String],
                         base: [String: InferredType], _ args: [SArg], typeArgs: [InferredType]) -> InferredType {
         guard !overloads.isEmpty else { return .unknown }
         var fallback: (TypeTable.Signature, [String: InferredType])?
@@ -492,7 +502,7 @@ extension ScriptEvaluator {
         return libReturn(sig, section: section, sigParams: classParams + sig.typeParameters.map(\.name), bindings)
     }
 
-    private func libReturn(_ sig: TypeTable.Signature, section: TSGlobalSymbol.Section, sigParams: [String],
+    private func libReturn(_ sig: TypeTable.Signature, section: ScriptScope, sigParams: [String],
                            _ bindings: [String: InferredType]) -> InferredType {
         guard let r = sig.returnType else { return .none }
         var t = tables.type(text: r, section: section, typeParams: sigParams).substituting(bindings)
@@ -649,8 +659,8 @@ extension ScriptEvaluator {
                 }
                 return libParameter(member.overloads, section: info.section, classParams: info.typeParameters, base: base, k, args)
             case .tableFunction(let module, let name):
-                let section: TSGlobalSymbol.Section = module == "dom" ? .dom : .es
-                guard let fn = tables.store.tsSymbol(name, in: section)?.function else { return .unknown }
+                let section = ScriptTypeTables.functionScope(module: module, name: name)
+                guard let fn = tables.symbol(name, in: section)?.function else { return .unknown }
                 return libParameter(fn.overloads, section: section, classParams: [], base: [:], k, args)
             case .documentFunction(let q):
                 guard let fn = docFunction(q), k < fn.params.count else { return .unknown }
@@ -670,7 +680,7 @@ extension ScriptEvaluator {
     /// The function-typed parameter `k` of the first overload the
     /// arguments fit (arity; the other, non-callback arguments' types),
     /// with the type variables solved from those arguments.
-    private func libParameter(_ overloads: [TypeTable.Signature], section: TSGlobalSymbol.Section, classParams: [String],
+    private func libParameter(_ overloads: [TypeTable.Signature], section: ScriptScope, classParams: [String],
                               base: [String: InferredType], _ k: Int, _ args: [SArg]) -> InferredType {
         var fallback: InferredType?
         for sig in overloads {
@@ -727,6 +737,7 @@ extension ScriptEvaluator {
             }
             return s.indexValue ?? .unknown
         case .module(let ns):
+            if ScriptTypeTables.isModuleKey(ns) { return tables.moduleMemberValue(ns, name) }
             return tables.globalValue(ns + "." + name, allowDOM: true)
         case .anyOf(let parts):
             let nonNone = parts.filter { $0 != .none }
@@ -785,6 +796,9 @@ extension ScriptEvaluator {
     }
 
     private func classAttribute(_ ref: ClassRef, _ args: [InferredType], _ name: String) -> InferredType {
+        if let statics = tables.staticMemberType(ref, name) {
+            return name == "prototype" ? .instance(ref, args) : statics
+        }
         if ScriptTypeTables.section(of: ref) != nil {
             let ctor = tables.constructorType(of: ref)
             if name == "prototype" { return .instance(ref, args) }
@@ -996,7 +1010,7 @@ extension ScriptEvaluator {
             }
             return out.isEmpty ? nil : out
         case .module(let ns):
-            let list = tables.namespaceMembers(ns)
+            let list = ScriptTypeTables.isModuleKey(ns) ? tables.moduleMembers(ns) : tables.namespaceMembers(ns)
             return list.isEmpty ? nil : list
         case .callable:
             return instanceMembers(ScriptTypes.function, [], insideClass: nil)
@@ -1051,6 +1065,18 @@ extension ScriptEvaluator {
     }
 
     private func classObjectMembers(_ ref: ClassRef, _ args: [InferredType], insideClass: String?) -> [InferredMember]? {
+        if var statics = tables.staticMembers(ref) {
+            // An imported `class`: its static members, then `Function`'s.
+            var seen = Set(statics.map(\.name))
+            if seen.insert("prototype").inserted {
+                statics.append(InferredMember(name: "prototype", kind: .field, rank: 0, detail: ref.shortName))
+            }
+            for m in tables.ownMembers(ScriptTypes.function, args: [], selfType: .instance(ScriptTypes.function, []))
+            where seen.insert(m.name).inserted {
+                statics.append(InferredMember(name: m.name, kind: m.kind, rank: 1, detail: m.detail))
+            }
+            return statics
+        }
         if ScriptTypeTables.section(of: ref) != nil {
             let ctor = tables.constructorType(of: ref)
             return ctor == .unknown ? nil : members(of: ctor, insideClass: nil)

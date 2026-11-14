@@ -203,3 +203,12 @@ JSON/JSONL/XML/plist 一键排版；行号；缩进彩虹；Tab 缩进 + 换行�
   `XDG_DATA_HOME` 到缓存（`dotnet run` 为单一步骤，用户 C# 程序的 LocalApplicationData 亦随之指向缓存）。
 - **不做**：包管理界面、多版本并存、项目级构建（Cargo/Maven/Go module 依赖）、终端仿真/PTY、
   错误行跳转（留待第二期）。
+
+### 导入解析（M17 T17.13）
+
+`Sources/KaruCore/Imports/` 负责 Python 和 JS/TS 的导入，按 HIGHLIGHT-AND-COMPLETION-PLAN §9 的顺序查找，标准库先走内置 typeshed 表。
+- **读盘**：只经可注入的 `ImportFileSystem`，在串行 utility 队列 `dev.enkin.Karu.imports` 上执行。全程不启动任何进程：解释器的位置只读 Run 模块已缓存的结果。
+- **缓存**：每个模块只保留导出摘要，放在全应用共用的 LRU 里，上限 8 MB。超限时先降为只留名字，单个模块超过 2 MB 也只留名字。
+- **失效**：项目文件靠 WorkspaceIndex 的 FSEvents；site-packages、node_modules 和解释器按 mtime 复核，最多每 2 s 一次。
+- **无项目文件夹**：只用标准库存根和解释器自带的包，不读文档所在的目录，以免触发访问授权。
+

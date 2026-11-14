@@ -260,6 +260,40 @@ public indirect enum InferredType: Hashable, Sendable {
         }
     }
 
+    /// Whether the type refers to an imported module's class, function or
+    /// module (T17.13 overlay names start with `§`): such derived values
+    /// are dropped when import summaries change.
+    public var mentionsImport: Bool {
+        func imported(_ ref: ClassRef) -> Bool {
+            if case .table(let m) = ref.origin { return m.hasPrefix("§") }
+            return false
+        }
+        switch self {
+        case .instance(let ref, let args), .classObject(let ref, let args):
+            return imported(ref) || args.contains { $0.mentionsImport }
+        case .literal(let ref, _): return imported(ref)
+        case .module(let m): return m.hasPrefix("§")
+        case .anyOf(let parts): return parts.contains { $0.mentionsImport }
+        case .typeForm(let t): return t.mentionsImport
+        case .typeVar(_, let bound): return bound?.mentionsImport ?? false
+        case .shape(let shape):
+            return shape.members.contains { $0.type.mentionsImport } || shape.extends.contains { $0.mentionsImport }
+                || (shape.indexValue?.mentionsImport ?? false)
+        case .callable(let c):
+            switch c.target {
+            case .tableFunction(let m, _): if m.hasPrefix("§") { return true }
+            case .tableMember(let owner, _): if imported(owner) { return true }
+            case .signature(let sig):
+                if sig.returnType.mentionsImport || sig.parameters.contains(where: { $0.type?.mentionsImport ?? false }) {
+                    return true
+                }
+            case .documentFunction: break
+            }
+            return c.receiver?.mentionsImport ?? false
+        default: return false
+        }
+    }
+
     /// Replaces type variables by `bindings` (unbound ones stay).
     public func substituting(_ bindings: [String: InferredType]) -> InferredType {
         guard !bindings.isEmpty else { return self }
@@ -326,7 +360,10 @@ extension InferredType {
                 ? "Literal[\(text)]" : ref.shortName
         case .classObject(let ref, let args):
             return "type[\(Self.generic(ref.shortName, args))]"
-        case .module(let name): return "Module(\(name))"
+        case .module(let name):
+            // An imported module's overlay name `§<context>:<dotted>` shows its dotted name.
+            if name.hasPrefix("§"), let colon = name.firstIndex(of: ":") { return "Module(\(name[name.index(after: colon)...]))" }
+            return "Module(\(name))"
         case .callable(let c):
             if case .signature(let sig) = c.target {
                 if sig.acceptsAnyArguments { return "Callable[..., \(sig.returnType.pythonDescription)]" }

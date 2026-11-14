@@ -257,7 +257,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
         // Prefix completion: shares the observer hub for edit notifications and
         // routes keys through the text view's completion hook. Module-gated.
-        let completion = CompletionController(textView: textView, analysis: analysis)
+        let completion = CompletionController(textView: textView, analysis: analysis, importService: .shared)
+        // Import resolution (T17.13) reads the document's project folder.
+        completion.documentURLProvider = { [weak self] in self?.documentController.fileURL }
         observerHub.add(completion)
         (textView as? EditorTextView)?.completionKeyHandler = completion
         self.completionController = completion

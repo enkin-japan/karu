@@ -26,8 +26,11 @@ import Foundation
 //   operators, `await`, iteration and context managers through the
 //   protocols in the tables.
 // - **Precision first (plan §13).** Anything not understood is `unknown`;
-//   an unknown decorator makes a function's result unknown; a project
-//   import (relative or not in the tables) is unknown until T17.13.
+//   an unknown decorator makes a function's result unknown.
+// - **Imports (T17.13).** With an `ImportScope`, project and third-party
+//   modules (absolute and relative) are overlay modules of the tables
+//   (`§<context>:<dotted>`), read like typeshed stubs; one still loading is
+//   unknown until its summary arrives.
 
 /// The environment of one scope during the flow walk.
 struct PyFrame {
@@ -69,6 +72,8 @@ final class PythonEvaluator {
     /// Cross-version return-type cache (owned by the service).
     let returnCache: ByteLRU<String, CachedReturn>
     var budget: InferenceBudget
+    /// Project / third-party imports (T17.13); nil: typeshed modules only.
+    var imports: ImportScope?
 
     static let maxCallDepth = 2
     static let maxUnionSites = 4
@@ -851,7 +856,11 @@ final class PythonEvaluator {
                 if ps.count >= 2, ps[1].kind == .name {
                     bindName(string(ps[1]), Thunk(lazy: { [unowned self] in self.moduleValue(path) }), &f)
                 } else if let head = path.split(separator: ".").first.map(String.init) {
-                    bindName(head, Thunk(lazy: { [unowned self] in self.moduleValue(head) }), &f)
+                    // `import a.b`: `a` is bound; `a.b` is loaded with it.
+                    bindName(head, Thunk(lazy: { [unowned self] in
+                        if path != head { _ = self.imports?.python(path) }
+                        return self.moduleValue(head)
+                    }), &f)
                 }
             }
             return
@@ -864,20 +873,37 @@ final class PythonEvaluator {
             let local = ps.count >= 2 && ps[1].kind == .name ? string(ps[1]) : string(original)
             let name = string(original)
             bindName(local, Thunk(lazy: { [unowned self] in
-                guard level == 0, let source else { return .unknown }
-                return self.importedValue(module: source, name: name)
+                self.importedValue(source: source ?? "", level: Int(level), name: name)
             }), &f)
         }
     }
 
+    /// The module `import path` binds (typeshed, or an imported overlay module).
     func moduleValue(_ path: String) -> InferredType {
-        tables.store.hasPythonModule(path) ? .module(path) : .unknown
+        if let imports {
+            guard let m = imports.python(path), PythonTypeTables.isImportKey(m) || tables.hasModule(m) else { return .unknown }
+            return .module(m)
+        }
+        return tables.hasModule(path) ? .module(path) : .unknown
     }
 
-    func importedValue(module: String, name: String) -> InferredType {
-        guard tables.store.hasPythonModule(module) else { return .unknown }
+    /// `from source import name` (`level` leading dots).
+    func importedValue(source: String, level: Int, name: String) -> InferredType {
+        let module: String
+        if let imports {
+            if level > 0, source.isEmpty, imports.relativeBaseIsRoot(level: level) {
+                // `from . import x` at the project root: the top-level module `x`.
+                return imports.pythonKey(name).map { .module($0) } ?? .unknown
+            }
+            guard let m = imports.python(source, level: level, names: [name]),
+                  PythonTypeTables.isImportKey(m) || tables.hasModule(m) else { return .unknown }
+            module = m
+        } else {
+            guard level == 0, tables.hasModule(source) else { return .unknown }
+            module = source
+        }
         let v = tables.value(module: module, name: name)
-        if v == .unknown, tables.store.hasPythonModule(module + "." + name) { return .module(module + "." + name) }
+        if v == .unknown, tables.hasModule(module + "." + name) { return .module(module + "." + name) }
         return v
     }
 
@@ -1085,8 +1111,9 @@ final class PythonEvaluator {
         var result: InferredType
         if statements.isEmpty {
             result = .unknown
-            for star in module.starImports() where tables.store.hasPythonModule(star) {
-                let v = tables.value(module: star, name: name)
+            for star in module.starImports() {
+                guard let source = imports.map({ $0.python(star) }) ?? (tables.hasModule(star) ? star : nil) else { continue }
+                let v = tables.value(module: source, name: name)
                 if v != .unknown { result = v; break }
             }
             if result == .unknown { result = tables.value(module: "builtins", name: name) }

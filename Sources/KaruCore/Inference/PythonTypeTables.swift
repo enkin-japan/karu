@@ -45,6 +45,76 @@ final class PythonTypeTables {
         classes = ByteLRU(byteLimit: memberCacheBytes / 2, countLimit: 1_024)
     }
 
+    /// Imported modules (M17 T17.13): overlay modules named `§…`.
+    weak var importSource: ImportService?
+
+    nonisolated static func isImportKey(_ module: String) -> Bool { module.hasPrefix("§") }
+
+    /// Drops derived values that mention imported modules (summaries changed).
+    func dropImported() {
+        types.removeAll { Self.isImportKey($0) }
+        members.removeAll { $0.owner.mentionsImport || ($0.selfType?.mentionsImport ?? false) }
+        classes.removeAll { if case .table(let m) = $0.origin { return Self.isImportKey(m) }; return false }
+    }
+
+    // MARK: - Modules (table or imported)
+
+    /// Stub `name`: a typeshed module, or an imported module's summary.
+    func module(_ name: String) -> PythonModuleStub? {
+        if Self.isImportKey(name) { return importSource?.pythonModule(name)?.stub }
+        return store.pythonModule(name)
+    }
+
+    /// Whether module `name` exists (an imported submodule probe loads it
+    /// when its parent is a loaded package).
+    func hasModule(_ name: String) -> Bool {
+        if Self.isImportKey(name) { return importSource?.pythonModule(name, speculative: true) != nil }
+        return store.hasPythonModule(name)
+    }
+
+    /// The listing kind of a names-only imported module's name.
+    func namesOnlyKind(module: String, name: String) -> InferredMemberKind? {
+        guard Self.isImportKey(module), let summary = importSource?.pythonModule(module), let kinds = summary.kinds else { return nil }
+        return kinds[name]
+    }
+
+    /// `TypeTableStore.pythonResolve` over table and imported modules.
+    /// Re-export chains through imported modules stop after
+    /// `ImportService.reexportDepth` hops (plan §9).
+    func resolve(module: String, name: String) -> TypeTableStore.PythonSymbol? {
+        guard Self.isImportKey(module) else { return store.pythonResolve(module: module, name: name) }
+        return resolve(module, name, depth: 0, hops: 0)
+    }
+
+    private func resolve(_ module: String, _ name: String, depth: Int, hops: Int) -> TypeTableStore.PythonSymbol? {
+        guard depth < 8 else { return nil }
+        guard Self.isImportKey(module) else { return store.pythonResolve(module: module, name: name) }
+        guard let stub = self.module(module) else { return nil }
+        if let c = stub.class(named: name) { return .class(module: module, c) }
+        if let f = stub.function(named: name) { return .function(module: module, f) }
+        if let a = stub.alias(named: name) { return .alias(module: module, a) }
+        if let v = stub.variable(named: name) { return .variable(module: module, v) }
+        if let t = stub.typeVar(named: name) { return .typeVar(module: module, t) }
+        if let imp = stub.import(named: name) {
+            let next = imp.module == module ? hops : hops + (Self.isImportKey(imp.module) ? 1 : 0)
+            guard next <= ImportService.reexportDepth else { return nil }
+            guard let original = imp.originalName else { return hasModule(imp.module) ? .module(imp.module) : nil }
+            if let found = resolve(imp.module, original, depth: depth + 1, hops: next) { return found }
+            let sub = imp.module + "." + original
+            return hasModule(sub) ? .module(sub) : nil
+        }
+        for star in stub.starImports {
+            guard let source = self.module(star) else { continue }
+            let exported = source.all.map { $0.contains(name) } ?? !name.hasPrefix("_")
+            let next = hops + (Self.isImportKey(star) ? 1 : 0)
+            if exported, next <= ImportService.reexportDepth, let found = resolve(star, name, depth: depth + 1, hops: next) {
+                return found
+            }
+        }
+        let sub = module + "." + name
+        return hasModule(sub) ? .module(sub) : nil
+    }
+
     /// Drops every derived value and the store's decoded entries / mappings.
     func release() {
         types.removeAll()
@@ -78,7 +148,7 @@ final class PythonTypeTables {
         if Self.typingModules.contains(module) {
             if let ref = Self.typingClassAliases[name] { return .classObject(ref, []) }
         }
-        guard let symbol = store.pythonResolve(module: module, name: name) else {
+        guard let symbol = resolve(module: module, name: name) else {
             // Builtins are visible in every module.
             return module == "builtins" ? .unknown : value(module: "builtins", name: name)
         }
@@ -155,7 +225,7 @@ final class PythonTypeTables {
     func classInfo(_ ref: ClassRef) -> ClassInfo? {
         guard case .table(let module) = ref.origin else { return nil }
         if let cached = classes.value(for: ref) { return cached }
-        guard let decl = store.pythonModule(module)?.class(named: ref.name) else { return nil }
+        guard let decl = self.module(module)?.class(named: ref.name) else { return nil }
         let params = decl.typeParameters.map(\.name)
         var bases: [InferredType] = []
         for text in decl.bases {
@@ -206,7 +276,7 @@ final class PythonTypeTables {
     func moduleMembers(_ module: String) -> [InferredMember] {
         let key = MemberKey(owner: .module(module), selfType: nil)
         if let cached = members.value(for: key) { return cached }
-        guard let stub = store.pythonModule(module) else { return [] }
+        guard let stub = self.module(module) else { return [] }
         var names: [String] = []
         var seen = Set<String>()
         func add(_ name: String) { if seen.insert(name).inserted { names.append(name) } }
@@ -218,7 +288,7 @@ final class PythonTypeTables {
         for i in stub.imports where i.isReexport && !i.localName.hasPrefix("_") { add(i.localName) }
         if stub.all == nil {
             for star in stub.starImports {
-                guard let source = store.pythonModule(star) else { continue }
+                guard let source = self.module(star) else { continue }
                 if let all = source.all { all.forEach(add) } else {
                     for c in source.classes where !c.name.contains(".") && !c.name.hasPrefix("_") { add(c.name) }
                     for f in source.functions where !f.name.hasPrefix("_") { add(f.name) }
@@ -228,7 +298,11 @@ final class PythonTypeTables {
         }
         var list: [InferredMember] = []
         for name in names {
-            guard let symbol = store.pythonResolve(module: module, name: name) else { continue }
+            if let kind = namesOnlyKind(module: module, name: name) {
+                list.append(InferredMember(name: name, kind: kind, rank: 0, detail: nil))
+                continue
+            }
+            guard let symbol = resolve(module: module, name: name) else { continue }
             switch symbol {
             case .module:
                 list.append(InferredMember(name: name, kind: .submodule, rank: 0, detail: nil))

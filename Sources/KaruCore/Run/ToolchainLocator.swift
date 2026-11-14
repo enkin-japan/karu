@@ -90,6 +90,14 @@ public final class LoginShellPath: @unchecked Sendable {
         return cached!
     }
 
+    /// The PATH captured by an earlier `path` access, or nil when the login
+    /// shell has not been read yet. Never starts the shell: import
+    /// resolution (M17 T17.13, plan §9) must not launch processes.
+    public var cachedPathIfCaptured: String? {
+        lock.lock(); defer { lock.unlock() }
+        return captured ? cached : nil
+    }
+
     /// Whether `path` came from the login shell (false = fallback). Forces
     /// the capture if it has not happened yet.
     public var didCapture: Bool {

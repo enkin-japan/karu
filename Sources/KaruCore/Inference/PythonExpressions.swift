@@ -419,7 +419,7 @@ extension PythonEvaluator {
         case .signature(let sig):
             return sig.returnType
         case .tableFunction(let module, let name):
-            guard case .function(let fm, let fn)? = tables.store.pythonResolve(module: module, name: name) else { return .unknown }
+            guard case .function(let fm, let fn)? = tables.resolve(module: module, name: name) else { return .unknown }
             return selectOverload(fn.overloads, module: fm, args, dropFirst: false, base: [:])
         case .tableMember(let owner, let name):
             guard let info = tables.classInfo(owner), let member = info.decl.member(named: name) else { return .unknown }
@@ -737,7 +737,7 @@ extension PythonEvaluator {
             return classAttribute(ref, args, name)
         case .module(let m):
             let v = tables.value(module: m, name: name)
-            if v == .unknown, tables.store.hasPythonModule(m + "." + name) { return .module(m + "." + name) }
+            if v == .unknown, tables.hasModule(m + "." + name) { return .module(m + "." + name) }
             return v
         case .anyOf(let parts):
             let nonNone = parts.filter { $0 != .none }

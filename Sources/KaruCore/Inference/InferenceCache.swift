@@ -67,6 +67,14 @@ final class ByteLRU<Key: Hashable, Value> {
         bytes = 0
     }
 
+    /// Drops the entries whose key satisfies `predicate`.
+    func removeAll(where predicate: (Key) -> Bool) {
+        for key in slots.keys where predicate(key) {
+            if let slot = slots.removeValue(forKey: key) { bytes -= slot.cost }
+        }
+        compactIfNeeded()
+    }
+
     private func compactIfNeeded() {
         guard log.count - logHead > max(64, slots.count * 4) else { return }
         log = log[logHead...].filter { slots[$0.key]?.tick == $0.tick }

@@ -359,7 +359,13 @@ extension InferredType {
             return ref.shortName + "<" + args.map(sub).joined(separator: ", ") + ">"
         case .literal(_, let text): return text
         case .classObject(let ref, _): return "typeof " + ref.shortName
-        case .module(let name): return "typeof " + name
+        case .module(let name):
+            guard name.hasPrefix("§") else { return "typeof " + name }
+            // An imported module (T17.13): its file's name, or the namespace.
+            let (key, ns) = ScriptTypeTables.splitModuleValue(name)
+            if !ns.isEmpty { return "typeof " + ns }
+            let file = (key as NSString).lastPathComponent
+            return "typeof import(\"" + (file.components(separatedBy: ".").first ?? file) + "\")"
         case .callable(let c):
             guard case .signature(let sig) = c.target else { return "Function" }
             let params = sig.parameters.map { p in

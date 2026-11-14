@@ -42,6 +42,13 @@ import Foundation
 ///   access operator's first unit (`.`, `->`, `::`). The model of the
 ///   document's types (`BraceModuleView`) lives per snapshot version; its
 ///   text-derived caches are dropped when the journal changes.
+/// - **Imports (T17.13).** With an `ImportService`, the evaluators read
+///   project / third-party modules through an `ImportScope` of the
+///   document's path. A module still loading is unknown; the request is then
+///   marked `lastRequestPendingImports` (the controller refreshes its popup
+///   when the summaries arrive). When the service's generation changes, the
+///   session, the reused answer and the return-type cache are dropped (they
+///   may hold types computed before a module arrived).
 @MainActor
 final class TypeInferenceService {
     static let returnCacheBytes = 512 * 1024
@@ -63,6 +70,11 @@ final class TypeInferenceService {
 
     let tables: PythonTypeTables
     let scriptTables: ScriptTypeTables
+    /// Import resolution (T17.13); nil: built-in tables only.
+    let imports: ImportService?
+    private var importGeneration: UInt64?
+    /// The last request looked up an import that is still loading.
+    private(set) var lastRequestPendingImports = false
     private let returnCache = ByteLRU<String, CachedReturn>(byteLimit: TypeInferenceService.returnCacheBytes,
                                                             countLimit: 2_048)
     private var session: (version: UInt64, module: PyModuleView)?
@@ -84,9 +96,11 @@ final class TypeInferenceService {
     var budgetMilliseconds = InferenceBudget.defaultMilliseconds
     var budgetSteps = InferenceBudget.defaultSteps
 
-    init(tables: PythonTypeTables, scriptTables: ScriptTypeTables? = nil) {
+    init(tables: PythonTypeTables, scriptTables: ScriptTypeTables? = nil, imports: ImportService? = nil) {
         self.tables = tables
         self.scriptTables = scriptTables ?? .shared
+        self.imports = imports
+        imports?.register(python: tables, script: self.scriptTables)
     }
 
     var isReleased: Bool {
@@ -137,8 +151,17 @@ final class TypeInferenceService {
     /// is after it, in the identifier being typed); nil when the receiver's
     /// type is unknown (or the budget ran out).
     func memberCandidates(analysis: DocumentAnalysis, text: NSString, dot: Int,
-                          queryIndex: (version: UInt64, index: DeclarationQueryIndex)? = nil) -> [Candidate]? {
+                          queryIndex: (version: UInt64, index: DeclarationQueryIndex)? = nil,
+                          documentPath: String? = nil) -> [Candidate]? {
         statistics.requests += 1
+        lastRequestPendingImports = false
+        if let imports, importGeneration != imports.generation {
+            // Summaries changed: answers computed before may be stale.
+            importGeneration = imports.generation
+            last = nil
+            session = nil
+            returnCache.removeAll()
+        }
         if let brace = BraceLanguage(identifier: analysis.languageIdentifier) {
             return braceMemberCandidates(analysis: analysis, language: brace, text: text, dot: dot,
                                          queryIndex: queryIndex)
@@ -205,8 +228,17 @@ final class TypeInferenceService {
         let remaining = Double(budgetNanoseconds - spent) / 1_000_000
         let budget = InferenceBudget(maxSteps: budgetSteps, milliseconds: remaining)
         var members: [InferredMember]?
+        let scope = imports?.scope(forDocument: documentPath)
+        let requestsBefore = imports?.requestCount ?? 0
+        defer {
+            if let imports {
+                lastRequestPendingImports = (scope?.hasPending ?? false) || imports.requestCount != requestsBefore
+                imports.flush()
+            }
+        }
         if dialect == .python {
             let evaluator = PythonEvaluator(text: text, module: module, tables: tables, returnCache: returnCache, budget: budget)
+            evaluator.imports = scope
             defer { evaluator.tearDown() }
             let receiver = evaluator.receiverType(of: member)
             members = evaluator.isAborted ? nil : evaluator.members(of: receiver)
@@ -216,6 +248,7 @@ final class TypeInferenceService {
         } else {
             let evaluator = ScriptEvaluator(text: text, module: module, tables: scriptTables, returnCache: returnCache,
                                             dialect: dialect, budget: budget)
+            evaluator.imports = scope
             defer { evaluator.tearDown() }
             let receiver = evaluator.receiverType(of: member)
             members = evaluator.isAborted ? nil

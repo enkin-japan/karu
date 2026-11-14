@@ -113,6 +113,17 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     /// JS / TS since T17.11c), created on the first member request in a
     /// language with a parser while `typeInference` is on.
     private var typeInference: TypeInferenceService?
+    /// Import resolution for member inference (T17.13); nil: built-in
+    /// tables only (tests, probes). The editor window passes `.shared`.
+    private let importService: ImportService?
+    private let importCenter: NotificationCenter?
+    /// The document's file (import resolution: its project folder and, for
+    /// relative imports, its position); nil for an unsaved buffer.
+    public var documentURLProvider: (() -> URL?)?
+    /// A member request that looked up an import still loading: when the
+    /// summaries arrive and the caret, version and edits are unchanged, the
+    /// popup is refreshed (opened if the first answer had nothing to show).
+    private var pendingImportRefresh: (caret: Int, version: UInt64, edits: UInt64, manual: Bool)?
     /// Recently accepted candidates (this window only, ≤ 32).
     private var recent = RecentAccepts()
 
@@ -232,8 +243,11 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
                 moduleSettings: ModuleSettings = ModuleSettings(),
                 moduleCenter: NotificationCenter = .default,
                 analysis: DocumentAnalysis? = nil,
-                scheduler: AnalysisScheduler = .shared) {
+                scheduler: AnalysisScheduler = .shared,
+                importService: ImportService? = nil) {
         self.textView = textView
+        self.importService = importService
+        self.importCenter = importService?.configuration.center
         self.moduleSettings = moduleSettings
         self.moduleCenter = moduleCenter
         self.scheduler = scheduler
@@ -251,11 +265,34 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             self, selector: #selector(moduleSettingsChanged(_:)),
             name: ModuleSettings.didChangeNotification, object: nil
         )
+        if let importService, let importCenter {
+            importCenter.addObserver(
+                self, selector: #selector(importsDidUpdate(_:)),
+                name: ImportService.didUpdateNotification, object: importService
+            )
+        }
     }
 
     deinit {
         moduleCenter.removeObserver(self)
+        importCenter?.removeObserver(self)
     }
+
+    /// Import summaries arrived (T17.13): refresh the popup a pending member
+    /// request was answered for, if nothing changed since.
+    @objc private func importsDidUpdate(_ note: Notification) {
+        guard let pending = pendingImportRefresh else { return }
+        pendingImportRefresh = nil
+        guard moduleEnabled, let textView, !textView.hasMarkedText() else { return }
+        let selection = textView.selectedRange()
+        guard selection.length == 0, selection.location == pending.caret, analysis.version == pending.version,
+              editCount == pending.edits else { return }
+        if let window = textView.window, window.firstResponder !== textView { return }
+        updatePopup(manual: pending.manual)
+    }
+
+    /// Whether a member request waits for import summaries (tests).
+    var isWaitingForImportsForTesting: Bool { pendingImportRefresh != nil }
 
     // MARK: - Language wiring
 
@@ -612,12 +649,15 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         } else {
             return nil
         }
-        let service = typeInference ?? TypeInferenceService(tables: .shared)
+        let service = typeInference ?? TypeInferenceService(tables: .shared, imports: importService)
         typeInference = service
         let begin = PerfLog.isEnabled ? PerfLog.now() : 0
         var index: (version: UInt64, index: DeclarationQueryIndex)?
         if brace != nil, let built = engine.queryIndex(for: request) { index = (request.snapshotVersion, built) }
-        let members = service.memberCandidates(analysis: analysis, text: text, dot: dot, queryIndex: index)
+        let members = service.memberCandidates(analysis: analysis, text: text, dot: dot, queryIndex: index,
+                                               documentPath: documentURLProvider?()?.path)
+        pendingImportRefresh = service.lastRequestPendingImports
+            ? (caret, analysis.version, editCount, request.manual) : nil
         if PerfLog.isEnabled {
             PerfLog.record("completion.inference", since: begin,
                            ["docLen": text.length, "members": members?.count ?? -1,

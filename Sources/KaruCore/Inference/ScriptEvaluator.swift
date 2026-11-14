@@ -29,9 +29,14 @@ import Foundation
 //   methods with overload choice and type-parameter solving, contextual
 //   parameter types for callbacks), `await`, `new`, generics. JavaScript
 //   reads JSDoc `@type` / `@param` / `@returns` / `@typedef` / `@template`.
-// - **Precision first (plan §13).** `any` / `unknown`, unresolved names,
-//   imports (project modules until T17.13; modules without lib entries) are
-//   unknown: no inferred members, the usage-evidence path.
+// - **Imports (T17.13).** With an `ImportScope`, ES `import` (named,
+//   default, namespace, `import x = require()`), `require()` and the
+//   imported modules' re-exports resolve to overlay modules of the tables
+//   (`§<context>:<file>`): classes, functions with signatures, module
+//   objects with members; type names imported in annotations too.
+// - **Precision first (plan §13).** `any` / `unknown`, unresolved names and
+//   modules not (yet) resolved are unknown: no inferred members, the
+//   usage-evidence path.
 
 /// A call argument (JS / TS).
 struct SArg {
@@ -55,6 +60,8 @@ final class ScriptEvaluator {
     let returnCache: ByteLRU<String, CachedReturn>
     let dialect: SyntaxDialect
     var budget: InferenceBudget
+    /// Project / `node_modules` imports (T17.13); nil: lib globals only.
+    var imports: ImportScope?
 
     static let maxCallDepth = 2
     static let maxUnionSites = 4
@@ -572,7 +579,10 @@ final class ScriptEvaluator {
             for spec in s.parts where spec.kind == .importSpec {
                 let names = spec.parts.filter { $0.kind == .name }
                 let local = spec.raw.aux & 3 == 3 ? names.first : names.last
-                if let local { bindName(string(local), Thunk(.unknown), &f) }
+                if let local {
+                    let name = string(local)
+                    bindName(name, Thunk(lazy: { [unowned self] in self.importBindingValue(s, name) }), &f)
+                }
             }
         default:
             break
@@ -1202,10 +1212,88 @@ final class ScriptEvaluator {
             var tmp = frame
             for decl in d.children where decl.kind == .declarator { bindDeclarator(decl, statement: d, &tmp) }
             return tmp.env[name].map { [$0.get()] } ?? []
-        case .importDecl, .namespaceDecl:
+        case .importDecl:
+            return [importBindingValue(d, name)]
+        case .namespaceDecl:
             return [.unknown]
         default:
             return []
+        }
+    }
+
+    // MARK: - Imports (T17.13)
+
+    /// The module specifier of an `import` declaration.
+    func importSource(_ s: PyNode) -> String? {
+        guard let source = s.parts.last(where: { $0.kind == .string }) else { return nil }
+        return ScriptTypes.unquoted(string(source))
+    }
+
+    /// The import specifier of declaration `s` binding `name`.
+    private func importSpec(_ s: PyNode, _ name: String) -> PyNode? {
+        s.parts.first { spec in
+            guard spec.kind == .importSpec else { return false }
+            let names = spec.parts.filter { $0.kind == .name }
+            let local = spec.raw.aux & 3 == 3 ? names.first : names.last
+            return local.map(string) == name
+        }
+    }
+
+    /// The value `name` is bound to by import declaration `s`.
+    func importBindingValue(_ s: PyNode, _ name: String) -> InferredType {
+        guard let imports, let spec = importSpec(s, name) else { return .unknown }
+        if spec.raw.aux & 3 == 3 {
+            // `import x = require('m')`
+            guard let value = spec.parts.last, let source = requireSource(value),
+                  let key = imports.script(source) else { return .unknown }
+            return tables.moduleNamespaceValue(key)
+        }
+        guard let source = importSource(s), let key = imports.script(source) else { return .unknown }
+        switch spec.raw.aux & 3 {
+        case 1: return tables.moduleDefaultValue(key)
+        case 2: return tables.moduleNamespaceValue(key)
+        default:
+            let names = spec.parts.filter { $0.kind == .name || $0.kind == .string }
+            guard let first = names.first else { return .unknown }
+            let imported = first.kind == .string ? (ScriptTypes.unquoted(string(first)) ?? "") : string(first)
+            return tables.moduleExportValue(key, imported)
+        }
+    }
+
+    /// `require('m')` → `m` (a string literal argument only).
+    func requireSource(_ n: PyNode) -> String? {
+        guard n.kind == .call, let callee = n.parts.first, callee.kind == .name, string(callee) == "require",
+              let args = n.firstChild(.args), let first = args.parts.first, first.kind == .string else { return nil }
+        return ScriptTypes.unquoted(string(first))
+    }
+
+    /// A type name bound by an import declaration (`import { User } from`,
+    /// `import type { T }`, `ns.T` through `import * as ns`), nil when the
+    /// name is not imported.
+    func importedType(_ name: String, _ args: [InferredType]) -> InferredType? {
+        guard let imports else { return nil }
+        let head = String(name.prefix { $0 != "." })
+        guard let statement = module.bindingStatements(of: head).first(where: { declaration($0).kind == .importDecl }),
+              let spec = importSpec(statement, head) else { return nil }
+        let rest = name.count > head.count ? String(name.dropFirst(head.count + 1)) : ""
+        let key: String
+        if spec.raw.aux & 3 == 3 {
+            guard let value = spec.parts.last, let source = requireSource(value), let k = imports.script(source) else { return .unknown }
+            key = k
+        } else {
+            guard let source = importSource(statement), let k = imports.script(source) else { return .unknown }
+            key = k
+        }
+        switch spec.raw.aux & 3 {
+        case 1:
+            return rest.isEmpty ? tables.moduleExportType(key, "default", args) : .unknown
+        case 2, 3:
+            return rest.isEmpty ? .unknown : tables.moduleExportType(key, rest, args)
+        default:
+            let names = spec.parts.filter { $0.kind == .name || $0.kind == .string }
+            guard let first = names.first else { return .unknown }
+            let imported = first.kind == .string ? (ScriptTypes.unquoted(string(first)) ?? "") : string(first)
+            return tables.moduleExportType(key, rest.isEmpty ? imported : imported + "." + rest, args)
         }
     }
 
@@ -1526,10 +1614,12 @@ final class ScriptEvaluator {
         if name.contains(".") {
             let head = String(name.prefix { $0 != "." })
             if frame.types[head] != nil || moduleType(head) != nil { return .unknown }
+            if let imported = importedType(name, args) { return imported }
             return tables.resolve(name, args, allowDOM: true)
         }
         if let decl = frame.types[name] { return instantiate(decl, args) }
         if let decl = moduleType(name) { return instantiate(decl, args) }
+        if let imported = importedType(name, args) { return imported }
         if isJavaScript, let typedef = typedef(named: name) { return typedefType(typedef) }
         switch name {
         case "Pick", "Omit":

@@ -78,6 +78,12 @@ public final class WorkspaceIndex: @unchecked Sendable {
     private var observer: NSObjectProtocol?
     /// Files (re)indexed since init (tests: unchanged files are skipped).
     private var writes = 0
+    /// FSEvents observers (T17.13 import summaries), called on the event queue.
+    private var changeListeners: [UUID: FileChangeListener] = [:]
+
+    /// Receives the absolute paths an FSEvents batch reported under an
+    /// active project folder (a rescan reports the folder itself).
+    public typealias FileChangeListener = @Sendable ([String]) -> Void
 
     /// - Parameters:
     ///   - root: Application Support root (tests inject a temporary directory).
@@ -380,7 +386,30 @@ public final class WorkspaceIndex: @unchecked Sendable {
 
     // MARK: - Events
 
+    /// Adds an observer of project-folder file events (import summaries,
+    /// M17 T17.13). Cheap: it only sees what the index's streams deliver.
+    public func addFileChangeListener(_ listener: @escaping FileChangeListener) -> UUID {
+        let token = UUID()
+        lock.lock()
+        changeListeners[token] = listener
+        lock.unlock()
+        return token
+    }
+
+    public func removeFileChangeListener(_ token: UUID) {
+        lock.lock()
+        changeListeners[token] = nil
+        lock.unlock()
+    }
+
     private func record(_ events: [(path: String, rescan: Bool)], in folder: Folder) {
+        lock.lock()
+        let listeners = folder.active ? Array(changeListeners.values) : []
+        lock.unlock()
+        if !listeners.isEmpty {
+            let paths = events.map { $0.rescan ? folder.realPath : $0.path }
+            for listener in listeners { listener(paths) }
+        }
         lock.lock()
         guard folder.active else { lock.unlock(); return }
         for event in events {

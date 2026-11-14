@@ -55,7 +55,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ✅ 11a 解析器、11b Python、11c JS/TS、11d 静态语言；50 条成员门槛：禁用 0、前十召回 100% |
 | T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 +5–6 MB 超 5 MB 目标（分配器保留页，T17.15 处理）；TCC 与三语布局待真机 |
-| T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ⬜ |
+| T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ✅ 夹具 33/33；无外部进程；保存后 ≤1 s；真实 venv/node_modules 与 TCC 待真机 |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ⬜ |
 | T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | ⬜ |
 
@@ -945,6 +945,53 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - 跨文件的部分留给 T17.14：其他文件里的类型和基类、import 或包限定的名字、其他文件里的 extension、`impl`、Go 方法、C++ 定义、C 头文件。
     - 泛型代换、闭包参数、循环变量、Rust 的 match 和 `if let Some`、Java/C# 的模式变量推不出。
     - walker 没记录的模式绑定，如果与外层字段同名，可能按字段的类型推断。
+
+- T17.13 导入解析（main 定接口并裁定一处偏离，implementer 实现，main 复验，2026-11-15）：
+  - **代码**（`Sources/KaruCore/Imports/`）：
+    - `ImportFileSystem`：唯一的读盘入口，可注入；还负责判断「桌面」「文稿」「下载」这类受保护目录。
+    - `PythonSearchPaths`：解释器只从三处定位——自定义路径、Karu 托管、已缓存的登录 PATH——不执行任何程序，也跳过 `/usr/bin` 的占位程序。另外读 `pyvenv.cfg`；`.pth` 文件只取路径行。
+    - `PythonModuleLocator`：按 ①→②→③ 查找，命名空间包兜底；同目录里依次找 `-stubs`、`.pyi`、`.py`。
+    - `PythonModuleSummarizer`：只逐条读顶层语句，产出与 typeshed 表同形的摘要。
+    - `ScriptModuleLocator`：扩展名和 `index` 解析；`node_modules` 逐层向上，不越出项目文件夹；`package.json` 先看 `exports`（条件依次为 types、import、require、default，支持子路径和 `./*`），再看 types / typings / main；`@types`。
+    - `ScriptModuleSummarizer`：覆盖 interface 合并、重载、命名空间、各种 export 写法、`export =`、CommonJS、JSDoc；私有成员不进摘要。
+    - `ImportSummaryCache`：全应用共用的 LRU，上限 8 MB。超限时先降为只留名字，再淘汰；单个模块超过 2 MB 只留名字。
+    - `ImportService`：主线程入口和后台 worker。
+  - **接入**：
+    - Python 和 TS 的求值器把导入的模块当作类型表模块读取，类、签名、MRO、泛型的逻辑全部复用。
+    - 摘要到达后，如果光标位置、版本、编辑次数都没变，同一位置的弹窗会刷新。
+    - 编辑器窗口传入文档 URL，`WorkspaceIndex` 新增文件变更监听。
+    - `LoginShellPath.cachedPathIfCaptured` 只读已缓存的 PATH，不会启动 shell。
+  - **main 裁定**：标准库模块名先走内置 typeshed 表，不读磁盘，排在 ① 之前。项目里与标准库同名的文件不会遮住标准库，这与 Pylance/Pyright 一致。已写入方案 §9。
+  - **失效**：
+    - 项目文件：FSEvents 到达后在导入队列上立即重读，同时丢弃该文件夹的「未找到」结果。
+    - site-packages、node_modules、解释器：最多每 2 s 按 mtime 复核一次，后来安装的包也能被找到。
+    - Run 里的 Python 设置变化时，全部重来。
+  - **开关**：typeInference 或 completion 关闭时，全部释放。crossFileIndex 关闭时，按「无项目文件夹」处理。
+  - **实测**（release，负载 2.2）：
+    - 夹具解析正确率 **33/33**（Python 19、TS/JS 14）。
+    - 首次解析 p50 / p95 为 0.27 / 0.75 ms（冷服务、文件已在系统缓存）。
+    - 保存另一个文件后重读完成：单独跑 p50 300 ms、最大 305 ms，到请求可见最大 707 ms，满足 ≤1 s。
+    - 摘要内存：
+      - 夹具全集：31 个模块共 53 KB。
+      - pip 的 site-packages：410 个模块 3.7 MB，不降级。
+      - TypeScript 包（`typescript.d.ts`）：1.7 MB，首次解析 104 ms。
+    - App 内 footprint 的配对增量未测，留给 T17.15。
+  - **不启动进程**：静态检查 `Imports/` 里没有 `Process`、`posix_spawn`、`system(`、`NSTask`、`popen`、`execv`；运行时计数确认没有执行过 shell。
+  - **测试**：
+    - 新增 `ImportResolutionTests`（27 个，4 个套件），覆盖各条规则、遮盖顺序、无项目文件夹时读过的路径全部在允许范围内、`.pth` 的 import 行被忽略、大小上限、LRU 降级、失效、经导入的成员候选与精确度、开关释放、禁用进程 API。
+    - 新增可选基准（`KARU_T1713_BENCH`）。
+    - 新增夹具 `Tests/Fixtures/M17/imports/`（58 个文件，228 KB）。
+    - main 复跑：全量 **1555 tests / 161 suites** 通过；visual-smoke VISUAL OK、FOLD GEOMETRY OK；补全基线与 HEAD 逐字节相同（implementer 做的 A/B）。
+    - implementer 遇到的两次 SIGTRAP 是已知的工具链计时测试，以及原有的 `scratchpadFontSizeInherits…`（在后台线程发通知），都与本任务无关。
+  - **待 main 在真实窗口验证**：
+    - 「文稿」里带 `.venv` 的真实项目会不会触发 TCC。
+    - 真实的 `node_modules`（pnpm 符号链接、`typesVersions`）。
+    - 托管和系统解释器（系统解释器要本次会话里 Run 先读过登录 PATH 才可用）。
+    - 摘要到达后弹窗刷新的观感。
+  - **缺口**（部分留给 T17.14）：
+    - 非成员补全的跨文件名字、工作区符号搜索、静态语言的导入。
+    - JS/TS：Node 内置模块（`@types/node` 的环境模块）、`tsconfig` 的 `paths` / `baseUrl`、`typesVersions`、三斜线引用、JSON 导入。
+    - Python：模块级 `__getattr__`；未注解的返回值只覆盖少数确定的写法。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 
