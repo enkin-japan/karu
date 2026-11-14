@@ -56,6 +56,8 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
     private var languageListController: LanguageListPreferencesController?
     private let runSettingsButton = NSButton()
     private var runSettingsController: RunPreferencesController?
+    private let projectFoldersButton = NSButton()
+    private var projectFoldersController: ProjectFoldersPreferencesController?
     private let hotkeyButton = NSButton()
     private let hotkeyResetButton = NSButton()
 
@@ -295,6 +297,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         for (button, title, action) in [
             (languageListButton, L10n.t(.languageListTitle), #selector(showLanguageList)),
             (runSettingsButton, L10n.t(.runSettingsTitle), #selector(showRunSettings)),
+            (projectFoldersButton, L10n.t(.projectFoldersTitle), #selector(showProjectFolders)),
             (fileDefaultsButton, L10n.t(.fileDefaultsTitle), #selector(showFileDefaults)),
             (exportButton, L10n.t(.settingsExport), #selector(exportSettings)),
             (importButton, L10n.t(.settingsImport), #selector(importSettings))
@@ -310,7 +313,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
             modulesHeader, moduleStack,
             separator(),
             editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, autoSaveButton, fontRow,
-            hotkeyRow, scratchpadFontRow, languageListButton, runSettingsButton, shortcutsButton,
+            hotkeyRow, scratchpadFontRow, languageListButton, runSettingsButton, projectFoldersButton, shortcutsButton,
             fileDefaultsButton, backupRow,
             settingsResult,
         ])
@@ -352,6 +355,17 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         }
         runSettingsController?.showWindow(nil)
         runSettingsController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Settings › Project Folders (M17 T17.12): built on open, released on close.
+    @objc private func showProjectFolders() {
+        endHotkeyRecording()
+        if projectFoldersController == nil {
+            projectFoldersController = ProjectFoldersPreferencesController()
+            projectFoldersController?.onClose = { [weak self] in self?.projectFoldersController = nil }
+        }
+        projectFoldersController?.showWindow(nil)
+        projectFoldersController?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func showFileDefaults() {
@@ -558,6 +572,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         shortcutsButton.title = L10n.t(.shortcutTitle)
         languageListButton.title = L10n.t(.languageListTitle)
         runSettingsButton.title = L10n.t(.runSettingsTitle)
+        projectFoldersButton.title = L10n.t(.projectFoldersTitle)
         fileDefaultsButton.title = L10n.t(.fileDefaultsTitle)
         exportButton.title = L10n.t(.settingsExport)
         importButton.title = L10n.t(.settingsImport)

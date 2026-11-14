@@ -28,6 +28,13 @@ public enum L10nKey: String, CaseIterable, Sendable {
     // Language list preferences (T16.2).
     case languageListTitle, languageListHelp, languageListShowAll
 
+    // Project folders and the cross-file index (M17 T17.12).
+    case projectFoldersTitle, projectFoldersHelp, projectFoldersAdd, projectFoldersRemove, projectFoldersClear
+    case projectFoldersEmpty, projectFoldersColumnFolder, projectFoldersColumnFiles, projectFoldersColumnDisk
+    case projectFoldersColumnStatus, projectFoldersLimitNotice
+    case projectFolderStateIndexing, projectFolderStateUpToDate, projectFolderStateOverLimit
+    case projectFolderStateUnreadable, projectFolderStatePaused
+
     // Run current buffer (T16.3b): menu / toolbar, output panel, status lines,
     // failure messages and the Run settings sub-window.
     case menuRun, menuRunCode, menuRunStop, menuRunShowOutput, menuRunHideOutput

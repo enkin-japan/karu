@@ -42,6 +42,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the last window closes" policy below.
     private var statusItem: NSStatusItem?
 
+    /// KARU_INDEX_FOLDER probe index (diagnostic runs only; M17 T17.12).
+    private var diagnosticIndex: WorkspaceIndex?
+
     public override init() {
         super.init()
         if let path = ProcessInfo.processInfo.environment["KARU_DIAGNOSTIC_DIRECTORY"],
@@ -78,6 +81,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // Toolchain downloads / extractions interrupted by a quit or crash
             // (T16.5). No install can be running yet at launch.
             ToolchainStore().purgeStaging()
+        }
+        // Project-folder index (M17 T17.12): loads the stored folders and, with
+        // the module on, indexes them on its own utility queue. Diagnostic runs
+        // (benchmarks, snapshots) never touch the user's folders; with
+        // KARU_INDEX_FOLDER=<absolute path> they index that one folder into
+        // <diagnostic dir>/Index with an isolated folder list (memory probes).
+        let environment = ProcessInfo.processInfo.environment
+        if let diagnostic = environment["KARU_DIAGNOSTIC_DIRECTORY"], diagnostic.hasPrefix("/") {
+            if let folder = environment["KARU_INDEX_FOLDER"], folder.hasPrefix("/") {
+                let directory = URL(fileURLWithPath: diagnostic, isDirectory: true)
+                let suite = "dev.enkin.Karu.Diagnostics.Index." + directory.lastPathComponent
+                let defaults = UserDefaults(suiteName: suite)!
+                defaults.removePersistentDomain(forName: suite)
+                let index = WorkspaceIndex(root: directory, store: ProjectFolderStore(defaults: defaults))
+                index.start()
+                index.addFolder(URL(fileURLWithPath: folder, isDirectory: true))
+                diagnosticIndex = index
+            }
+        } else {
+            WorkspaceIndex.shared.start()
         }
 
         // Restore policy (T14.9, user decision): only an update relaunch or an

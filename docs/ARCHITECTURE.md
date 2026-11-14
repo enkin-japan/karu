@@ -116,6 +116,7 @@ Sources/
     Search/             正则搜索替换栏（NSRegularExpression）
     Completion/         关键字表、文档分词索引、补全弹窗
     Inference/          内置类型表（TypeTableStore，mmap 懒加载）与 TypeExpr 类型表达式解析（M17 T17.10 起）
+    Workspace/          项目文件夹与跨文件符号索引（WorkspaceIndex，SQLite，后台队列 + FSEvents；M17 T17.12 起）
     Format/             JSON/JSONL/XML/plist pretty-printer
     Settings/           偏好（每语言缩进宽度等，UserDefaults）+ 偏好窗口
     TextModel/          LineIndex（换行偏移索引）等共享数据结构
@@ -138,6 +139,23 @@ scripts/
   每次查询只解码一个模块或符号，结果进按估算字节封顶的 LRU（默认 4 MB，计入 §11 ②），
   `release()` 清空并解除映射。查找顺序：App 包 `TypeTables/`、`KARU_TYPE_TABLES`、仓库 `assets/typetables/`。
 - 类型统一存为规范化文本，`TypeExpr.parse(_:syntax:)` 按 Python 或 TS 语法解析；测试保证表中每条类型文本都能解析。
+
+**项目文件夹与跨文件索引（M17 T17.12）**：设置 › 项目文件夹… 里维护的文件夹（路径与书签存在本机
+UserDefaults `workspace.projectFolders` / `workspace.projectFolderBookmarks`，不进设置导出）由应用级的
+`WorkspaceIndex.shared` 建索引；它在进程内运行，不是独立服务或进程，与 §3 第 4 条不冲突。
+- 存储：每个文件夹一个系统 SQLite 库，`~/Library/Application Support/dev.enkin.TinyEditor/Index/<标准化路径的 FNV-1a 64 位十六进制>.sqlite`，
+  WAL、每库页缓存上限 1 MB、不 mmap、预编译语句。表 `meta`（schema、文件夹路径）、`files`（相对路径、语言、大小、mtime、索引时间）、
+  `symbols`（名字、折叠名、类别、所属容器、UTF-16 位置、行号、可空的签名摘要），版本存在 `PRAGMA user_version`；
+  版本或文件夹不符、文件损坏一律删库重建。只存声明，不存文件内容和普通词。
+- 内容：复用 `DeclarationScan`（与编辑器同一份纯值代码），取模块级、类与命名空间成员、实例属性；参数、局部、导入不入库
+  （`IndexedSymbol.extract`）。语言为有声明 walker 的全部语言（含 `.pyi`）。
+- 范围：跳过 `.git`、`node_modules`、常见构建 / 缓存 / 虚拟环境目录与各级 `.gitignore` 的基本模式（`Workspace/IndexScope.swift`
+  文件头列出支持的子集）；单文件 >2 MB 跳过；每个文件夹最多 50,000 个可索引文件，超出即停并在设置里提示。不跟随符号链接。
+- 线程：一个 utility QoS 串行队列，每步最多处理一个文件（或列一个目录、或核对 64 个未变文件）后重新派发，只读磁盘、
+  不碰 AppKit 和打开的文档；每个文件夹一个 FSEvents 流（文件级事件，0.3 s 合并）只记录路径。查询在调用方线程上、持该库的锁执行，
+  结果是值类型。启动或重新打开模块时全量走一遍，按大小 + mtime 跳过未变文件、删除已消失文件。
+- 开关：`crossFileIndex` 关闭即停流、丢弃待办、关库（库文件留在磁盘）；打开后按 mtime 追平。诊断运行（`KARU_DIAGNOSTIC_DIRECTORY`）
+  不读用户文件夹。
 
 支持语言（21 种）：Markdown, JSON, JSONL, Python, HTML, CSS, JavaScript/Node（含 `.jsx`）, TypeScript,
 TypeScript JSX（`.tsx`，M17 T17.8b）, C, C++, C#, Java, Bash/Shell, SQL, XML/plist, YAML, TOML, Go, Rust, Swift。

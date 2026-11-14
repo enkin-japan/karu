@@ -54,7 +54,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ✅ 选手写解析器（内存约 1/10、时延约 1/5，容错 58/58 对 57/58） |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | 🔶 11a 解析器产品化完成；11b–d 待做 |
-| T17.12 | 项目文件夹设置与 SQLite 索引、后台全量/增量、清除与占用显示 | T17.4 | implementer | ⬜ |
+| T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 +5–6 MB 超 5 MB 目标（分配器保留页，T17.15 处理）；TCC 与三语布局待真机 |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ⬜ |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ⬜ |
 | T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | ⬜ |
@@ -748,6 +748,44 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - TS 括号大约嵌套 50 层之后的内容变成错误节点。
   - **发现的旧 bug**：`JavaScriptDeclarationWalker` 遇到 `class R<T extends { id: string }> {}` 时，分片扫描与一次扫描结果不同，还会把 `id` 记成声明。留给 T17.11c 处理（可改用语法树）。
   - **不稳定测试**：ToolchainManager 和 ToolchainInstaller 的计时测试在全量高负载下仍偶发失败，单独跑通过（T17.8c 已记录）。
+
+- T17.12 项目文件夹与索引（main 定范围，implementer 实现，main 在干净 worktree 里单独复验，2026-11-15）：
+  - **界面**：
+    - 设置里新增「项目文件夹…」子窗口（三语，16 个新词条）。列表显示路径、已索引文件数、索引的磁盘占用和状态（索引中、已是最新、超出上限、无法读取、已暂停）。
+    - 提供添加（打开面板）、移除（同时删除该文件夹的库）、清除索引（重建）三个操作；到 50,000 个文件上限时给出提示。
+    - 文件夹路径和书签存在 UserDefaults（`workspace.projectFolders`、`workspace.projectFolderBookmarks`），不进设置导出；两个模块开关照常导出（有测试）。
+  - **存储**：
+    - 系统 SQLite（`import SQLite3`），每个文件夹一个库：`~/Library/Application Support/dev.enkin.TinyEditor/Index/<路径的 FNV-1a 16 位十六进制>.sqlite`。
+    - WAL、`cache_size` 1 MB、`mmap_size` 0；`user_version` 作为 schema 版本，版本或路径不符、文件损坏时直接重建。
+    - 表结构：`meta`；`files`（相对路径、语言、大小、mtime、索引时间）；`symbols`（名字、折叠名、类别、容器、UTF-16 位置、行、签名，签名目前是参数名列表）。
+    - 只存声明：顶层、类和命名空间成员、`self.x` / `this.x`；不存文件内容和普通词。
+  - **范围**：
+    - 跳过 `.git`、`node_modules`、`.build`、`build`、`dist`、`out`、`target`、`DerivedData`、`__pycache__`、`.venv`/`venv`、`.mypy_cache`、`.pytest_cache`、`.next`、`.cache`，不跟随符号链接。
+    - 支持各层 `.gitignore` 的常用语法（取反、目录、锚定、`*`、`?`、`[]`、`**`、转义），全局 excludes 不支持。
+    - 单个文件超过 2 MB 跳过；超过 50,000 个文件就停止并标记。
+  - **执行**：
+    - 一个串行的 utility 队列，每次只处理一个文件；FSEvents 每个文件夹一个流（延迟 0.3 s）。重启后按 mtime 和大小补齐。
+    - 关闭「跨文件索引」时停止流、丢弃待办、关闭数据库（文件留在磁盘上），查询返回空；重新打开后补齐。
+    - 启动时调用 `WorkspaceIndex.shared.start()`，诊断运行时跳过。新增探针 `KARU_INDEX_FOLDER`。
+  - **给 T17.14 的查询接口**：`projectFolder(containing:)`（最长匹配）、`names(withPrefix:inFolder:excludingFile:limit:)`、`symbols(named:)`、`symbols(inFile:)`、`searchSymbols`（使用 `CandidateMatcher` 的分级）、`statuses()`。
+  - **实测**（Release，M6）：
+    - CPython 3.13 标准库副本：1,033 个文件，0.86 s，CPU 0.60 s，库 3.76 MB。
+    - 合成的 5,000 个混合语言文件：2.25 s（负载 3.3）或 6.10 s（负载 6.9），库 22.2 MB。
+    - 保存后反映到查询里：p50 约 300 ms，最大 318 ms，满足 ≤1 s。
+  - **内存（未达标，main 认可先记录）**：
+    - App 内实测：合成树 +1 MB，峰值 +2–3 MB；CPython +5–6 MB，峰值 +6–7 MB，**超出 5 MB 目标**。
+    - 原因：用声明扫描器扫最大的那个文件（840 KB）后，系统分配器留着已释放的页（脏页 11 MB，在用的只有 2.6 MB），`malloc_zone_pressure_relief` 也收不回。超出量随最大文件的大小增长：上限 50 KB 时 +1.9 MB，200 KB 时 +3.6 MB。索引本身约 1 MB。
+    - 在编辑器里打开同样大小的文件，预计也会留下这些页，未实测。
+    - T17.15 做整体内存 A/B 时按第 11 节的降级顺序处理：降低单文件上限，或减少扫描器的峰值分配。
+  - **测试**：
+    - 新增 `WorkspaceIndexTests`（16 个，5 个套件）：范围规则和 `.gitignore`、上限、schema 与重建、索引内容与 `DeclarationScan` 一致、增量（修改、删除、改名、离线修改）、移除时删库、清除后重建、开关、导出排除路径、三语词条、控制器的增删清。
+    - 新增可选基准 `WorkspaceIndexBenchmarkTests`（`KARU_T1712_BENCH=1`）。
+    - main 在只含本任务改动的 worktree 里复跑：全量 1369 tests / 120 suites，交替跑时 1 次通过、2 次因工具链计时测试失败。同等负载（约 7–8）下 HEAD 也出现同类失败（1 次进程中途退出），判定为工具链测试原有的负载敏感问题，与本任务无关。
+    - visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **待 main 在真实窗口验证**：
+    - 「文稿」里的项目文件夹，重启后是否要再次授权。添加时会保存书签（能做安全作用域书签时就做，否则存普通书签），启动时用 `startAccessingSecurityScopedResource` 解析。
+    - 三语下设置界面的布局。
+    - 真实的打开面板，以及索引时状态是否实时刷新。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

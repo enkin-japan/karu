@@ -87,6 +87,15 @@
   内置类型表（T17.10）：`bash scripts/m17/gen-type-tables.sh` 重新生成（源码缓存在仓库外
   `/Volumes/enkin/project-support/KaruM17-TypeSources/`，可用 `KARU_TYPE_SOURCES` 改），`--check` 重新生成到临时目录并与
   `assets/typetables/` 逐字节比对；冷查询与解码内存用 `KARU_T1710_BENCH=1 swift test --filter TypeTableBenchmark`（单独运行）。
+- 项目文件夹索引（M17 T17.12，`Workspace/`）：库在 `~/Library/Application Support/dev.enkin.TinyEditor/Index/<hash>.sqlite`
+  （裸二进制无 bundle ID 时为 `…/Application Support/Karu/Index/`），文件名是标准化路径的 FNV-1a 64 位十六进制，
+  `meta` 表记录对应文件夹。只读查看：`sqlite3 "file:<库>?mode=ro" "select value from meta where key='folder'"`、
+  `"select count(*) from files"`、`"select f.path, s.name, s.kind, s.container, s.line, s.signature from symbols s join files f on f.id = s.file_id where s.name = 'X'"`；
+  不要在 Karu 运行时写库，清除请用设置里的「清除索引」。测试一律用注入的根目录和临时文件夹（`IndexFixture`）。
+  首次全量与增量时延：`KARU_T1712_BENCH=1 swift test -c release -Xswiftc -enable-testing --filter WorkspaceIndexBenchmark`
+  （单独运行；`KARU_T1712_CPYTHON` 可改 CPython 标准库来源）。真实 App 配对内存：`KARU_DIAGNOSTIC_DIRECTORY=<临时目录>
+  KARU_INDEX_FOLDER=<绝对路径> .build/release/KaruApp` 只把该文件夹索引进 `<临时目录>/Index`，使用隔离的文件夹列表，
+  与不带 `KARU_INDEX_FOLDER` 的同环境启动交替对照。
 - `mem-benchmark.sh` 可用 `KARU_BENCH_APP_BIN=<二进制>` 指定被测构建（同机 A/B，跳过构建）；正式三轮之后
   另有两轮「推断样本（参考）」（`Tests/Fixtures/M17/inference/sample_1000.py` / `.ts`，只查 99 MB 上限）。
   各轮以 kill 结束，整体运行时应设置 `KARU_DIAGNOSTIC_DIRECTORY`，否则下一轮会恢复上一轮打开的文件。
