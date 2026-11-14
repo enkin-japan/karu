@@ -146,10 +146,11 @@ public struct CompletionContext: Sendable, Equatable {
         ["json", "jsonl", "yaml", "toml", "xml"].contains(languageIdentifier)
     }
 
-    /// The position class of `state`, the lexical state at the caret. Read
-    /// from the host's frames only: an embedded language's body (an HTML
-    /// `<script>` / `<style>` start tag or body, a fence) is code whatever
-    /// the child's state (T17.8a; T17.8c will ask the child). JSX (T17.8b):
+    /// The position class of `state`, a lexical state at the caret, read
+    /// from its own frames: an embedded language's body (an HTML `<script>`
+    /// / `<style>` start tag or body, a fence) is code here; inside a body
+    /// of a known language `caretLanguage(of:hostIdentifier:scanner:)` asks
+    /// the child's state instead (T17.8c). JSX (T17.8b):
     /// a tag and a `{…}` expression are code, an attribute string a string,
     /// children text a string (no auto popup in text).
     public static func position(of state: LexicalScanState) -> Position {
@@ -162,6 +163,55 @@ public struct CompletionContext: Sendable, Equatable {
         case .fence?, .rawTextTag?, .rawText?: return .code
         case .jsxTag(_, let phase, _, _)?: return phase == 2 || phase == 3 ? .string : .code
         }
+    }
+
+    /// The language deciding a completion request at the caret (M17 T17.8c,
+    /// plan §7): the host's, or — inside an embedded body — the child's.
+    public struct CaretLanguage: Sendable, Equatable {
+        /// The language identifier every per-language decision uses
+        /// (keywords, builtins, `.` receivers, `$`, case, strings as content).
+        public let identifier: String
+        /// 0 for the host, else the child's index into the host profile's
+        /// `embeds` plus one (as in `LexicalScanner.segments(…languages:)`).
+        public let embed: Int
+        /// The caret's position class, read from the child's state in a body.
+        public let position: Position
+
+        public init(identifier: String, embed: Int, position: Position) {
+            self.identifier = identifier
+            self.embed = embed
+            self.position = position
+        }
+
+        /// Plain text, or a language without a lexical scanner.
+        public static func unscanned(_ identifier: String) -> CaretLanguage {
+            CaretLanguage(identifier: identifier, embed: 0, position: identifier.isEmpty ? .plainText : .code)
+        }
+    }
+
+    /// The language at a caret whose host lexical state is `state` (the
+    /// state of `scanner`, the host's context scanner, at the caret; T17.8c).
+    /// The host frames decide: an HTML raw-text body or a Markdown fence
+    /// body of a known language is the child's (its position class comes
+    /// from the child's own state — nil there is its initial state);
+    /// everything else — host text, a start tag, a fence's opener line, a
+    /// plain or unknown-language body — is the host's, classified as before.
+    /// A string position in a data format whose strings are content counts
+    /// as plain text (`stringsAreContent`). Used by both the candidate
+    /// engine and the completion controller.
+    public static func caretLanguage(of state: LexicalScanState, hostIdentifier: String,
+                                     scanner: LexicalScanner?) -> CaretLanguage {
+        if let scanner, scanner.hasEmbeddedLanguages {
+            let embed = LexicalScanner.embeddedLanguage(of: state)
+            if embed != 0, let child = scanner.embeddedIdentifier(embed) {
+                var position = self.position(of: state.embedded?.state ?? LexicalScanState())
+                if position == .string, stringsAreContent(child) { position = .plainText }
+                return CaretLanguage(identifier: child, embed: embed, position: position)
+            }
+        }
+        var position = self.position(of: state)
+        if position == .string, stringsAreContent(hostIdentifier) { position = .plainText }
+        return CaretLanguage(identifier: hostIdentifier, embed: 0, position: position)
     }
 
     /// Whether a segment of `kind` is code for completion purposes.

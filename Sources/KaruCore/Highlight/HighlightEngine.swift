@@ -686,7 +686,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         // per `IdentifierPolicy`. String / comment / keyword colours always
         // win over symbol colours.
         var tokens = band.tokens
-        let roles = roleTokens(in: paintChars, ns: ns, language: language)
+        let roles = roleTokens(in: paintChars, ns: ns, language: language, embedded: band.embedded)
         let identifiers = Self.identifierTokens(in: ns, range: paintChars, tokens: &tokens, roles: roles,
                                                 table: symbolTable, language: language,
                                                 embedded: band.embedded)
@@ -1057,20 +1057,36 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// kept only when the live text there still reads its name. Nothing
     /// when the snapshot is of another language or the journal is
     /// unmappable. Decodes only the band's declarations (seek points).
-    private func roleTokens(in band: NSRange, ns: NSString,
-                            language: LanguageDefinition) -> [(range: NSRange, kind: TokenKind)] {
-        let policy = language.identifierPolicy
-        guard !policy.roles.isEmpty, let (snapshot, journal) = analysis.publishedDeclarations,
+    ///
+    /// Embedded languages (T17.8c): a declaration lying wholly inside one of
+    /// the band's `embedded` ranges (a child segment run, where only that
+    /// region's child walker declares) takes its role from the child
+    /// definition's policy; one outside them from the host's.
+    private func roleTokens(in band: NSRange, ns: NSString, language: LanguageDefinition,
+                            embedded: [(range: NSRange, language: Int)] = []) -> [(range: NSRange, kind: TokenKind)] {
+        let hostPolicy = language.identifierPolicy
+        let childPolicies = embedded.map { language.embeddedDefinition($0.language)?.identifierPolicy }
+        guard !hostPolicy.roles.isEmpty || childPolicies.contains(where: { !($0?.roles.isEmpty ?? true) }),
+              let (snapshot, journal) = analysis.publishedDeclarations,
               snapshot.scan.languageIdentifier == language.identifier,
               let from = journal.mapToBase(band.location),
               let to = journal.mapToBase(NSMaxRange(band)) else { return [] }
         let exact = journal.isEmpty
         var out: [(range: NSRange, kind: TokenKind)] = []
+        var span = 0
         snapshot.scan.forEachDeclaration(from: from, to: to + 1) { location, name, kind in
-            guard var role = policy.roles[kind] else { return }
+            if embedded.isEmpty, hostPolicy.roles[kind] == nil { return }
             let length = name.utf16.count
             guard let live = exact ? location : journal.mapFromBase(location),
-                  live >= band.location, live + length <= NSMaxRange(band),
+                  live >= band.location, live + length <= NSMaxRange(band) else { return }
+            // The policy of the run the name lies in (live offsets ascend).
+            while span < embedded.count, NSMaxRange(embedded[span].range) <= live { span += 1 }
+            var policy = hostPolicy
+            if span < embedded.count, embedded[span].range.location <= live {
+                guard live + length <= NSMaxRange(embedded[span].range), let child = childPolicies[span] else { return }
+                policy = child
+            }
+            guard var role = policy.roles[kind],
                   ns.compare(name, options: .literal, range: NSRange(location: live, length: length)) == .orderedSame
             else { return }
             if kind == .variable, policy.constDeclarationsAreConstants,
@@ -1113,8 +1129,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// The identifier tokens of `range` for `language` (pure, T17.8a): the
     /// host's pass (`roles`, `table`, its `IdentifierPolicy`) outside the
     /// `embedded` ranges, and inside each of them the child's pass — the
-    /// child definition's policy with no roles and no symbol table (the
-    /// declaration snapshot and its table are the host's). `tokens` as in
+    /// child definition's policy with the `roles` that lie in the range
+    /// (T17.8c: the declaration roles of the region's child walker) and no
+    /// symbol table (the snapshot's table is the host's). `tokens` as in
     /// the single-language pass; ascending output.
     nonisolated static func identifierTokens(in ns: NSString, range: NSRange,
                                              tokens: inout [(range: NSRange, kind: TokenKind)],
@@ -1152,7 +1169,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             pass(NSRange(location: pos, length: max(0, piece.location - pos)), roles: true, table: table,
                  policy: language.identifierPolicy)
             let child = language.embeddedDefinition(span.language)
-            pass(piece, roles: false, table: nil, policy: child?.identifierPolicy ?? IdentifierPolicy())
+            pass(piece, roles: true, table: nil, policy: child?.identifierPolicy ?? IdentifierPolicy())
             pos = NSMaxRange(piece)
         }
         pass(NSRange(location: pos, length: max(0, NSMaxRange(range) - pos)), roles: true, table: table,

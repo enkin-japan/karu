@@ -50,7 +50,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ✅ 自动化通过；作用域 top1 24/24，误弹 0 |
 | T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | 🔶 自动化通过；真实窗口与真实输入法实测待做 |
 | T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ✅ 自动化通过；一致率深色 94.9%、浅色 91.6% |
-| T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | 🔶 T17.8a（HTML/Markdown 子语言）、T17.8b（JSX/TSX）完成；T17.8c 光标处子语言待做 |
+| T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ✅ T17.8a 子语言、T17.8b JSX/TSX、T17.8c 光标处子语言；一致率深色 97.3%、浅色 94.2% |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ⬜ |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ⬜ |
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ⬜ |
@@ -588,6 +588,48 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - 10 MB JSX：首次跳转 208 → 221 ms；附近重绘 p95 从 6.5 变为 5.9 ms。
     - 声明扫描：10 MB JS 和 TSX 持平或略快，最长一片约 4.5 / 5.3 ms。
     - 检查点格式和 Frame 大小都不变。
+
+- T17.8c 光标处的子语言（main 定接口，implementer 实现，main 审查 diff 并修一处测试隔离，2026-11-15）：
+  - **光标处的语言**：`CompletionContext.caretLanguage(of:hostIdentifier:scanner:)` 由宿主帧决定，引擎和控制器共用。
+    - `rawText` 正文、带语言的围栏正文属于子语言，位置类别读子状态；开始标签、开头行、未知语言或纯文本正文、宿主文本仍按宿主处理。
+    - 候选请求里按语言决定的每项判断都改用光标处的语言：关键字和内置名、点号接收者和 self 词、`$`、大小写、位置类别、内容型字符串，以及控制器的 `$` 自动触发。
+    - 子语言的词表在第一次用到时构建，只缓存词表（JS 约 1.6 KB、Python 约 2.3 KB），关闭模块时释放。
+    - 光标在子语言正文里时，附近词和用法扫描只读同语言的片段。
+    - 标题栏的文档语言不变。
+  - **声明**：
+    - 宿主带嵌入时（html、markdown），`DeclarationScanner` 为每个嵌入片段新建该语言的遍历器，在新的 `ScopeKind.embedded` 作用域下运行（作用域以子语言命名）。片段结束时遍历器在那里收尾，未闭合的作用域都关在片段末尾，不会漏进下一个片段。
+    - 同语言各片段的顶层在查询层共享（`DeclarationQueryIndex` 按语言分组），不跨语言共享。`var`、`global`、`nonlocal` 最多上溯到片段顶层。
+    - 片段里的声明只供作用域查询：不进导航、命令面板、跳转，也不进文档级的符号集合。HTML 和 Markdown 的导航输出不变。
+    - 没有遍历器的子语言（CSS、JSON、Bash 等）不建片段作用域。
+    - 宿主每步只扫一半预算，最长分片 4.4–4.6 ms，与 JS/Python 相同；分片扫描与一次扫描结果相同。
+  - **着色**：完整落在子片段里的声明按子定义的规则用声明角色着色（范围精确匹配），仍不用宿主的符号表。
+  - **一致率**（深色 / 浅色，T17.8b → 本次，main 复核深色）：
+    - page.html：88.0 → **89.8** / 69.3 → 71.1。
+    - fences.md：89.4 → **93.4** / 74.4 → 78.4。
+    - markdown.md：97.2 → 98.5 / 85.6 → 86.9。
+    - 总体：深色 97.2 → **97.3**，浅色 94.0 → 94.2。其余样本不变。
+  - **测试**：
+    - 新增 `EmbeddedCompletionTests`（26 个，5 个套件），覆盖：
+      - 光标语言：JS、Python、CSS、宿主、`$`、点号、字符串和注释、HTML 内的 JSX 文本、json 围栏。
+      - 片段声明：跨脚本可见、参数只在函数内、未闭合的结构不外泄、不跨语言、不进导航和符号集合、分片扫描与一次扫描相同。
+      - 子语言着色角色。
+      - 真实 `EditorTextView`：光标冷启动在嵌入区中部、输入、上游编辑后再输入、切回宿主、关闭窗口后状态释放。
+    - 新增可选基准 `EmbeddedCompletionBenchmarkTests`（`KARU_T178C_BENCH=1`）。
+    - **main 修测试隔离**：`ToolchainManagerTests.installingCancelInstallAndUninstallFromTheRows` 偶发失败。根因不是计时，而是 `L10nOverrideTests`：它用 `L10n.set(.en)` 广播了语言切换，收尾时却静默写回 UserDefaults，导致并行套件里打开着的工具链行仍显示英文，而 `L10n.t` 已经回到日文。现在收尾时也广播切换。T17.8b 里给这个测试加的等待是误判，已撤回。修好后全量连跑 6 次，5 次通过；1 次是 `differentIdsInstallConcurrently` / `cancelLeavesNothingAndNoError` 在负载约 6 时超时，属另一类安装并发计时问题，单独记为已知不稳定测试。
+    - 全量 **1300 tests / 103 suites** 通过（main 复跑）；visual-smoke VISUAL OK、FOLD GEOMETRY OK；补全基线与 HEAD 重新生成的版本逐字节相同（implementer 做的 A/B）。
+  - **性能**（debug，与 HEAD 交替跑，负载 3–5）：
+    - 热查询 p95：10 MB HTML 的脚本里 2.6 ms，10 MB Markdown 的 Python 围栏里 3.3–3.4 ms，都和 HEAD 持平。
+    - 快照之后的第一次查询要构建查询索引：HTML 约 25 ms，Markdown 约 42 ms。
+    - 声明扫描：10 MB HTML 约 1.04 s，10 MB Markdown 约 1.0 s，以前这两种都不扫。10 MB JS 和 Python 不变，快照字节数完全相同。
+  - **内存**：
+    - 声明快照：10 MB HTML 约 254 KB，10 MB Markdown 约 436 KB（实测堆增量 490 KB）。
+    - 查询索引：HTML 52 KB，Markdown 66 KB。
+    - 子遍历器和子扫描器只在扫描时存在，扫完常驻为 0。
+  - **留给 T17.15**：`DocumentAnalysis.setLanguage` 打开文档时同步扫完全部声明，这是 T17.1 以来的设计。10 MB HTML / Markdown 打开要多等约 1 s（debug），与 JS（0.46 s）、Python（1.4 s）同一级别。T17.15 用 Release 复测；如超出冷打开要求，改为分片发布。
+  - **剩余近似**：
+    - 文档词索引仍按宿主规则切词：HTML 宿主里，脚本中的 `$el` 在词索引里是 `el`，窗口内的附近词和声明里仍带 `$`。
+    - 子片段不用符号表，类型引用不着色。
+    - T17.8a 的已知差异仍在：脚本注释里的 `</script>`、`text/template`、嵌套围栏、CSS 选择器。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

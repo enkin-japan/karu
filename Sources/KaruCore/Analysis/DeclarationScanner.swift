@@ -47,8 +47,14 @@ struct DeclarationBuilder: Sendable {
     private var variableCandidates: [Int] = []
     private var phase = 0
 
-    init(languageIdentifier: String) {
+    /// Declarations are scope-only (T17.8c: an embedding host's regions):
+    /// recorded with their kinds for `visibleBindings`, never entered into
+    /// the table / completion symbols (nor references).
+    let scopeOnly: Bool
+
+    init(languageIdentifier: String, scopeOnly: Bool = false) {
         self.languageIdentifier = languageIdentifier
+        self.scopeOnly = scopeOnly
     }
 
     var scopeCount: Int { order.count }
@@ -84,6 +90,7 @@ struct DeclarationBuilder: Sendable {
             masks.append(0)
         }
         var bit: UInt8 = 8
+        let listed = listed && !scopeOnly
         if listed {
             switch kind.symbolKind {
             case .function: bit |= 1
@@ -109,7 +116,7 @@ struct DeclarationBuilder: Sendable {
     /// (unless it is also a type) or a type, but is no declaration — no
     /// location, no binding.
     mutating func noteReference(_ text: NSString, _ token: DeclToken, kind: WordIndex.SymbolKind) {
-        guard token.end > token.start else { return }
+        guard token.end > token.start, !scopeOnly else { return }
         let name = text.substring(with: NSRange(location: token.start, length: token.end - token.start))
         let index: Int
         if let known = nameIndex[name] {
@@ -128,6 +135,16 @@ struct DeclarationBuilder: Sendable {
     mutating func intern(_ text: NSString, _ token: DeclToken) -> Int32 {
         guard token.end > token.start else { return -1 }
         let name = text.substring(with: NSRange(location: token.start, length: token.end - token.start))
+        if let known = nameIndex[name] { return known }
+        let index = Int32(names.count)
+        nameIndex[name] = index
+        names.append(name)
+        masks.append(0)
+        return index
+    }
+
+    /// Interns `name` without declaring it (an embedded region's language).
+    mutating func intern(name: String) -> Int32 {
         if let known = nameIndex[name] { return known }
         let index = Int32(names.count)
         nameIndex[name] = index
@@ -246,7 +263,8 @@ struct DeclarationBuilder: Sendable {
                                encodedLocations: encoded.withUnsafeBufferPointer { Array($0) },
                                outline: outline.withUnsafeBufferPointer { Array($0) },
                                scopeCount: order.count, documentLength: documentLength,
-                               declarationSeeks: seeks.withUnsafeBufferPointer { Array($0) })
+                               declarationSeeks: seeks.withUnsafeBufferPointer { Array($0) },
+                               hasEmbeddedRegions: scopeOnly)
     }
 }
 
@@ -265,6 +283,16 @@ struct DeclarationBuilder: Sendable {
 ///   at lexer safe points, the tokenizer is chunk-independent, and the
 ///   walkers only decide once their lookahead is available or the text has
 ///   ended). `finish(_:)` runs to completion (`DeclarationScan.scan`).
+/// - **Embedding hosts** (HTML, Markdown; T17.8c): the host's scanner
+///   reports each run's language; every maximal run of one child language
+///   with a walker (a `<script>` body, a fence body) is an embedded region,
+///   walked by a fresh walker of that child (created when the region
+///   opens, dropped when it closes) under its own `.embedded` scope named
+///   after the child. At the region's end the walker finishes there, so
+///   every scope it left open closes at the region end and nothing leaks
+///   into the next region. The declarations are scope-only (no table,
+///   completion symbols or navigator entries). Children without a walker
+///   (CSS, JSON, Bash, …) contribute nothing.
 /// - Languages without a walker (no declarations: Bash, SQL, data formats)
 ///   finish in a single step with empty products.
 public struct DeclarationScanner: Sendable {
@@ -274,7 +302,8 @@ public struct DeclarationScanner: Sendable {
 
     public init(languageIdentifier: String) {
         self.languageIdentifier = languageIdentifier
-        if DeclarationScan.usesWalker(languageIdentifier) {
+        if DeclarationScan.usesWalker(languageIdentifier)
+            || DeclarationScan.embeddingProfile(languageIdentifier) != nil {
             walker = WalkerScan(languageIdentifier: languageIdentifier)
         }
     }
@@ -315,47 +344,58 @@ public struct DeclarationScanner: Sendable {
     }
 }
 
-/// The walker-language state behind `DeclarationScanner`.
-struct WalkerScan: Sendable {
+/// One walker family with its tokenizer and token buffer: the Python, the
+/// JavaScript / TypeScript or the brace walker of one language.
+struct LanguageWalker: Sendable {
     let python: Bool
     let brace: BraceLanguage?
-    let scanner: LexicalScanner
-    var lexState = LexicalScanState()
-    var position = 0
-    var documentLength = -1
     var tokenizer: DeclTokenizer
     var buffer = DeclTokenBuffer()
     var pythonWalker: PythonDeclarationWalker?
     var jsWalker: JavaScriptDeclarationWalker?
     var braceWalker: BraceDeclarationWalker?
-    var builder: DeclarationBuilder
-    var moduleScope: Int32 = -1
-    /// 0 scanning, 1 finishing.
-    var phase = 0
 
-    init(languageIdentifier: String) {
+    /// The walker of `languageIdentifier`, nil for a language without one.
+    init?(languageIdentifier: String) {
+        guard DeclarationScan.usesWalker(languageIdentifier) else { return nil }
         python = languageIdentifier == "python"
         brace = BraceLanguage(identifier: languageIdentifier)
-        builder = DeclarationBuilder(languageIdentifier: languageIdentifier)
         if let brace {
-            scanner = LexicalScanner(profile: brace.lexicalProfile)
             tokenizer = DeclTokenizer(brace: brace)
             braceWalker = BraceDeclarationWalker(language: brace)
         } else if python {
-            scanner = LexicalScanner(profile: PythonLanguage.analysisProfile)
             tokenizer = DeclTokenizer(python: true)
             pythonWalker = PythonDeclarationWalker()
         } else {
             // JSX (T17.8b) reaches the walker as literals and `{…}` as interpolations.
-            scanner = LexicalScanner(profile: JavaScriptLanguage.lexicalProfile(forIdentifier: languageIdentifier)
-                                         ?? JavaScriptLanguage.lexicalProfile)
             tokenizer = DeclTokenizer(python: false)
             jsWalker = JavaScriptDeclarationWalker(typescript: languageIdentifier == "typescript"
                                                        || languageIdentifier == "typescriptreact")
         }
     }
 
-    private mutating func process(_ text: NSString, final: Bool) {
+    /// The lexical profile the walker reads for `languageIdentifier`.
+    static func profile(for languageIdentifier: String) -> LexicalProfile {
+        if let brace = BraceLanguage(identifier: languageIdentifier) { return brace.lexicalProfile }
+        if languageIdentifier == "python" { return PythonLanguage.analysisProfile }
+        return JavaScriptLanguage.lexicalProfile(forIdentifier: languageIdentifier) ?? JavaScriptLanguage.lexicalProfile
+    }
+
+    /// Starts the walk under `scope` (the module, or an embedded region).
+    mutating func begin(scope: Int32) {
+        jsWalker?.begin(moduleScope: scope)
+        braceWalker?.begin(moduleScope: scope)
+    }
+
+    mutating func tokenize(_ text: NSString, from: Int, to: Int, segments: [(NSRange, LexicalSegment)]) {
+        tokenizer.tokenize(text, from: from, to: to, segments: segments, into: &buffer)
+    }
+
+    mutating func finishTokens(at end: Int) {
+        tokenizer.finish(at: end, into: &buffer)
+    }
+
+    mutating func process(_ text: NSString, final: Bool, _ builder: inout DeclarationBuilder) {
         if python {
             pythonWalker!.process(&buffer, text, final: final, &builder)
         } else if brace != nil {
@@ -365,7 +405,9 @@ struct WalkerScan: Sendable {
         }
     }
 
-    private mutating func finishWalker(at end: Int) {
+    /// Ends the walk at `end`: every scope the walker opened and left open
+    /// closes there.
+    mutating func finish(at end: Int, _ builder: inout DeclarationBuilder) {
         if python {
             pythonWalker!.finish(at: end, &builder)
         } else if brace != nil {
@@ -374,13 +416,45 @@ struct WalkerScan: Sendable {
             jsWalker!.finish(at: end, &builder)
         }
     }
+}
+
+/// The walker-language state behind `DeclarationScanner`: one walker over
+/// the whole text, or — for an embedding host (T17.8c) — a walker per
+/// embedded region.
+struct WalkerScan: Sendable {
+    let scanner: LexicalScanner
+    var lexState = LexicalScanState()
+    var position = 0
+    var documentLength = -1
+    /// The document's walker (nil for an embedding host).
+    var walker: LanguageWalker?
+    /// An embedding host: the open region (its child language index, its
+    /// scope, its walker — nil for a child without one).
+    let embeds: Bool
+    var region: (language: Int, scope: Int32, walker: LanguageWalker?)?
+    var builder: DeclarationBuilder
+    var moduleScope: Int32 = -1
+    /// 0 scanning, 1 finishing.
+    var phase = 0
+
+    init(languageIdentifier: String) {
+        if let host = DeclarationScan.embeddingProfile(languageIdentifier) {
+            embeds = true
+            scanner = LexicalScanner(profile: host)
+            builder = DeclarationBuilder(languageIdentifier: languageIdentifier, scopeOnly: true)
+        } else {
+            embeds = false
+            scanner = LexicalScanner(profile: LanguageWalker.profile(for: languageIdentifier))
+            walker = LanguageWalker(languageIdentifier: languageIdentifier)
+            builder = DeclarationBuilder(languageIdentifier: languageIdentifier)
+        }
+    }
 
     mutating func step(_ text: NSString, budgetUnits: Int) -> Bool {
         if documentLength < 0 {
             documentLength = text.length
             moduleScope = builder.openScope(.module, at: 0)
-            jsWalker?.begin(moduleScope: moduleScope)
-            braceWalker?.begin(moduleScope: moduleScope)
+            walker?.begin(scope: moduleScope)
         }
         let length = documentLength
         if phase == 1 {
@@ -389,12 +463,17 @@ struct WalkerScan: Sendable {
         if text.length != length {
             // The text changed between steps (the caller's contract is that it
             // does not): never read it again; finish with what was emitted.
-            buffer.removeAll()
-            finishWalker(at: position)
+            if embeds {
+                closeRegion(at: position, text: nil)
+            } else {
+                walker!.buffer.removeAll()
+                walker!.finish(at: position, &builder)
+            }
             builder.closeScope(moduleScope, at: length)
             phase = 1
             return false
         }
+        if embeds { return stepRegions(text, budgetUnits: budgetUnits) }
         if position < length {
             let target = min(length, position + budgetUnits)
             var state = lexState
@@ -402,20 +481,95 @@ struct WalkerScan: Sendable {
             let end = scanner.segments(text, from: position, to: length, stoppingAtSafePointFrom: target,
                                        state: &state) { range, segment in segments.append((range, segment)) }
             lexState = state
-            tokenizer.tokenize(text, from: position, to: end, segments: segments, into: &buffer)
+            walker!.tokenize(text, from: position, to: end, segments: segments)
             position = max(end, position + 1 > length ? length : end)
-            if position >= length { tokenizer.finish(at: length, into: &buffer) }
+            if position >= length { walker!.finishTokens(at: length) }
         } else {
-            tokenizer.finish(at: length, into: &buffer)
+            walker!.finishTokens(at: length)
         }
         let final = position >= length
-        process(text, final: final)
+        walker!.process(text, final: final, &builder)
         if final {
-            finishWalker(at: length)
+            walker!.finish(at: length, &builder)
             builder.closeScope(moduleScope, at: length)
-            buffer.removeAll()
+            walker!.buffer.removeAll()
             phase = 1
         }
         return false
+    }
+
+    // MARK: - Embedded regions (T17.8c)
+
+    /// One step of an embedding host: lexes a chunk with languages, opens /
+    /// closes regions where the run language changes and feeds each region's
+    /// runs to its walker.
+    ///
+    /// A host lexes half of `budgetUnits` per step: a unit costs more here
+    /// (child scanners, per-run languages, region switches), and the halved
+    /// step keeps a slice's overshoot past its deadline like the walker
+    /// languages'.
+    private mutating func stepRegions(_ text: NSString, budgetUnits: Int) -> Bool {
+        let length = documentLength
+        if position < length {
+            let target = min(length, position + max(1, budgetUnits / 2))
+            var state = lexState
+            var runs: [(NSRange, LexicalSegment, Int)] = []
+            let end = scanner.segments(text, from: position, to: length, stoppingAtSafePointFrom: target,
+                                       state: &state) { range, segment, language in
+                runs.append((range, segment, language))
+            }
+            lexState = state
+            var i = 0
+            while i < runs.count {
+                let language = runs[i].2
+                var j = i + 1
+                while j < runs.count, runs[j].2 == language { j += 1 }
+                let start = runs[i].0.location
+                if language == 0 {
+                    closeRegion(at: start, text: text)
+                } else {
+                    if let open = region, open.language != language { closeRegion(at: start, text: text) }
+                    if region == nil { openRegion(language, at: start) }
+                    if region!.walker != nil {
+                        let groupEnd = NSMaxRange(runs[j - 1].0)
+                        region!.walker!.tokenize(text, from: start, to: groupEnd,
+                                                 segments: runs[i..<j].map { ($0.0, $0.1) })
+                        region!.walker!.process(text, final: false, &builder)
+                    }
+                }
+                i = j
+            }
+            position = max(end, position + 1 > length ? length : end)
+        }
+        if position >= length {
+            closeRegion(at: length, text: text)
+            builder.closeScope(moduleScope, at: length)
+            phase = 1
+        }
+        return false
+    }
+
+    private mutating func openRegion(_ language: Int, at start: Int) {
+        guard let identifier = scanner.embeddedIdentifier(language),
+              var walker = LanguageWalker(languageIdentifier: identifier) else {
+            region = (language, -1, nil)
+            return
+        }
+        let scope = builder.openScope(.embedded, at: start, name: builder.intern(name: identifier))
+        walker.begin(scope: scope)
+        region = (language, scope, walker)
+    }
+
+    /// Closes the open region at `end` (nil `text`: the text changed, drop
+    /// the buffered tokens unread).
+    private mutating func closeRegion(at end: Int, text: NSString?) {
+        guard var open = region.take(), open.walker != nil else { return }
+        if let text {
+            open.walker!.finishTokens(at: end)
+            open.walker!.process(text, final: true, &builder)
+        }
+        open.walker!.buffer.removeAll()
+        open.walker!.finish(at: end, &builder)
+        builder.closeScope(open.scope, at: end)
     }
 }

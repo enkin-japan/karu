@@ -44,12 +44,17 @@ public protocol CompletionKeyHandler: AnyObject {
 ///   very next request already ranks the new language's declarations.
 ///   Constructed without an analysis (unit tests, probes) it owns a private
 ///   one and forwards its edits to it.
+/// - **Embedded languages** (T17.8c): in an HTML `<script>` / `<style>` or a
+///   Markdown fence the language at the caret decides the request (the
+///   engine reads it from the host scanner's state; the `$` trigger asks
+///   `caretLanguageIdentifier()`); the child's keywords are cached by the
+///   engine and released with it. The document language never changes.
 /// - **Word index**: built synchronously on first use / `indexDocument()`,
 ///   and after an edit pause (0.15 s) rebuilt by a sliced `AnalysisScheduler`
 ///   job (4 ms slices, dropped on the next edit); words typed since are found
 ///   by the engine's nearby-line scan.
-/// - **Requests**: a typed letter / `_` / (JS / TS) `$` or `.` opens the
-///   popup when the engine's trigger rules allow it (plan §5.1);
+/// - **Requests**: a typed letter / `_` / (JS / TS at the caret) `$` or `.`
+///   opens the popup when the engine's trigger rules allow it (plan §5.1);
 ///   `requestCompletion(manual:)` is the manual entry (T17.6: ⌥⎋ through
 ///   `EditorTextView.complete(_:)` and Edit ▸ Show Completions). While open,
 ///   every keystroke refilters or dismisses — an automatic popup closes when
@@ -465,7 +470,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             guard let chars = event.charactersIgnoringModifiers,
                   let first = chars.first,
                   first.isLetter || first == "_" || first == "."
-                    || (first == "$" && IdentifierText.allowsDollar(languageIdentifier)) else { return }
+                    || (first == "$" && IdentifierText.allowsDollar(caretLanguageIdentifier())) else { return }
             updatePopup(manual: false)
         }
         if PerfLog.isEnabled { logRequest(event, lazyIndex: lazyIndex) }
@@ -505,9 +510,23 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         let text = textView.textStorage?.mutableString ?? (textView.string as NSString)
         guard selection.location <= text.length,
               let start = IdentifierText.runStart(before: selection.location, in: text,
-                                                  dollar: IdentifierText.allowsDollar(languageIdentifier))
+                                                  dollar: IdentifierText.allowsDollar(shown.languageIdentifier))
         else { return false }
         return start == shown.prefixRange.location
+    }
+
+    /// The language at the caret (T17.8c): the document's, or inside an
+    /// embedded body (HTML `<script>` / `<style>`, a Markdown fence) the
+    /// child's — the engine's helper over the analysis's context
+    /// checkpoints. Only an embedding host scans for it.
+    func caretLanguageIdentifier() -> String {
+        guard let textView, let scanner = contextScanner, scanner.hasEmbeddedLanguages else {
+            return languageIdentifier
+        }
+        let selection = textView.selectedRange()
+        let text: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
+        return WindowScan.caretLanguage(text: text, caret: selection.location, hostIdentifier: languageIdentifier,
+                                        scanner: scanner, checkpoints: &analysis.contextCheckpoints).identifier
     }
 
     // MARK: - Popup driving

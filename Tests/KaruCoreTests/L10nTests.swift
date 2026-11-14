@@ -84,12 +84,18 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct L10nOverrideTests {
+    /// Restores the override through `L10n.set`, so the change notification
+    /// re-syncs every observer: suites running in parallel keep UI alive on
+    /// the main actor (toolchain rows, menus), and a silent defaults write
+    /// left them showing the language this test switched to while `L10n.t`
+    /// already answered in the restored one.
     private func restore(_ previous: String?) {
         if let previous {
             UserDefaults.standard.set(previous, forKey: L10n.defaultsKey)
         } else {
             UserDefaults.standard.removeObject(forKey: L10n.defaultsKey)
         }
+        NotificationCenter.default.post(name: L10n.didChangeNotification, object: nil)
     }
 
     @Test func setPersistsAndClearsTheOverride() {

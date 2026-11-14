@@ -220,6 +220,8 @@ public struct LexicalScanner: Sendable {
     /// and their compiled scanners, fence info words → language index.
     private let rawElements: [RawElement]
     private let embedProfiles: [LexicalProfile]
+    /// The children's `LanguageDefinition` identifiers (T17.8c).
+    private let embedIdentifiers: [String]
     private let embedCache: EmbedCache?
     private let fenceAliases: [String: UInt8]
     private var hasEmbeds: Bool { embedCache != nil }
@@ -423,6 +425,7 @@ public struct LexicalScanner: Sendable {
                               otherTypesLanguage: embedIndex(element.otherTypesLanguage))
         }
         embedProfiles = profile.embeds.map(\.profile.withoutEmbeds)
+        embedIdentifiers = profile.embeds.map(\.identifier)
         embedCache = embedCount > 0 ? EmbedCache(count: embedCount) : nil
         var aliases: [String: UInt8] = [:]
         if fence != nil {
@@ -552,6 +555,24 @@ public struct LexicalScanner: Sendable {
                                   tracksLanguage: true)
             return run(text, from: from, to: to, stop: target, state: &state, emitter: &emitter)
         }
+    }
+
+    /// Whether the profile has embedded languages (T17.8c).
+    public var hasEmbeddedLanguages: Bool { embedCache != nil }
+
+    /// The `LanguageDefinition` identifier of embedded language `language`
+    /// (index into the profile's `embeds` plus one; T17.8c); nil for 0 or an
+    /// index out of range.
+    public func embeddedIdentifier(_ language: Int) -> String? {
+        language >= 1 && language <= embedIdentifiers.count ? embedIdentifiers[language - 1] : nil
+    }
+
+    /// The embedded language whose body `state` is in (index into the
+    /// profile's `embeds` plus one): an HTML raw-text body or a Markdown
+    /// fence body of a known language; 0 elsewhere — host text, a start tag,
+    /// a fence's opener line, a plain body (T17.8c).
+    public static func embeddedLanguage(of state: LexicalScanState) -> Int {
+        Int(childLanguage(state.frames.last))
     }
 
     /// The scanner of embedded language `language` (index into the

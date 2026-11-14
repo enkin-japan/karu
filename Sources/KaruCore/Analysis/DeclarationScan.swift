@@ -22,6 +22,13 @@ import Foundation
 /// T17.1 regex pass (`regexScan`, `WordIndex.declarationPatterns`) remains
 /// only as the test / benchmark reference of the old behaviour.
 ///
+/// **Embedded regions** (T17.8c): an embedding host (HTML, Markdown) has no
+/// walker of its own; each `<script>` / fence body of a child language with a
+/// walker is walked by that child under an `.embedded` scope (the child's top
+/// level, named after it). Those declarations are scope-only — never in
+/// `table`, `completionSymbols` or `locations` (`hasEmbeddedRegions`) — and
+/// `visibleBindings` applies the child's rules inside a region.
+///
 /// **Table-only references** (Java, C#, C, C++): the regex path coloured
 /// every `name(` call and `class` / `struct` name; the walker keeps that
 /// colour coverage by entering calls (functions unless also a type) and
@@ -94,6 +101,16 @@ public struct DeclarationScan: Sendable, Equatable {
         case comprehension
         /// JS block / `for` / `catch` / namespace.
         case block
+        /// An embedded region of an HTML / Markdown host (T17.8c): one
+        /// `<script>` / `<style>` body or fence body of a child language
+        /// with a walker, named after the child's identifier. It is the
+        /// top level of the child's declarations: regions of the same
+        /// language share it in `visibleBindings` (a classic script sees the
+        /// previous scripts' globals; consecutive fences continue), regions
+        /// of other languages and the host never see it. Unlike other
+        /// scopes it also contains its end offset (a caret typing at the end
+        /// of a body, before the end tag or closing fence, is still in it).
+        case embedded
     }
 
     /// One declaration (listed or scope-only) in document order.
@@ -131,6 +148,10 @@ public struct DeclarationScan: Sendable, Equatable {
     public let languageIdentifier: String
     public let table: WordIndex.SymbolTable
     public let completionSymbols: Set<String>
+    /// The scan of an embedding host (HTML, Markdown; T17.8c): its
+    /// declarations all lie in `.embedded` regions and are scope-only —
+    /// never in `table`, `completionSymbols` or `locations`.
+    public let hasEmbeddedRegions: Bool
     /// UTF-16 length of the scanned text; offsets refer to that version.
     public let documentLength: Int
     /// Number of scopes in the outline (0 for the regex languages).
@@ -154,10 +175,11 @@ public struct DeclarationScan: Sendable, Equatable {
 
     init(languageIdentifier: String, table: WordIndex.SymbolTable, completionSymbols: Set<String>,
          names: [String], encodedLocations: [UInt8], outline: [UInt8], scopeCount: Int, documentLength: Int,
-         declarationSeeks: [Int32] = []) {
+         declarationSeeks: [Int32] = [], hasEmbeddedRegions: Bool = false) {
         self.languageIdentifier = languageIdentifier
         self.table = table
         self.completionSymbols = completionSymbols
+        self.hasEmbeddedRegions = hasEmbeddedRegions
         self.names = names
         self.encodedLocations = encodedLocations
         self.outline = outline
@@ -286,7 +308,67 @@ public struct DeclarationScan: Sendable, Equatable {
     }
 
     func contains(_ scope: ScopeRecord, _ offset: Int) -> Bool {
-        scope.start <= offset && (offset < scope.end || scope.end >= documentLength)
+        scope.start <= offset
+            && (offset < scope.end || scope.end >= documentLength || scope.kind == .embedded && offset == scope.end)
+    }
+
+    /// Stack position of the top-level scope of a scope stack (outermost
+    /// first): the `.embedded` region right under the module, else the
+    /// module (T17.8c).
+    @inline(__always)
+    static func topLevelPosition(_ stack: [ScopeRecord]) -> Int {
+        stack.count > 1 && stack[1].kind == .embedded ? 1 : 0
+    }
+
+    /// Stack position of the scope owning a declaration of `kind` whose
+    /// innermost scope is `stack.last` (`visibleBindings`' rules); nil when
+    /// it is no binding (an instance attribute). JS `var`, Python `global`
+    /// and `nonlocal` never climb past the top level (an embedded region).
+    static func ownerPosition(of kind: DeclarationKind, stack: [ScopeRecord]) -> Int? {
+        let floor = topLevelPosition(stack)
+        var owner = stack.count - 1
+        switch kind {
+        case .functionScopedVariable:
+            while owner > floor, stack[owner].kind != .function, stack[owner].kind != .lambda { owner -= 1 }
+        case .global:
+            owner = floor
+        case .nonlocal:
+            var o = owner
+            while o > floor, stack[o].kind != .function { o -= 1 }
+            o -= 1
+            while o > floor, stack[o].kind != .function { o -= 1 }
+            owner = max(floor, o)
+        case .property:
+            // An instance attribute assigned inside a method (Python
+            // `self.x = …`, JS `this.x = …`; T17.5) is a member of the
+            // class, never a binding of the method or block.
+            switch stack[owner].kind {
+            case .function, .lambda, .comprehension, .block: return nil
+            default: break
+            }
+        default:
+            break
+        }
+        return owner
+    }
+
+    /// The language of a scope chain's declarations (outermost first): an
+    /// embedded region's child identifier, else the scan's language.
+    func language(of chain: [ScopeRecord]) -> String {
+        if Self.topLevelPosition(chain) == 1, chain[1].name >= 0 { return names[chain[1].name] }
+        return languageIdentifier
+    }
+
+    /// The `.embedded` regions in document order (empty unless
+    /// `hasEmbeddedRegions`).
+    func embeddedRegions() -> [ScopeRecord] {
+        guard hasEmbeddedRegions else { return [] }
+        var out: [ScopeRecord] = []
+        forEachScope { record in
+            if record.kind == .embedded { out.append(record) }
+            return true
+        }
+        return out
     }
 
     // MARK: - Products
@@ -308,8 +390,9 @@ public struct DeclarationScan: Sendable, Equatable {
     public var locations: [WordIndex.SymbolLocation] {
         var out: [WordIndex.SymbolLocation] = []
         let excluded = WordIndex.nonVariableNames(for: languageIdentifier)
+        var regions = RegionCursor(embeddedRegions())
         forEachDeclaration { location, nameIndex, kind, listed in
-            guard listed else { return }
+            guard listed, !regions.contains(location) else { return }
             let name = names[nameIndex]
             let symbolKind = kind.symbolKind
             if symbolKind == .variable,
@@ -326,10 +409,25 @@ public struct DeclarationScan: Sendable, Equatable {
     /// Every declaration, listed and scope-only, in document order.
     public var declarations: [Declaration] {
         var out: [Declaration] = []
+        var regions = RegionCursor(embeddedRegions())
         forEachDeclaration { location, nameIndex, kind, listed in
-            out.append(Declaration(name: names[nameIndex], kind: kind, location: location, isListed: listed))
+            out.append(Declaration(name: names[nameIndex], kind: kind, location: location,
+                                   isListed: listed && !regions.contains(location)))
         }
         return out
+    }
+
+    /// Ascending lookups of locations in ascending regions.
+    private struct RegionCursor {
+        let regions: [ScopeRecord]
+        var next = 0
+        init(_ regions: [ScopeRecord]) { self.regions = regions }
+        mutating func contains(_ location: Int) -> Bool {
+            while next < regions.count, regions[next].end < location { next += 1 }
+            guard next < regions.count else { return false }
+            let region = regions[next]
+            return region.start <= location && location <= region.end
+        }
     }
 
     /// The whole outline in pre-order (index 0 is the module scope).
@@ -407,6 +505,12 @@ public struct DeclarationScan: Sendable, Equatable {
     ///   lambda, comprehension or block scope (Python `self.x = …`, JS
     ///   `this.x = …` inside a method) is a class member, not a binding.
     /// - Languages without an outline: every declaration, depth 0.
+    /// - **Embedded regions** (T17.8c, HTML / Markdown): inside a region the
+    ///   child language's rules apply and the region is the top level (JS
+    ///   `var`, Python `global` stop there); the top-level bindings of every
+    ///   region of the same language are visible at the region's depth;
+    ///   other languages' regions are never visible, nor is any region from
+    ///   host text.
     ///
     /// Offsets refer to this scan's text version; mapping through later
     /// edits is the caller's job (T17.5: `DocumentAnalysis.publishedDeclarations`
@@ -448,8 +552,12 @@ public struct DeclarationScan: Sendable, Equatable {
     /// scope (served from `DeclarationQueryIndex.moduleBindings`).
     func sweepBindings(at offset: Int, chain: [ScopeRecord], start: SweepStart,
                        includeModule: Bool) -> [ScopedBinding] {
-        let python = languageIdentifier == "python"
-        let brace = BraceLanguage(identifier: languageIdentifier)
+        // Inside an embedded region the child's rules apply (T17.8c); only
+        // declarations of the same language can reach its chain.
+        let language = language(of: chain)
+        let python = language == "python"
+        let brace = BraceLanguage(identifier: language)
+        let top = Self.topLevelPosition(chain)
         let implicitMembers = brace?.implicitMembers ?? false
         // Chain position by scope index → depth (0 = innermost).
         var depthOf: [Int: Int] = [:]
@@ -503,31 +611,15 @@ public struct DeclarationScan: Sendable, Equatable {
             while let top = stack.last, !contains(top, location) { stack.removeLast() }
             guard !stack.isEmpty else { continue }
             // The scope the binding belongs to.
-            var owner = stack.count - 1
-            switch kind {
-            case .functionScopedVariable:
-                while owner > 0, stack[owner].kind != .function, stack[owner].kind != .lambda { owner -= 1 }
-            case .global:
-                owner = 0
-            case .nonlocal:
-                var o = owner
-                while o > 0, stack[o].kind != .function { o -= 1 }
-                o -= 1
-                while o > 0, stack[o].kind != .function { o -= 1 }
-                owner = max(0, o)
-            case .property:
-                // An instance attribute assigned inside a method (Python
-                // `self.x = …`, JS `this.x = …`; T17.5) is a member of the
-                // class, never a binding of the method or block.
-                switch stack[owner].kind {
-                case .function, .lambda, .comprehension, .block: continue
-                default: break
-                }
-            default:
-                break
+            guard let owner = Self.ownerPosition(of: kind, stack: stack) else { continue }
+            let floor = Self.topLevelPosition(stack)
+            if !includeModule, owner == floor { continue }
+            var ownerDepth = depthOf[stack[owner].index]
+            if ownerDepth == nil, top == 1, floor == 1, owner == 1, stack[1].name == chain[1].name {
+                // Another region of the caret's language: same top level.
+                ownerDepth = depthOf[chain[1].index]
             }
-            if !includeModule, stack[owner].index == 0 { continue }
-            guard let depth = depthOf[stack[owner].index] else { continue }
+            guard let depth = ownerDepth else { continue }
             // Class scope seen from inside a function.
             if chain[chain.count - 1 - depth].kind == .class, crossed[depth], !implicitMembers {
                 if python { continue }
@@ -556,6 +648,18 @@ public struct DeclarationScan: Sendable, Equatable {
     static func usesWalker(_ languageIdentifier: String) -> Bool {
         languageIdentifier == "python" || JavaScriptLanguage.lexicalProfile(forIdentifier: languageIdentifier) != nil
             || BraceLanguage(identifier: languageIdentifier) != nil
+    }
+
+    /// The lexical profile of an embedding host — a language whose profile
+    /// enters child languages (HTML, Markdown; T17.8c) — or nil. The host
+    /// itself declares nothing; each embedded region of a child with a
+    /// walker is walked by that child's walker.
+    static func embeddingProfile(_ languageIdentifier: String) -> LexicalProfile? {
+        switch languageIdentifier {
+        case "html": return HTMLLanguage.lexicalProfile
+        case "markdown": return MarkdownLanguage.lexicalProfile
+        default: return nil
+        }
     }
 
     /// Scans `text` for `languageIdentifier`'s declarations to completion.

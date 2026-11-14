@@ -97,6 +97,14 @@ public struct CandidateEngine {
     private var queryIndex: (version: UInt64, index: DeclarationQueryIndex)?
     private var scopeCache: ScopeInfo?
     private var previous: Pool?
+    /// Keywords and builtins of embedded child languages (T17.8c), read
+    /// from their definitions on first use; only the word lists are kept.
+    private var vocabularies: [String: Vocabulary] = [:]
+
+    struct Vocabulary {
+        let keywords: [String]
+        let builtins: [String]
+    }
 
     /// Diagnostics of the last request (tests, benchmarks).
     public private(set) var lastReusedMatches = false
@@ -119,10 +127,33 @@ public struct CandidateEngine {
         queryIndex = nil
         scopeCache = nil
         previous = nil
+        vocabularies = [:]
     }
 
     /// Whether any cache is held.
-    public var holdsState: Bool { queryIndex != nil || scopeCache != nil || previous != nil }
+    public var holdsState: Bool {
+        queryIndex != nil || scopeCache != nil || previous != nil || !vocabularies.isEmpty
+    }
+
+    /// The child languages whose vocabularies are cached (tests).
+    var cachedVocabularyLanguages: Set<String> { Set(vocabularies.keys) }
+
+    /// Approximate bytes held by the cached child vocabularies (reports).
+    var vocabularyBytes: Int {
+        vocabularies.reduce(0) { total, entry in
+            total + (entry.value.keywords + entry.value.builtins).reduce(16 * 2) { $0 + 16 + $1.utf8.count }
+        }
+    }
+
+    /// The keywords and builtins of child language `identifier`, built
+    /// from its definition on first use (T17.8c).
+    private mutating func vocabulary(for identifier: String) -> Vocabulary {
+        if let cached = vocabularies[identifier] { return cached }
+        let definition = LanguageRegistry.definition(forIdentifier: identifier)
+        let built = Vocabulary(keywords: definition?.keywords ?? [], builtins: definition?.builtins ?? [])
+        vocabularies[identifier] = built
+        return built
+    }
 
     // MARK: - Scanner
 
@@ -220,13 +251,23 @@ public struct CandidateEngine {
 
     /// Answers `request`; nil when no popup should show. `checkpoints` are
     /// the analysis scanner's checkpoints (`DocumentAnalysis.contextCheckpoints`).
+    ///
+    /// **Embedded languages** (T17.8c): `request.languageIdentifier` is the
+    /// document's; the engine reads the language at the caret from the host
+    /// scanner's state (`WindowScan.caretLanguage`) and every per-language
+    /// decision — keywords and builtins (a child's from its definition,
+    /// cached), `.` receivers, `$`, case, strings as content, the position
+    /// class — follows it. Scope bindings come from the caret's embedded
+    /// region (and the top level of the regions of the same language);
+    /// a snapshot whose region disagrees with the caret's language
+    /// contributes no names.
     public mutating func complete(_ request: CompletionRequest,
                                   checkpoints: inout CheckpointStore) -> CompletionResult? {
         lastReusedMatches = false
         let text = request.text
         let caret = request.caret
         guard caret >= 0, caret <= text.length else { return nil }
-        let language = request.languageIdentifier
+        let host = request.languageIdentifier
 
         // Snapshot, mapped caret and scope.
         let index = index(for: request)
@@ -242,10 +283,30 @@ public struct CandidateEngine {
             functionLive = NSRange(location: start, length: end - start)
         }
 
-        // Window scan: position class, nearby words.
-        let scanner = language.isEmpty ? nil : request.scanner
-        let window = WindowScan.run(text: text, caret: caret, languageIdentifier: language, scanner: scanner,
+        // Window scan: the caret's language and position class, nearby words.
+        let scanner = host.isEmpty ? nil : request.scanner
+        let window = WindowScan.run(text: text, caret: caret, languageIdentifier: host, scanner: scanner,
                                     functionRange: functionLive, checkpoints: &checkpoints)
+        let caretLanguage = window.language
+        let language = caretLanguage.identifier
+        // The snapshot's region at the caret must be the caret's language
+        // (else a stale snapshot, or a caret on a region's edge): then no
+        // scope, and in a child body only the top-level names of that
+        // language's regions (T17.8c; also without a mappable caret).
+        var group: Int32? = -1
+        if let index, let info = scope,
+           index.regionLanguage(of: info.chain) == (caretLanguage.embed != 0 ? language : nil) {
+            group = index.topLevelGroup(of: info.chain)
+        } else {
+            scope = nil
+            if caretLanguage.embed != 0 { group = index?.topLevelGroup(language: language) }
+        }
+        var request = request
+        if caretLanguage.embed != 0 {
+            let vocabulary = vocabulary(for: language)
+            request.keywords = vocabulary.keywords
+            request.builtins = vocabulary.builtins
+        }
         guard let context = CompletionContext.make(text: text, caret: caret, languageIdentifier: language,
                                                    position: window.position) else { return nil }
         let prefix = context.prefix
@@ -277,7 +338,8 @@ public struct CandidateEngine {
             lastReusedMatches = true
         } else {
             var gathered = Gathered()
-            gather(request, context: context, index: index, scope: &scope, mappedCaret: mappedCaret,
+            gather(request, context: context, caretLanguage: caretLanguage, index: index, group: group,
+                   scope: &scope, mappedCaret: mappedCaret,
                    functionLive: functionLive, matcher: matcher, codeLike: codeLike,
                    nearbyNames: Array(window.words.keys), checkpoints: &checkpoints, into: &gathered)
             items = gathered.items
@@ -392,7 +454,8 @@ public struct CandidateEngine {
 
     // swiftlint:disable:next function_parameter_count function_body_length cyclomatic_complexity
     private func gather(_ request: CompletionRequest, context: CompletionContext,
-                        index: DeclarationQueryIndex?, scope: inout ScopeInfo?, mappedCaret: Int?,
+                        caretLanguage: CompletionContext.CaretLanguage,
+                        index: DeclarationQueryIndex?, group: Int32?, scope: inout ScopeInfo?, mappedCaret: Int?,
                         functionLive: NSRange?, matcher: CandidateMatcher, codeLike: Bool,
                         nearbyNames: [String], checkpoints: inout CheckpointStore, into out: inout Gathered) {
         let journal = request.snapshotJournal
@@ -427,6 +490,7 @@ public struct CandidateEngine {
                 let from = max(functionLive?.location ?? 0, range.location - Self.usageWindowUnits)
                 let usage = UsageScan.run(text: request.text, receiver: receiver, from: from, to: range.location,
                                           languageIdentifier: request.languageIdentifier,
+                                          caretLanguage: caretLanguage,
                                           scanner: request.languageIdentifier.isEmpty ? nil : request.scanner,
                                           checkpoints: &checkpoints)
                 for hit in usage {
@@ -454,10 +518,12 @@ public struct CandidateEngine {
                                             location: live(binding.location), fuzzy: true))
             }
         }
-        let atModuleLevel = (scope?.chain.count ?? 1) <= 1
+        // The top level: the module, or the caret's embedded region (T17.8c).
+        let top = (group ?? -1) >= 0 ? 1 : 0
+        let atModuleLevel = (scope?.chain.count ?? top + 1) <= top + 1
         let emptyManual = prefixLength == 0
-        // Module-level declarations.
-        if let index, !emptyManual || atModuleLevel {
+        // Module-level declarations (the region language's top level).
+        if let index, let group, !emptyManual || atModuleLevel {
             func visible(_ binding: DeclarationQueryIndex.ModuleBinding) -> Bool {
                 guard let mappedCaret, let scope else { return true }
                 return index.moduleVisible(binding, at: mappedCaret, chain: scope.chain)
@@ -469,15 +535,15 @@ public struct CandidateEngine {
                                             location: mappedCaret == nil ? nil : live(binding.location),
                                             fuzzy: fuzzy))
             }
-            let count = index.moduleBindingCount
+            let count = index.moduleBindingCount(group: group)
             if count <= Self.fuzzyLimit {
-                for i in 0..<count { append(index.moduleBinding(at: i), fuzzy: true) }
+                for i in 0..<count { append(index.moduleBinding(at: i, group: group), fuzzy: true) }
             } else {
                 // Bounded: the head of the prefix range (dictionary order, so
                 // the first matches per tier are the best-ranked ones), names
                 // used near the caret or recently accepted (they may rank
                 // higher), then word-start through the word index's initials.
-                let range = index.moduleRange(loweredPrefix: matcher.folded)
+                let range = index.moduleRange(loweredPrefix: matcher.folded, group: group)
                 var exact = 0
                 var other = 0
                 var scanned = 0
@@ -488,7 +554,7 @@ public struct CandidateEngine {
                         break
                     }
                     scanned += 1
-                    let binding = index.moduleBinding(at: i)
+                    let binding = index.moduleBinding(at: i, group: group)
                     if binding.name.hasPrefix(context.prefix) {
                         guard exact < Self.wordMatchLimit else { continue }
                         exact += 1
@@ -501,13 +567,15 @@ public struct CandidateEngine {
                 let first = matcher.folded.first
                 for name in nearbyNames + request.recent.entries.map(\.name)
                 where name.utf16.first.map(CaseFold.fold) == first && matcher.match(name, allowFuzzy: false) != nil {
-                    if let binding = index.moduleBinding(named: name) { append(binding, fuzzy: false) }
+                    if let binding = index.moduleBinding(named: name, group: group) { append(binding, fuzzy: false) }
                 }
                 if let words = request.words, matcher.folded.count >= 2 {
                     let initials = words.initialsMatches(matcher.folded, limit: Self.wordMatchLimit)
                     if initials.truncated { out.truncated = true }
                     for id in initials.ids {
-                        if let binding = index.moduleBinding(named: words.word(id)) { append(binding, fuzzy: false) }
+                        if let binding = index.moduleBinding(named: words.word(id), group: group) {
+                            append(binding, fuzzy: false)
+                        }
                     }
                 }
             }
@@ -666,14 +734,77 @@ struct WindowScan {
         return best
     }
 
-    var position: CompletionContext.Position
+    /// The language at the caret and its position class (T17.8c).
+    var language: CompletionContext.CaretLanguage
+    var position: CompletionContext.Position { language.position }
     var words: [String: Hit]
+
+    /// The host scanner's state at `from` (≤ `caret`): resumed from the
+    /// nearest checkpoint at a line start or, inside a long line, a safe
+    /// point at or before it — falling back to the caret's line start when
+    /// that point lies past the caret. Returns the position reached.
+    static func resume(text: NSString, at from: Int, caret: Int, hostIdentifier: String, scanner: LexicalScanner,
+                       checkpoints: inout CheckpointStore) -> (position: Int, state: LexicalScanState) {
+        let ls = text.lineRange(for: NSRange(location: from, length: 0)).location
+        var resume = HighlightEngine.resumeLexicalState(
+            at: from - ls > CheckpointStore.spacing ? from : ls, in: text,
+            languageIdentifier: hostIdentifier, initial: LexicalScanState(), checkpoints: &checkpoints,
+            unwrap: { if case .generic(let s) = $0 { return s } else { return nil } },
+            wrap: { .generic($0) },
+            advance: { a, b, state in scanner.advance(text, from: a, to: b, state: &state) },
+            advanceToSafePoint: { a, b, target, state in
+                scanner.advance(text, from: a, to: b, stoppingAtSafePointFrom: target, state: &state)
+            })
+        if resume.position > caret {
+            let caretLine = text.lineRange(for: NSRange(location: caret, length: 0)).location
+            resume = HighlightEngine.resumeLexicalState(
+                at: caretLine, in: text, languageIdentifier: hostIdentifier, initial: LexicalScanState(),
+                checkpoints: &checkpoints,
+                unwrap: { if case .generic(let s) = $0 { return s } else { return nil } },
+                wrap: { .generic($0) },
+                advance: { a, b, state in scanner.advance(text, from: a, to: b, state: &state) })
+        }
+        return resume
+    }
+
+    /// The language at `caret` (T17.8c) — the helper the controller shares
+    /// with the engine: the host's (`hostIdentifier`) unless the host
+    /// scanner's state there is inside an embedded body of a known language.
+    static func caretLanguage(text: NSString, caret: Int, hostIdentifier: String, scanner: LexicalScanner?,
+                              checkpoints: inout CheckpointStore) -> CompletionContext.CaretLanguage {
+        guard !hostIdentifier.isEmpty, let scanner, caret >= 0, caret <= text.length else {
+            return .unscanned(hostIdentifier)
+        }
+        let resume = Self.resume(text: text, at: caret, caret: caret, hostIdentifier: hostIdentifier, scanner: scanner,
+                            checkpoints: &checkpoints)
+        var state = resume.state
+        if resume.position < caret { scanner.advance(text, from: resume.position, to: caret, state: &state) }
+        return CompletionContext.caretLanguage(of: state, hostIdentifier: hostIdentifier, scanner: scanner)
+    }
+
+    /// Code ranges of `runs` for a caret in `embed`: inside a child body
+    /// only the child's runs (T17.8c); in the host every language's, adjacent
+    /// runs of one kind merged (as a scan without languages reports them).
+    static func codeRanges(_ runs: [(NSRange, LexicalSegment, Int)], embed: Int) -> [NSRange] {
+        var out: [NSRange] = []
+        var lastKind: LexicalSegment?
+        for (range, segment, language) in runs where CompletionContext.isCode(segment) {
+            if embed != 0 {
+                guard language == embed else { continue }
+            } else if let last = out.last, lastKind == segment, NSMaxRange(last) == range.location {
+                out[out.count - 1].length += range.length
+                continue
+            }
+            out.append(range)
+            lastKind = segment
+        }
+        return out
+    }
 
     // swiftlint:disable:next function_body_length
     static func run(text: NSString, caret: Int, languageIdentifier: String, scanner: LexicalScanner?,
                     functionRange: NSRange?, checkpoints: inout CheckpointStore) -> WindowScan {
         let length = text.length
-        let dollar = IdentifierText.allowsDollar(languageIdentifier)
         // Window bounds.
         var lineStart = caret
         var lines = 0
@@ -713,55 +844,50 @@ struct WindowScan {
         }
         start = max(0, start)
         end = min(length, end)
+
+        var codeRanges: [NSRange] = []
+        var language = CompletionContext.CaretLanguage.unscanned(languageIdentifier)
+        if let scanner {
+            // Resume at a line start / safe point at or before `start`.
+            let resume = Self.resume(text: text, at: start, caret: caret, hostIdentifier: languageIdentifier,
+                                scanner: scanner, checkpoints: &checkpoints)
+            var state = resume.state
+            let from = min(resume.position, caret)
+            if scanner.hasEmbeddedLanguages {
+                // T17.8c: the caret's language decides which runs count.
+                var before: [(NSRange, LexicalSegment, Int)] = []
+                scanner.segments(text, from: from, to: caret, state: &state) { before.append(($0, $1, $2)) }
+                language = CompletionContext.caretLanguage(of: state, hostIdentifier: languageIdentifier,
+                                                           scanner: scanner)
+                var after: [(NSRange, LexicalSegment, Int)] = []
+                if end > caret {
+                    scanner.segments(text, from: caret, to: end, state: &state) { after.append(($0, $1, $2)) }
+                }
+                codeRanges = Self.codeRanges(before, embed: language.embed)
+                    + Self.codeRanges(after, embed: language.embed)
+            } else {
+                scanner.segments(text, from: from, to: caret, state: &state) { range, segment in
+                    if CompletionContext.isCode(segment) { codeRanges.append(range) }
+                }
+                language = CompletionContext.caretLanguage(of: state, hostIdentifier: languageIdentifier,
+                                                           scanner: scanner)
+                if end > caret {
+                    scanner.segments(text, from: caret, to: end, state: &state) { range, segment in
+                        if CompletionContext.isCode(segment) { codeRanges.append(range) }
+                    }
+                }
+            }
+        } else {
+            codeRanges = [NSRange(location: start, length: end - start)]
+        }
+        let dollar = IdentifierText.allowsDollar(language.identifier)
         // The caret's identifier (skipped as an occurrence).
         let identifierStart = IdentifierText.runStart(before: caret, in: text, dollar: dollar) ?? caret
         let identifierEnd = IdentifierText.runEnd(after: caret, in: text, dollar: dollar)
 
-        var codeRanges: [NSRange] = []
-        var position: CompletionContext.Position
-        if let scanner {
-            // Resume at a line start / safe point at or before `start`.
-            let ls = text.lineRange(for: NSRange(location: start, length: 0)).location
-            var resume = HighlightEngine.resumeLexicalState(
-                at: start - ls > CheckpointStore.spacing ? start : ls, in: text,
-                languageIdentifier: languageIdentifier, initial: LexicalScanState(), checkpoints: &checkpoints,
-                unwrap: { if case .generic(let s) = $0 { return s } else { return nil } },
-                wrap: { .generic($0) },
-                advance: { from, to, state in scanner.advance(text, from: from, to: to, state: &state) },
-                advanceToSafePoint: { from, to, target, state in
-                    scanner.advance(text, from: from, to: to, stoppingAtSafePointFrom: target, state: &state)
-                })
-            if resume.position > caret {
-                let caretLine = text.lineRange(for: NSRange(location: caret, length: 0)).location
-                resume = HighlightEngine.resumeLexicalState(
-                    at: caretLine, in: text, languageIdentifier: languageIdentifier, initial: LexicalScanState(),
-                    checkpoints: &checkpoints,
-                    unwrap: { if case .generic(let s) = $0 { return s } else { return nil } },
-                    wrap: { .generic($0) },
-                    advance: { from, to, state in scanner.advance(text, from: from, to: to, state: &state) })
-            }
-            var state = resume.state
-            let from = min(resume.position, caret)
-            scanner.segments(text, from: from, to: caret, state: &state) { range, segment in
-                if CompletionContext.isCode(segment) { codeRanges.append(range) }
-            }
-            position = CompletionContext.position(of: state)
-            if position == .string, CompletionContext.stringsAreContent(languageIdentifier) {
-                position = .plainText
-            }
-            if end > caret {
-                scanner.segments(text, from: caret, to: end, state: &state) { range, segment in
-                    if CompletionContext.isCode(segment) { codeRanges.append(range) }
-                }
-            }
-        } else {
-            position = languageIdentifier.isEmpty ? .plainText : .code
-            codeRanges = [NSRange(location: start, length: end - start)]
-        }
-
         // Identifiers in the code ranges.
         var words: [String: Hit] = [:]
-        guard end > start else { return WindowScan(position: position, words: words) }
+        guard end > start else { return WindowScan(language: language, words: words) }
         let base = start
         var buffer = [UInt16](repeating: 0, count: end - start)
         buffer.withUnsafeMutableBufferPointer { pointer in
@@ -826,7 +952,7 @@ struct WindowScan {
                 words[name] = hit
             }
         }
-        return WindowScan(position: position, words: words)
+        return WindowScan(language: language, words: words)
     }
 
     static func scalar(_ buffer: [UInt16], _ i: Int, _ stop: Int) -> (Unicode.Scalar, Int) {
@@ -858,10 +984,15 @@ enum UsageScan {
         var stale: Bool
     }
 
+    /// `languageIdentifier`: the host's (the scanner's checkpoints);
+    /// `caretLanguage`: the language at the caret (T17.8c) — its `$` rule,
+    /// and inside a child body only that child's runs count.
     static func run(text: NSString, receiver: String, from: Int, to: Int, languageIdentifier: String,
+                    caretLanguage: CompletionContext.CaretLanguage? = nil,
                     scanner: LexicalScanner?, checkpoints: inout CheckpointStore) -> [Hit] {
         guard to > from, !receiver.isEmpty else { return [] }
-        let dollar = IdentifierText.allowsDollar(languageIdentifier)
+        let dollar = IdentifierText.allowsDollar(caretLanguage?.identifier ?? languageIdentifier)
+        let embed = caretLanguage?.embed ?? 0
         var codeRanges: [NSRange] = []
         if let scanner {
             let ls = text.lineRange(for: NSRange(location: from, length: 0)).location
@@ -876,8 +1007,14 @@ enum UsageScan {
                 })
             guard resume.position < to else { return [] }
             var state = resume.state
-            scanner.segments(text, from: resume.position, to: to, state: &state) { range, segment in
-                if CompletionContext.isCode(segment) { codeRanges.append(range) }
+            if embed != 0 {
+                var runs: [(NSRange, LexicalSegment, Int)] = []
+                scanner.segments(text, from: resume.position, to: to, state: &state) { runs.append(($0, $1, $2)) }
+                codeRanges = WindowScan.codeRanges(runs, embed: embed)
+            } else {
+                scanner.segments(text, from: resume.position, to: to, state: &state) { range, segment in
+                    if CompletionContext.isCode(segment) { codeRanges.append(range) }
+                }
             }
         } else {
             codeRanges = [NSRange(location: from, length: to - from)]
