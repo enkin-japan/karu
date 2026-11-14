@@ -40,9 +40,20 @@ public protocol FoldStatusProviding: AnyObject {
 ///   (`shouldSetLineFragmentRect`). Because the text and therefore the shared
 ///   `LineIndex` are untouched, line numbers and syntax highlight stay correct
 ///   whether or not anything is folded.
-/// - **Transient, not resident** (ARCHITECTURE.md §3.4): foldable regions are
-///   scanned on demand via `FoldScanner` and cached only until the next edit;
-///   the active-fold set is tiny.
+/// - **Never a whole-document scan on the draw path** (first-paint fix): the
+///   gutter asks `foldState(atLine:)` per visible line. Until the full scan for
+///   the current text is published, those answers come from small *windows*
+///   (128 header lines, `FoldScanner.window`) computed on demand with a fixed
+///   work budget — exact for every line they resolve, "no marker yet" for the
+///   rest. The full scan runs as a resumable `FoldScan` in ~4 ms main-thread
+///   slices on `AnalysisScheduler` (decision D), started on first use and
+///   restarted (debounced) after each character edit; a completed scan is
+///   published only for the text version it started on, then serves every
+///   query by binary search. Operations that need the whole set (fold all,
+///   fold current) finish the in-flight scan synchronously.
+/// - **Transient, not resident** (ARCHITECTURE.md §3.4): the scanned regions
+///   (8 bytes each) are kept only until the next edit; the active-fold set is
+///   tiny.
 /// - It registers on the shared `TextStorageObserverHub` purely to notice
 ///   *character* edits and drop stale fold state; it never writes to storage, so
 ///   it does not perturb the gutter or highlighter (both ignore
@@ -74,13 +85,44 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
     /// on every draw — is a binary search rather than a scan of every fold.
     private var hiddenLineIntervals: [(lower: Int, upper: Int)] = []
 
-    /// Cached foldable regions for the current text (`nil` = needs rescanning).
+    /// Foldable regions of the current text in scanner order (sorted by start,
+    /// then end line), or `nil` while the full scan for this text version has
+    /// not been published. Binary-searched by `foldState(atLine:)`.
     private var cachedRegions: [FoldRegion]?
 
-    /// Cached set of the header (start) lines of `cachedRegions`, so
-    /// `foldState(atLine:)` — called per gutter line on every draw — is an O(1)
-    /// membership test. Invalidated together with `cachedRegions`.
-    private var cachedStartLines: Set<Int>?
+    /// The published full-scan regions (`nil` while none is current). Tests /
+    /// diagnostics.
+    var publishedRegions: [FoldRegion]? { cachedRegions }
+
+    /// Called after each scheduler slice of the full scan (tests: lets an edit
+    /// land deterministically mid-scan).
+    var scanSliceObserver: (() -> Void)?
+
+    /// Bumped on every character edit and language change; a scan publishes
+    /// only if the version it started on is still current.
+    private var textVersion: UInt64 = 0
+
+    /// The in-flight full scan and its scheduler job (both `nil` when idle).
+    private var pendingScan: (scan: FoldScan, version: UInt64)?
+    private var scanJob: AnalysisJob?
+
+    /// Bounded per-window results serving `foldState` until the full scan is
+    /// published. A handful of recent windows; cleared on edits and on publish.
+    private var windows: [FoldWindow] = []
+
+    /// Header lines per window, and the work budget (UTF-16 units examined)
+    /// one window computation may spend — roughly a millisecond or two.
+    static let windowLineCount = 128
+    static let windowBudget = 1_000_000
+    private static let maxCachedWindows = 8
+
+    /// Debounce before rescanning after an edit (typing restarts it).
+    static let rescanDelay: TimeInterval = 0.25
+
+    private let scheduler: AnalysisScheduler
+
+    /// Scan statistics for PerfLog (`fold.scan`).
+    private var scanStats = (start: UInt64(0), busy: UInt64(0), slices: 0, maxSlice: UInt64(0))
 
     /// Supplies the document's current language identifier (`""` = plain), read
     /// lazily at scan time so folding never caches a language that a manual
@@ -88,48 +130,168 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
     /// to pick its rule set (markdown folds by heading / code fence, T13.4).
     public var languageProvider: (() -> String)?
 
-    public init(textView: NSTextView, lineIndex: LineIndex) {
+    public init(textView: NSTextView, lineIndex: LineIndex,
+                scheduler: AnalysisScheduler = .shared) {
         self.textView = textView
         self.lineIndex = lineIndex
+        self.scheduler = scheduler
         super.init()
+    }
+
+    /// The text storage's backing string as an `NSString`, read in place by
+    /// the scanner (no bridging through a Swift `String`).
+    private var storageString: NSString? {
+        textView?.textStorage?.mutableString
     }
 
     // MARK: - Foldable-region cache
 
-    /// All foldable regions for the current text, scanned lazily and cached
-    /// until the next character edit.
+    /// All foldable regions for the current text, in scanner order. Returns the
+    /// published scan, or finishes the in-flight scan (or a fresh one)
+    /// synchronously — only user commands that need the whole set call this,
+    /// never the draw path.
     ///
-    /// A rescan is also the trigger for the T12.13 **lazy validation** pass: any
-    /// active fold whose header line is no longer the start of a scanned region
-    /// with the same end line has become stale (typically because an edit to the
-    /// header line itself destroyed its foldability without touching the hidden
-    /// body, which the offset-shift maintenance in `textStorageDidProcessEditing`
-    /// cannot notice) and is dropped, with a targeted invalidation of just its
-    /// range.
+    /// Publishing a scan is also the trigger for the T12.13 **lazy validation**
+    /// pass: any active fold whose header line is no longer the start of a
+    /// scanned region with the same end line has become stale (typically because
+    /// an edit to the header line itself destroyed its foldability without
+    /// touching the hidden body, which the offset-shift maintenance in
+    /// `textStorageDidProcessEditing` cannot notice) and is dropped, with a
+    /// targeted invalidation of just its range.
     private func regions() -> [FoldRegion] {
         if let cachedRegions { return cachedRegions }
-        guard let textView else { return [] }
-        let scanned = FoldScanner.regions(text: textView.string,
-                                          lineIndex: lineIndex,
-                                          language: languageProvider?() ?? "")
-        cachedRegions = scanned
-        cachedStartLines = Set(scanned.map { $0.startLine })
-        validateActiveFolds(against: scanned)
-        return scanned
+        guard let ns = storageString else { return [] }
+        let scan: FoldScan
+        if let pending = pendingScan, pending.version == textVersion, !pending.scan.isAborted {
+            scan = pending.scan
+        } else if let fresh = FoldScan(ns: ns, lineIndex: lineIndex, language: languageProvider?() ?? "") {
+            scan = fresh
+            beginScanStats()
+        } else {
+            return [] // string / index transiently out of sync: try again later
+        }
+        let begin = PerfLog.isEnabled ? PerfLog.now() : 0
+        scan.advance()
+        if PerfLog.isEnabled { noteSlice(PerfLog.now() &- begin) }
+        cancelScan() // finished here; the queued job has nothing left to do
+        publish(scan, version: textVersion)
+        return cachedRegions ?? []
+    }
+
+    /// Starts the sliced full scan for the current text unless it is already
+    /// published or in flight.
+    private func ensureScanScheduled(after delay: TimeInterval = 0) {
+        guard cachedRegions == nil else { return }
+        if let pending = pendingScan, pending.version == textVersion,
+           let job = scanJob, !job.isCancelled { return }
+        guard let ns = storageString,
+              let scan = FoldScan(ns: ns, lineIndex: lineIndex, language: languageProvider?() ?? "") else { return }
+        let version = textVersion
+        pendingScan = (scan, version)
+        beginScanStats()
+        let job = AnalysisJob(owner: ObjectIdentifier(self), version: version,
+                              step: { [weak self] deadline in
+                                  // Captures only the scan: a stale or orphaned
+                                  // job just finishes (a mismatch aborts it).
+                                  let begin = DispatchTime.now().uptimeNanoseconds
+                                  let done = scan.advance(deadline: deadline)
+                                  if PerfLog.isEnabled {
+                                      self?.noteSlice(DispatchTime.now().uptimeNanoseconds &- begin)
+                                  }
+                                  self?.scanSliceObserver?()
+                                  return done
+                              },
+                              completion: { [weak self] in
+                                  self?.publish(scan, version: version)
+                              },
+                              isInKeyWindow: { [weak self] in self?.textView?.window?.isKeyWindow ?? false })
+        scanJob = job
+        scheduler.schedule(job, after: delay)
+    }
+
+    /// Cancels the in-flight scan (its results would describe stale text).
+    private func cancelScan() {
+        if scanJob != nil { scheduler.cancel(owner: ObjectIdentifier(self)) }
+        scanJob = nil
+        pendingScan = nil
+    }
+
+    /// Adopts a finished scan if it still describes the current text, then
+    /// validates the active folds against it and repaints the markers.
+    private func publish(_ scan: FoldScan, version: UInt64) {
+        if pendingScan?.scan === scan {
+            pendingScan = nil
+            scanJob = nil
+        }
+        guard version == textVersion, scan.isFinished, !scan.isAborted, cachedRegions == nil else { return }
+        let regions = scan.regions
+        cachedRegions = regions
+        windows = []
+        if PerfLog.isEnabled {
+            let s = scanStats
+            PerfLog.record("fold.scan", durationSeconds: Double(s.busy) / 1e9,
+                           ["lines": lineIndex.lineCount, "regions": regions.count, "slices": s.slices,
+                            "maxSliceMs": String(format: "%.2f", Double(s.maxSlice) / 1e6),
+                            "wallMs": String(format: "%.1f", Double(PerfLog.now() &- s.start) / 1e6)])
+        }
+        validateActiveFolds(against: regions)
+        textView?.enclosingScrollView?.verticalRulerView?.needsDisplay = true
+    }
+
+    private func beginScanStats() {
+        scanStats = (PerfLog.isEnabled ? PerfLog.now() : 0, 0, 0, 0)
+    }
+
+    private func noteSlice(_ ns: UInt64) {
+        scanStats.busy &+= ns
+        scanStats.slices += 1
+        scanStats.maxSlice = max(scanStats.maxSlice, ns)
+    }
+
+    /// The bounded window holding `line`'s fold state, computed on demand and
+    /// cached until the next edit or publish. `nil` when the string and index
+    /// are transiently out of sync.
+    private func window(containing line: Int) -> FoldWindow? {
+        let size = Self.windowLineCount
+        let first = (line - 1) / size * size + 1
+        if let hit = windows.first(where: { $0.lines.lowerBound == first }) { return hit }
+        guard let ns = storageString, ns.length == lineIndex.length else { return nil }
+        let last = min(lineIndex.lineCount, first + size - 1)
+        guard first <= last else { return nil }
+        let begin = PerfLog.isEnabled ? PerfLog.now() : 0
+        let computed = FoldScanner.window(in: ns, lineIndex: lineIndex, language: languageProvider?() ?? "",
+                                          lines: first...last, budget: Self.windowBudget)
+        if PerfLog.isEnabled {
+            PerfLog.record("fold.window", since: begin,
+                           ["first": first, "complete": computed.isComplete, "regions": computed.regions.count])
+        }
+        windows.append(computed)
+        if windows.count > Self.maxCachedWindows { windows.removeFirst() }
+        // A window is exact for the lines it resolves, so it can already run
+        // the lazy validation for folds headed there (an edit that broke a
+        // folded header is noticed at the next draw, not only at publish).
+        validateActiveFolds { header, region in
+            !computed.isResolved(header) || computed.regions.containsSorted(region)
+        }
+        return computed
     }
 
     /// Drops any active fold that no longer corresponds to a scanned region
-    /// (same header line *and* end line). Runs during a rescan, which can
-    /// happen inside a gutter draw — so state is corrected immediately, but the
-    /// layout invalidation is pushed to the next runloop turn (mutating the
-    /// layout manager mid-draw is the same hazard class as doing it inside
-    /// processEditing; see the crash-hardening note in
+    /// (same header line *and* end line). Runs when a scan is published or a
+    /// window is computed, which can happen inside a gutter draw — so state is
+    /// corrected immediately, but the layout invalidation is pushed to the next
+    /// runloop turn (mutating the layout manager mid-draw is the same hazard
+    /// class as doing it inside processEditing; see the crash-hardening note in
     /// `textStorageDidProcessEditing`).
     private func validateActiveFolds(against scanned: [FoldRegion]) {
+        validateActiveFolds { _, region in scanned.containsSorted(region) }
+    }
+
+    /// Drops every active fold for which `isValid(header, region)` is false.
+    private func validateActiveFolds(_ isValid: (_ header: Int, _ region: FoldRegion) -> Bool) {
         guard !activeFolds.isEmpty else { return }
-        let valid = Set(scanned.map { [$0.startLine, $0.endLine] })
         var dirty: [NSRange] = []
-        for (header, region) in activeFolds where !valid.contains([region.startLine, region.endLine]) {
+        for (header, region) in activeFolds where !isValid(header, region) {
             dirty.append(hiddenCharRange(for: region))
             activeFolds[header] = nil
         }
@@ -141,11 +303,14 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
         }
     }
 
-    /// Invalidates both region caches. Called on every character edit (the
-    /// scanned regions and their line numbers may both have moved).
+    /// Drops the scanned regions, the windows and any in-flight scan. Called on
+    /// every character edit (the regions and their line numbers may both have
+    /// moved) and on a language change.
     private func invalidateRegionCache() {
+        textVersion &+= 1
         cachedRegions = nil
-        cachedStartLines = nil
+        windows = []
+        cancelScan()
     }
 
     /// Tells folding the document's language changed (open, manual pick, or
@@ -153,9 +318,11 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
     /// are dropped and the gutter redraws with the new arrows. Nothing else needs
     /// invalidating: a language switch leaves the text, and therefore the layout,
     /// untouched. Active folds are kept as they are; the lazy `validateActiveFolds`
-    /// pass on the next scan discards any that the new rules no longer produce.
+    /// pass on the next published scan discards any that the new rules no longer
+    /// produce.
     public func noteLanguageChanged() {
         invalidateRegionCache()
+        ensureScanScheduled()
         textView?.needsDisplay = true
         textView?.enclosingScrollView?.verticalRulerView?.needsDisplay = true
     }
@@ -175,16 +342,35 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
         return false
     }
 
+    /// Called per visible line on every gutter draw, so it never scans the
+    /// whole document: the published scan answers by binary search; before
+    /// that, a bounded window does (unresolved lines draw no marker until the
+    /// sliced scan lands, which repaints the ruler).
     public func foldState(atLine line: Int) -> FoldArrow {
-        guard startLineSet().contains(line) else { return .none }
-        return activeFolds[line] != nil ? .folded : .foldable
+        let folded = activeFolds[line] != nil
+        if let cachedRegions {
+            guard cachedRegions.firstRegion(startingAt: line) != nil else { return .none }
+            return folded ? .folded : .foldable
+        }
+        ensureScanScheduled()
+        guard let window = window(containing: line), window.isResolved(line) else {
+            // Unknown yet: keep showing an existing fold's control (validation
+            // on publish drops it if it went stale).
+            return folded ? .folded : .none
+        }
+        guard window.regions.firstRegion(startingAt: line) != nil else { return .none }
+        return folded ? .folded : .foldable
     }
 
-    /// Header lines of the current foldable regions, cached alongside the scan.
-    private func startLineSet() -> Set<Int> {
-        if let cachedStartLines { return cachedStartLines }
-        _ = regions() // populates cachedStartLines (and runs lazy validation)
-        return cachedStartLines ?? []
+    /// The narrowest region headed by `line`, without forcing a full scan:
+    /// from the published scan, else from `line`'s window when it resolves it.
+    private func region(startingAt line: Int) -> FoldRegion? {
+        if let cachedRegions { return cachedRegions.firstRegion(startingAt: line) }
+        ensureScanScheduled()
+        if let window = window(containing: line), window.isResolved(line) {
+            return window.regions.firstRegion(startingAt: line)
+        }
+        return regions().firstRegion(startingAt: line)
     }
 
     public func toggleFold(atLine line: Int) {
@@ -192,7 +378,7 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
         if let folded = activeFolds[line] {
             region = folded
             activeFolds[line] = nil
-        } else if let scanned = regions().first(where: { $0.startLine == line }) {
+        } else if let scanned = self.region(startingAt: line) {
             region = scanned
             activeFolds[line] = scanned
         } else {
@@ -314,7 +500,7 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
     private func applyInvalidation(_ ranges: [NSRange], ensureLayout: Bool) {
         guard let layoutManager = textView?.layoutManager,
               let container = textView?.textContainer else { return }
-        let docLen = (textView?.string as NSString?)?.length ?? 0
+        let docLen = textView?.textStorage?.length ?? 0
         var earliest = Int.max
         for r in ranges {
             let lo = max(0, r.location)
@@ -426,12 +612,15 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
                                              textStorage: NSTextStorage) {
         guard editedMask.contains(.editedCharacters) else { return }
         invalidateRegionCache()
+        // Queueing a job is not a layout / display mutation, so it is safe
+        // inside processEditing; the debounce keeps typing from rescanning.
+        ensureScanScheduled(after: Self.rescanDelay)
         guard !activeFolds.isEmpty else { return }
 
         let editStart = editedRange.location
         let newEditEnd = editedRange.location + editedRange.length
         let oldEditEnd = editStart + (editedRange.length - delta) // edit end in PRE-edit coords
-        let newLen = (textStorage.string as NSString).length
+        let newLen = textStorage.length
 
         var newActive: [Int: FoldRegion] = [:]
         var dirty: [NSRange] = []
@@ -520,7 +709,8 @@ public final class FoldingController: NSObject, NSLayoutManagerDelegate, TextSto
             // line (user bug, 2026-07-28, debug/test.json). Keeping the breaks
             // preserves one fragment per hidden line, each fully hidden and
             // safely collapsible.
-            let ns = (layoutManager.textStorage?.string ?? "") as NSString
+            // The backing string as an `NSString`, without a `String` bridge.
+            guard let ns = layoutManager.textStorage?.mutableString else { return 0 }
             let count = glyphRange.length
             var modified = false
             let newProps = UnsafeMutablePointer<NSLayoutManager.GlyphProperty>.allocate(capacity: count)

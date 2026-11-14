@@ -2,6 +2,13 @@
 # Karu 内存基准脚本（T5.1）
 # 对照 docs/ARCHITECTURE.md §1 硬性预算表，采样 .build/release/KaruApp
 # 在若干场景下的 phys_footprint 常驻内存，并输出对照报告。
+#
+# 稳定采样：每轮启动后持续轮询 phys_footprint，直到最近 2 s 内的读数
+# 波动不超过 0.5 MB 才取值（最长等 20 s；超时取最后读数并标注“未稳定”），
+# 并输出读数稳定的时刻（距启动秒数）。固定 3 s 采样会随启动时序落在一次
+# 数十 MB 阶跃之前或之后，造成假回归。可用环境变量调整：
+#   KARU_BENCH_STABLE_SECONDS（默认 2）、KARU_BENCH_STABLE_TOLERANCE_KB（默认 512）、
+#   KARU_BENCH_MAX_WAIT_SECONDS（默认 20）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -98,10 +105,12 @@ fi
 sample_phys_footprint_kb() {
     local pid="$1"
     local kb=""
-    kb=$(footprint "$pid" 2>/dev/null | awk '
+    # -f bytes：默认格式按整 MB 取整，稳定判定需要更细的读数。
+    kb=$(footprint -f bytes --noCategories "$pid" 2>/dev/null | awk '
         /phys_footprint:/ {
             val = $2; unit = $3
-            if (unit == "MB") val = val * 1024
+            if (unit == "B") val = int(val / 1024)
+            else if (unit == "MB") val = val * 1024
             else if (unit == "GB") val = val * 1024 * 1024
             print val
             exit
@@ -120,7 +129,52 @@ sample_phys_footprint_kb() {
     return 1
 }
 
+STABLE_SECONDS="${KARU_BENCH_STABLE_SECONDS:-2}"
+STABLE_TOLERANCE_KB="${KARU_BENCH_STABLE_TOLERANCE_KB:-512}"
+MAX_WAIT_SECONDS="${KARU_BENCH_MAX_WAIT_SECONDS:-20}"
+
+now_seconds() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
+
+# 轮询 pid 的 phys_footprint 直到稳定。参数：pid、启动时刻（now_seconds）。
+# 输出一行 "<KB> <稳定时刻s|UNSTABLE>"；稳定时刻为稳定区间起点距启动的秒数。
+# 一次读数都拿不到时返回 1。
+wait_for_stable_footprint() {
+    local pid="$1" t0="$2"
+    local ts="" kbs="" kb="" last_kb="" t="" settled=""
+    while :; do
+        t=$(awk -v a="$(now_seconds)" -v b="$t0" 'BEGIN{printf "%.2f", a-b}')
+        if kb=$(sample_phys_footprint_kb "$pid"); then
+            last_kb="$kb"
+            ts="$ts $t"; kbs="$kbs $kb"
+            # 从最新读数向前回看：区间内 max-min 不超过容差且跨度达到窗口即视为稳定。
+            settled=$(awk -v ts="$ts" -v kbs="$kbs" -v win="$STABLE_SECONDS" -v tol="$STABLE_TOLERANCE_KB" 'BEGIN{
+                n = split(ts, T, " "); split(kbs, K, " ")
+                mn = K[n]; mx = K[n]
+                for (i = n; i >= 1; i--) {
+                    if (K[i] + 0 < mn) mn = K[i] + 0
+                    if (K[i] + 0 > mx) mx = K[i] + 0
+                    if (mx - mn > tol) break
+                    if (T[n] - T[i] >= win) { printf "%.1f", T[i]; exit }
+                }
+            }')
+            if [[ -n "$settled" ]]; then
+                echo "$kb $settled"
+                return 0
+            fi
+        elif ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        if awk -v t="$t" -v m="$MAX_WAIT_SECONDS" 'BEGIN{exit !(t >= m)}'; then
+            break
+        fi
+        sleep 0.2
+    done
+    [[ -n "$last_kb" ]] || return 1
+    echo "$last_kb UNSTABLE"
+}
+
 # 运行一轮采样。参数：轮次名称，其余参数作为传给 app 的启动参数（可为空）。
+# 标准输出一行 "<KB> <稳定时刻s|UNSTABLE>"（采样失败时为空）。
 run_round() {
     local round_name="$1"
     shift
@@ -136,37 +190,48 @@ run_round() {
         "$APP_BIN" &
     fi
     local pid=$!
-    sleep 3
+    local t0
+    t0=$(now_seconds)
 
-    local kb=""
-    if ! kb=$(sample_phys_footprint_kb "$pid"); then
+    local result=""
+    if ! result=$(wait_for_stable_footprint "$pid" "$t0"); then
         echo "WARN: 无法采样 pid=$pid 的内存（footprint 与 ps 均失败）" >&2
+        result=""
     fi
 
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
 
-    echo "$kb"
+    echo "$result"
+}
+
+# "<稳定时刻>" → 显示文本（UNSTABLE 显示为“未稳定(>N s)”）。
+stable_str() {
+    case "$1" in
+        "") echo "N/A" ;;
+        UNSTABLE) echo "未稳定(>${MAX_WAIT_SECONDS}s)" ;;
+        *) echo "${1}s" ;;
+    esac
 }
 
 echo ""
 echo "== [4/4] 三轮采样 =="
 
-ROUND1_KB="$(run_round "空文档启动基线")"
-echo "空文档启动基线 phys_footprint: ${ROUND1_KB:-N/A} KB" >&2
+read -r ROUND1_KB ROUND1_STABLE <<< "$(run_round "空文档启动基线")" || true
+echo "空文档启动基线 phys_footprint: ${ROUND1_KB:-N/A} KB（稳定于 $(stable_str "${ROUND1_STABLE:-}")）" >&2
 
 if [[ "$CLI_OPEN_SUPPORTED" -eq 1 ]]; then
-    ROUND2_KB="$(run_round "打开 medium.json" "$MEDIUM_FILE")"
+    read -r ROUND2_KB ROUND2_STABLE <<< "$(run_round "打开 medium.json" "$MEDIUM_FILE")" || true
     ROUND2_STATUS="MEASURED"
-    echo "打开 medium.json phys_footprint: ${ROUND2_KB:-N/A} KB" >&2
+    echo "打开 medium.json phys_footprint: ${ROUND2_KB:-N/A} KB（稳定于 $(stable_str "${ROUND2_STABLE:-}")）" >&2
 
-    ROUND3_KB="$(run_round "打开 large.py" "$LARGE_FILE")"
+    read -r ROUND3_KB ROUND3_STABLE <<< "$(run_round "打开 large.py" "$LARGE_FILE")" || true
     ROUND3_STATUS="MEASURED"
-    echo "打开 large.py phys_footprint: ${ROUND3_KB:-N/A} KB" >&2
+    echo "打开 large.py phys_footprint: ${ROUND3_KB:-N/A} KB（稳定于 $(stable_str "${ROUND3_STABLE:-}")）" >&2
 else
-    ROUND2_KB=""
+    ROUND2_KB=""; ROUND2_STABLE=""
     ROUND2_STATUS="SKIPPED"
-    ROUND3_KB=""
+    ROUND3_KB=""; ROUND3_STABLE=""
     ROUND3_STATUS="SKIPPED"
     echo "打开 medium.json / large.py 两轮已跳过：app 无 CLI 打开文件路径。" >&2
 fi
@@ -187,8 +252,8 @@ kb_to_mb_str() {
     awk -v kb="$kb" 'BEGIN{printf "%.1f", kb/1024}'
 }
 
-printf '%-22s | %-10s | %-12s | %-8s | %s\n' "轮次" "实测(MB)" "预算目标(MB)" "上限(MB)" "结果"
-printf '%-22s-+-%-10s-+-%-12s-+-%-8s-+-%s\n' "----------------------" "----------" "------------" "--------" "------"
+printf '%-22s | %-10s | %-12s | %-8s | %-6s | %s\n' "轮次" "实测(MB)" "预算目标(MB)" "上限(MB)" "结果" "稳定于"
+printf '%-22s-+-%-10s-+-%-12s-+-%-8s-+-%-6s-+-%s\n' "----------------------" "----------" "------------" "--------" "------" "------"
 
 # 轮次 1：空文档启动基线，预算见 ARCHITECTURE.md：目标 20-30 MB，上限 99 MB
 ROUND1_MB="$(kb_to_mb_str "$ROUND1_KB")"
@@ -204,11 +269,11 @@ else
     ROUND1_RESULT="FAIL"
     OVERALL_FAIL=1
 fi
-printf '%-22s | %-10s | %-12s | %-8s | %s\n' "空文档启动基线" "$ROUND1_MB" "20-30" "99" "$ROUND1_RESULT"
+printf '%-22s | %-10s | %-12s | %-8s | %-6s | %s\n' "空文档启动基线" "$ROUND1_MB" "20-30" "99" "$ROUND1_RESULT" "$(stable_str "${ROUND1_STABLE:-}")"
 
 # 轮次 2：打开中等文件（全功能空闲常驻），预算：目标 30-45 MB，上限 99 MB
 if [[ "$ROUND2_STATUS" == "SKIPPED" ]]; then
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 medium.json" "N/A" "30-45" "99" "SKIPPED"
+    printf '%-22s | %-10s | %-12s | %-8s | %-6s | %s\n' "打开 medium.json" "N/A" "30-45" "99" "SKIPPED" "N/A"
 else
     ROUND2_MB="$(kb_to_mb_str "$ROUND2_KB")"
     ROUND2_RESULT="FAIL"
@@ -217,12 +282,12 @@ else
     else
         OVERALL_FAIL=1
     fi
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 medium.json" "$ROUND2_MB" "30-45" "99" "$ROUND2_RESULT"
+    printf '%-22s | %-10s | %-12s | %-8s | %-6s | %s\n' "打开 medium.json" "$ROUND2_MB" "30-45" "99" "$ROUND2_RESULT" "$(stable_str "${ROUND2_STABLE:-}")"
 fi
 
 # 轮次 3：打开大文件（~10 MB），预算：目标 50-60 MB，上限 99 MB（ARCHITECTURE.md §1）
 if [[ "$ROUND3_STATUS" == "SKIPPED" ]]; then
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "N/A" "50-60" "99" "SKIPPED"
+    printf '%-22s | %-10s | %-12s | %-8s | %-6s | %s\n' "打开 large.py" "N/A" "50-60" "99" "SKIPPED" "N/A"
 else
     ROUND3_MB="$(kb_to_mb_str "$ROUND3_KB")"
     ROUND3_RESULT="FAIL"
@@ -231,7 +296,7 @@ else
     else
         OVERALL_FAIL=1
     fi
-    printf '%-22s | %-10s | %-12s | %-8s | %s\n' "打开 large.py" "$ROUND3_MB" "50-60" "99" "$ROUND3_RESULT"
+    printf '%-22s | %-10s | %-12s | %-8s | %-6s | %s\n' "打开 large.py" "$ROUND3_MB" "50-60" "99" "$ROUND3_RESULT" "$(stable_str "${ROUND3_STABLE:-}")"
 fi
 
 echo ""
@@ -262,15 +327,19 @@ if [[ -z "${KARU_DIAGNOSTIC_DIRECTORY:-}" ]]; then
     echo "（参考轮使用临时诊断目录隔离会话；正式三轮未隔离。按 LEDGER 口径应整体设置 KARU_DIAGNOSTIC_DIRECTORY 运行。）"
 fi
 if [[ "$CLI_OPEN_SUPPORTED" -eq 1 ]]; then
-    REF1_KB=""; REF2_KB=""
-    [[ -f "$REF_PY" ]] && REF1_KB="$(run_round "打开 sample_1000.py（参考）" "$REF_PY")"
-    [[ -f "$REF_TS" ]] && REF2_KB="$(run_round "打开 sample_1000.ts（参考）" "$REF_TS")"
-    printf '%-22s | %-10s | %-8s | %s\n' "轮次" "实测(MB)" "上限(MB)" "结果"
-    printf '%-22s-+-%-10s-+-%-8s-+-%s\n' "----------------------" "----------" "--------" "------"
-    for pair in "sample_1000.py|$REF_PY|$REF1_KB" "sample_1000.ts|$REF_TS|$REF2_KB"; do
-        IFS='|' read -r ref_name ref_path ref_kb <<< "$pair"
+    REF1_KB=""; REF2_KB=""; REF1_STABLE=""; REF2_STABLE=""
+    if [[ -f "$REF_PY" ]]; then
+        read -r REF1_KB REF1_STABLE <<< "$(run_round "打开 sample_1000.py（参考）" "$REF_PY")" || true
+    fi
+    if [[ -f "$REF_TS" ]]; then
+        read -r REF2_KB REF2_STABLE <<< "$(run_round "打开 sample_1000.ts（参考）" "$REF_TS")" || true
+    fi
+    printf '%-22s | %-10s | %-8s | %-6s | %s\n' "轮次" "实测(MB)" "上限(MB)" "结果" "稳定于"
+    printf '%-22s-+-%-10s-+-%-8s-+-%-6s-+-%s\n' "----------------------" "----------" "--------" "------" "------"
+    for pair in "sample_1000.py|$REF_PY|$REF1_KB|$REF1_STABLE" "sample_1000.ts|$REF_TS|$REF2_KB|$REF2_STABLE"; do
+        IFS='|' read -r ref_name ref_path ref_kb ref_stable <<< "$pair"
         if [[ ! -f "$ref_path" ]]; then
-            printf '%-22s | %-10s | %-8s | %s\n' "打开 $ref_name" "N/A" "99" "SKIPPED（缺少样本）"
+            printf '%-22s | %-10s | %-8s | %-6s | %s\n' "打开 $ref_name" "N/A" "99" "SKIPPED（缺少样本）" "N/A"
             continue
         fi
         ref_mb="$(kb_to_mb_str "$ref_kb")"
@@ -280,7 +349,7 @@ if [[ "$CLI_OPEN_SUPPORTED" -eq 1 ]]; then
         else
             OVERALL_FAIL=1
         fi
-        printf '%-22s | %-10s | %-8s | %s\n' "打开 $ref_name" "$ref_mb" "99" "$ref_result"
+        printf '%-22s | %-10s | %-8s | %-6s | %s\n' "打开 $ref_name" "$ref_mb" "99" "$ref_result" "$(stable_str "$ref_stable")"
     done
 else
     echo "推断样本两轮已跳过：app 无 CLI 打开文件路径。"

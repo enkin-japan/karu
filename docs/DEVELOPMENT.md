@@ -104,6 +104,11 @@
 - `mem-benchmark.sh` 可用 `KARU_BENCH_APP_BIN=<二进制>` 指定被测构建（同机 A/B，跳过构建）；正式三轮之后
   另有两轮「推断样本（参考）」（`Tests/Fixtures/M17/inference/sample_1000.py` / `.ts`，只查 99 MB 上限）。
   各轮以 kill 结束，整体运行时应设置 `KARU_DIAGNOSTIC_DIRECTORY`，否则下一轮会恢复上一轮打开的文件。
+- 采样为稳定采样：每轮持续轮询 phys_footprint，最近 2 s 波动不超过 0.5 MB 才取值，最长等 20 s
+  （超时取最后读数并标“未稳定”）；表格末列「稳定于」为读数稳定的时刻（距启动秒数）。旧版固定 3 s
+  采样会随时序落在启动期一次约 +20 MB 阶跃的前或后，产生假回归；与旧记录对比时注意口径不同。
+  阈值可用 `KARU_BENCH_STABLE_SECONDS`、`KARU_BENCH_STABLE_TOLERANCE_KB`、`KARU_BENCH_MAX_WAIT_SECONDS` 调整。
+  A/B 对照应交替运行 2–3 轮并记录负载（`uptime`）。
 - 会启动 App 的验证先检查用户数据副作用。特别是草稿本探针会写示例内容，不能直接对
   用户真实草稿运行；使用现有隔离入口或由主会话先设计隔离，不声称环境变量天然隔离。
 - 内存以 ARCHITECTURE.md 的窗口尺寸和 phys_footprint 口径判断，记录系统/工具链与构建。
