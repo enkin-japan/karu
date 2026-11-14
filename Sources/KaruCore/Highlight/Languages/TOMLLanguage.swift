@@ -24,9 +24,10 @@ public enum TOMLLanguage {
     public static let lexicalProfile = LexicalProfile(
         lineComments: ["#"],
         strings: [
-            .init(delimiter: .fixed(open: "\"\"\"", close: "\"\"\""), multiline: true),
+            .init(delimiter: .fixed(open: "\"\"\"", close: "\"\"\""), multiline: true,
+                  escapeForms: [.unicode4, .unicode8]),
             .init(delimiter: .fixed(open: "'''", close: "'''"), multiline: true, escape: nil),
-            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false, escapeForms: [.unicode4, .unicode8]),
             .init(delimiter: .fixed(open: "'", close: "'"), multiline: false, escape: nil),
         ]
     )

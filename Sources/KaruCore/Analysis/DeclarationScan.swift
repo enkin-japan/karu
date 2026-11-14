@@ -143,9 +143,18 @@ public struct DeclarationScan: Sendable, Equatable {
     let encodedLocations: [UInt8]
     /// Scope outline (see the type comment).
     let outline: [UInt8]
+    /// Seek points into `encodedLocations` (T17.7): pairs (byte index,
+    /// running location before that byte), one every `seekStride`
+    /// declarations, ascending. Empty for the regex path (decoded from the
+    /// start instead).
+    let declarationSeeks: [Int32]
+
+    /// Declarations between two seek points.
+    static let seekStride = 64
 
     init(languageIdentifier: String, table: WordIndex.SymbolTable, completionSymbols: Set<String>,
-         names: [String], encodedLocations: [UInt8], outline: [UInt8], scopeCount: Int, documentLength: Int) {
+         names: [String], encodedLocations: [UInt8], outline: [UInt8], scopeCount: Int, documentLength: Int,
+         declarationSeeks: [Int32] = []) {
         self.languageIdentifier = languageIdentifier
         self.table = table
         self.completionSymbols = completionSymbols
@@ -154,6 +163,7 @@ public struct DeclarationScan: Sendable, Equatable {
         self.outline = outline
         self.scopeCount = scopeCount
         self.documentLength = documentLength
+        self.declarationSeeks = declarationSeeks
     }
 
     private static func empty(_ languageIdentifier: String, length: Int) -> DeclarationScan {
@@ -218,6 +228,35 @@ public struct DeclarationScan: Sendable, Equatable {
             let nameKind = reader.varint()
             let (kind, listed) = Self.decode(code: nameKind & 15)
             body(location, nameKind >> 4, kind, listed)
+        }
+    }
+
+    /// Calls `body(location, name, kind)` for every declaration (listed or
+    /// scope-only) whose location lies in `[from, to)`, in document order.
+    /// Starts at the last seek point before `from`, so the cost is the
+    /// declarations in the range plus at most `seekStride` (T17.7: the
+    /// highlighter's position roles for its band).
+    public func forEachDeclaration(from: Int, to: Int, _ body: (Int, String, DeclarationKind) -> Void) {
+        guard to > from else { return }
+        var reader = Reader(encodedLocations)
+        var location = 0
+        // Last seek whose running location is < `from` (a declaration at the
+        // seek's base location itself may precede it).
+        var low = 0, high = declarationSeeks.count / 2
+        while low < high {
+            let mid = (low + high) / 2
+            if Int(declarationSeeks[mid * 2 + 1]) < from { low = mid + 1 } else { high = mid }
+        }
+        if low > 0 {
+            reader.index = Int(declarationSeeks[(low - 1) * 2])
+            location = Int(declarationSeeks[(low - 1) * 2 + 1])
+        }
+        while !reader.atEnd {
+            location += reader.varint()
+            let nameKind = reader.varint()
+            if location < from { continue }
+            if location >= to { return }
+            body(location, names[nameKind >> 4], Self.decode(code: nameKind & 15).0)
         }
     }
 

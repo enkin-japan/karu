@@ -19,33 +19,70 @@ import Foundation
 /// The regex rules cover the rest in code segments:
 /// - Attributes are matched only in their simplest form `[Name]` (no
 ///   arguments); `[Obsolete("reason")]` is not recognised as a single token.
+///
+/// **Categories by position** (T17.7, VS Code's C# grammar): control-flow
+/// keywords (`using` directives, `foreach … in`, `yield`) apart from the
+/// others; `using` / `namespace` names types; `name(` a call; `obj.` and
+/// `.Member` variables; library types (`List`, `Task`) types. Every other
+/// identifier is a variable (the grammar scopes them so). Interpolation
+/// holes' `{` / `}` are `.interpolationDelimiter` (plan §6; VS Code leaves
+/// them uncoloured), and a verbatim string's `""` is string text (VS Code
+/// colours it as an escape). Escapes: `\xH…`, `\uHHHH`, `\UHHHHHHHH`.
 public enum CSharpLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
 
-    static let keywords: [String] = [
-        "class", "struct", "interface", "enum", "namespace", "using",
-        "public", "private", "protected", "internal", "static", "readonly",
-        "const", "var", "new", "this", "base", "null", "true", "false", "if",
-        "else", "for", "foreach", "while", "do", "switch", "case", "break",
-        "continue", "return", "void", "int", "string", "bool", "double",
-        "float", "decimal", "long", "object", "dynamic", "async", "await",
-        "try", "catch", "finally", "throw", "is", "as", "in", "out", "ref",
-        "params", "get", "set", "value", "record", "init", "required",
-        "sealed", "abstract", "virtual", "override", "partial", "where",
-        "select", "from",
+    /// Control-flow keywords (`keyword.control`, `keyword.other.directive.using`).
+    static let controlKeywords: [String] = [
+        "if", "else", "for", "foreach", "while", "do", "switch", "case", "default",
+        "break", "continue", "return", "yield", "try", "catch", "finally", "throw",
+        "goto", "using", "in", "await", "when",
     ]
 
-    static let builtins: [String] = [
-        "Console", "WriteLine", "Write", "ReadLine", "String", "Int32",
-        "Int64", "Double", "Decimal", "Boolean", "Object", "Math", "List",
+    static let otherKeywords: [String] = [
+        "class", "struct", "interface", "enum", "namespace",
+        "public", "private", "protected", "internal", "static", "readonly",
+        "const", "var", "new", "this", "base", "null", "true", "false",
+        "void", "int", "string", "bool", "double", "char", "byte", "short", "uint",
+        "ulong", "float", "decimal", "long", "object", "dynamic", "async",
+        "is", "as", "out", "ref", "params", "get", "set", "value", "record", "init",
+        "required", "sealed", "abstract", "virtual", "override", "partial", "where",
+        "select", "from", "typeof", "nameof", "default",
+    ]
+
+    static let keywords: [String] = controlKeywords + otherKeywords
+
+    /// Library types (`List`, `Task`), coloured as types.
+    static let libraryTypes: [String] = [
+        "String", "Int32", "Int64", "Double", "Decimal", "Boolean", "Object", "List",
         "Dictionary", "HashSet", "Queue", "Stack", "IEnumerable", "IList",
         "IDictionary", "Task", "ValueTask", "Action", "Func", "Predicate",
         "Exception", "ArgumentException", "InvalidOperationException",
-        "NullReferenceException", "Length", "Count", "ToString", "Equals",
-        "GetHashCode", "nameof", "typeof", "Guid", "DateTime", "TimeSpan",
-        "Linq", "Select", "Where", "FirstOrDefault", "ToList", "ToArray",
+        "NullReferenceException", "Guid", "DateTime", "TimeSpan",
     ]
+
+    static let builtins: [String] = libraryTypes + [
+        "Console", "WriteLine", "Write", "ReadLine", "Math", "Length", "Count",
+        "ToString", "Equals", "GetHashCode", "Linq", "Select", "Where",
+        "FirstOrDefault", "ToList", "ToArray",
+    ]
+
+    /// The names of a `using` directive or `namespace` declaration
+    /// (`entity.name.type.namespace`).
+    static let namespaceRule = LanguageRule(
+        pattern: #"(?<=[ \t.])(?<=^[ \t]{0,32}(?:global[ \t]{1,8})?(?:using|namespace)[ \t]{1,8}(?:[\w.]{0,120}))[A-Za-z_]\w*"#,
+        kind: .type)
+
+    /// C#'s identifiers (T17.7): the whole table, every other name a variable.
+    static let identifierPolicy: IdentifierPolicy = {
+        var roles = IdentifierPolicy.declarationRoles
+        roles[.variable] = .symbolVariable
+        roles[.property] = .symbolVariable
+        return IdentifierPolicy(otherIdentifiers: .symbolVariable, roles: roles)
+    }()
+
+    /// `\xH…`, `\uHHHH`, `\UHHHHHHHH`.
+    static let escapeForms: LexicalProfile.EscapeForms = [.hexRun, .unicode4, .unicode8]
 
     /// Interpolation hole of `$"…"` / `$@"…"` (`{{` is a literal brace).
     private static let hole = LexicalProfile.InterpolationForm(open: "{", close: "}", escapedOpen: "{{")
@@ -63,16 +100,19 @@ public enum CSharpLanguage {
                   multiline: true, escape: nil, interpolations: [.init(open: "{", close: "}")]),
             .init(delimiter: .repeatedQuote(quote: "\"", minimum: 3), multiline: true, escape: nil),
             .init(prefixes: ["$@", "@$"], prefixRequired: true, delimiter: .fixed(open: "\"", close: "\""),
-                  multiline: true, escape: nil, doubledCloseEscapes: true, interpolations: [hole]),
+                  multiline: true, escape: nil, doubledCloseEscapes: true, doubledCloseIsEscape: true,
+                  interpolations: [hole]),
             .init(prefixes: ["@"], prefixRequired: true, delimiter: .fixed(open: "\"", close: "\""),
-                  multiline: true, escape: nil, doubledCloseEscapes: true),
+                  multiline: true, escape: nil, doubledCloseEscapes: true, doubledCloseIsEscape: true),
             .init(prefixes: ["$"], prefixRequired: true, delimiter: .fixed(open: "\"", close: "\""),
-                  multiline: false, interpolations: [hole]),
-            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+                  multiline: false, escapeForms: escapeForms, interpolations: [hole]),
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false, escapeForms: escapeForms),
         ],
         atoms: [
             .init(pattern: #"'(?:[^'\\\r\n]|\\[^\r\n])+'"#, firstCharacters: "'", kind: .string),
-        ]
+        ],
+        // VS Code leaves C# interpolation braces in the punctuation colour.
+        interpolationDelimiterKind: .punctuation
     )
 
     public static func make() -> LanguageDefinition {
@@ -83,13 +123,16 @@ public enum CSharpLanguage {
             rules: [
                 // Attribute, e.g. `[Obsolete]`.
                 LanguageRule(pattern: #"\[\w+\]"#, kind: .type),
-                // Keywords.
-                LanguageRule(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
-                // Built-in library types / members after keywords (disjoint);
-                // attributes are consumed earlier, and rules only run in code
-                // segments, so a built-in word inside a string or comment is
-                // never reached here.
-                LanguageRule(pattern: "\\b(?:\(builtins.joined(separator: "|")))\\b", kind: .builtin),
+                namespaceRule,
+                SyntaxRules.words(controlKeywords, .controlKeyword),
+                SyntaxRules.words(otherKeywords, .keyword),
+                SyntaxRules.call(),
+                SyntaxRules.object(),
+                SyntaxRules.member(.symbolVariable),
+                // Library types after keywords (disjoint); attributes are
+                // consumed earlier, and rules only run in code segments, so a
+                // built-in word inside a string or comment is never reached.
+                SyntaxRules.words(libraryTypes, .type),
                 // Numbers: hex or decimal/float with optional exponent and
                 // numeric-type suffix.
                 LanguageRule(
@@ -99,7 +142,8 @@ public enum CSharpLanguage {
             ],
             keywords: keywords,
             builtins: builtins,
-            lexicalProfile: lexicalProfile
+            lexicalProfile: lexicalProfile,
+            identifierPolicy: identifierPolicy
         )
     }
 }

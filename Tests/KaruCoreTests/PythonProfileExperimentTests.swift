@@ -80,8 +80,9 @@ struct PythonProfileExperimentTests {
     }
 
     /// The documented gap: inside a replacement field PythonTokenizer
-    /// classifies identifiers, conversions and format specs; the generic
-    /// scanner only knows the field is code.
+    /// classifies conversions and format specs (T17.7: as placeholders;
+    /// identifiers there are uncoloured, as in VS Code, and `{{` is an
+    /// escape); the generic scanner only knows the field is code.
     @Test func replacementFieldClassificationIsTheGap() {
         let line = #"s = f"{{literal}} {name} {value!r:>{width}.{precision}f}" # c"#
         let ns = line as NSString
@@ -92,14 +93,15 @@ struct PythonProfileExperimentTests {
         let tokenizer = python.tokenize(line: line)
         let profiled = generic.tokenize(line: line)
         for word in ["name", "value", "width", "precision"] {
-            #expect(kind(word, tokenizer) == .symbolVariable)
+            #expect(kind(word, tokenizer) == nil)
             #expect(kind(word, profiled) == nil)
         }
-        #expect(kind("!r", tokenizer) == .punctuation)
-        #expect(kind(">", tokenizer) == .string)          // format spec
+        #expect(kind("!r", tokenizer) == .interpolationDelimiter)
+        #expect(kind(">", tokenizer) == .interpolationDelimiter)   // format spec
         #expect(kind(">", profiled) == nil)
+        #expect(kind("{{", tokenizer) == .escape)
         // Outside the fields both agree.
-        for (word, expected) in [("{{literal}} ", TokenKind.string), ("# c", .comment)] {
+        for (word, expected) in [("literal}} ", TokenKind.string), ("# c", .comment)] {
             #expect(kind(word, tokenizer) == expected)
             #expect(kind(word, profiled) == expected)
         }

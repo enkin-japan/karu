@@ -44,33 +44,68 @@ public enum PythonLanguage {
         return LexicalProfile(lineComments: ["#"], strings: forms)
     }()
 
+    /// Control-flow keywords (`keyword.control.flow` / `.import` in VS Code's
+    /// MagicPython grammar). `in` is one too (`for x in`); the soft keywords
+    /// `match` / `case` are control only at a statement start
+    /// (`softKeywordRule`), so `match = …` stays a name.
+    public static let controlKeywords: [String] = [
+        "if", "elif", "else", "for", "while", "break", "continue", "return", "pass",
+        "raise", "try", "except", "finally", "with", "as", "assert", "del", "yield",
+        "await", "import", "from", "in",
+    ]
+
+    /// The other keywords and literals (`storage.type`, `keyword.operator`,
+    /// `constant.language`).
+    public static let otherKeywords: [String] = [
+        "def", "class", "lambda", "global", "nonlocal", "is", "not", "and", "or",
+        "None", "True", "False", "async",
+    ]
+
+    /// Built-in types and exceptions (`support.type`, `support.type.exception`).
+    public static let builtinTypes: [String] = [
+        "str", "int", "float", "bool", "list", "dict", "set", "tuple", "bytes",
+        "bytearray", "frozenset", "complex", "object", "type", "super", "property",
+        "staticmethod", "classmethod", "slice", "memoryview", "BaseException",
+        "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
+        "AttributeError", "RuntimeError", "StopIteration", "FileNotFoundError",
+        "NotImplementedError", "OSError", "IOError", "ImportError", "NameError",
+        "ZeroDivisionError", "AssertionError", "LookupError", "PermissionError",
+        "TimeoutError", "KeyboardInterrupt", "SystemExit", "UnicodeDecodeError",
+        "UnicodeEncodeError",
+    ]
+
+    /// Built-in functions (`support.function.builtin`) and `__init__`
+    /// (`support.function.magic`).
+    public static let builtinFunctions: [String] = [
+        "print", "len", "range", "open", "input", "isinstance", "issubclass",
+        "enumerate", "zip", "map", "filter", "sorted", "reversed", "sum", "min",
+        "max", "abs", "round", "repr", "hash", "id", "getattr", "setattr",
+        "hasattr", "delattr", "callable", "iter", "next", "vars", "dir", "format",
+        "any", "all", "divmod", "pow", "chr", "ord", "hex", "oct", "bin", "__init__",
+    ]
+
+    /// `match` / `case` at a statement start, not used as a name (`match =`,
+    /// `match.x`, `match(…)`, `match[0]`; `case [x]:` is a pattern).
+    static let softKeywordRule = LanguageRule(
+        pattern: #"^[ \t]*(?:match|case)\b(?![ \t]*[=.,):]|[(\[])"#, kind: .controlKeyword)
+
+    /// A keyword argument in a call on the same line (`f(a, key=1)`):
+    /// `variable.parameter.function-call`, the parameter colour.
+    static let keywordArgumentRule = LanguageRule(
+        pattern: #"(?<!\w)(?=[A-Za-z_]\w*[ \t]*=(?!=))(?<=\([ \t]{0,8}|\([^()\r\n]{0,160},[ \t]{0,8})[A-Za-z_]\w*"#,
+        kind: .parameter)
+
+    /// Python's identifiers (M17 T17.7): VS Code colours no references to
+    /// declared names, only the declarations themselves — `def` / `class`
+    /// names and parameters — so the symbol table is not used for colour.
+    static let identifierPolicy = IdentifierPolicy(tableFunctions: false, tableTypes: false,
+                                                   tableVariables: false,
+                                                   roles: IdentifierPolicy.declarationRoles)
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
-        let keywords = [
-            "def", "class", "if", "elif", "else", "for", "while", "return",
-            "import", "from", "as", "with", "try", "except", "finally", "raise",
-            "lambda", "pass", "break", "continue", "global", "nonlocal", "yield",
-            "assert", "del", "is", "in", "not", "and", "or", "None", "True",
-            "False", "async", "await", "match", "case",
-        ]
-        let kw = keywords.joined(separator: "|")
-        let builtins = [
-            "print", "len", "range", "str", "int", "float", "bool", "list",
-            "dict", "set", "tuple", "open", "input", "type", "isinstance",
-            "issubclass", "enumerate", "zip", "map", "filter", "sorted",
-            "reversed", "sum", "min", "max", "abs", "round", "repr", "hash",
-            "id", "super", "property", "staticmethod", "classmethod",
-            "getattr", "setattr", "hasattr", "delattr", "callable", "iter",
-            "next", "vars", "dir", "format", "any", "all", "divmod", "pow",
-            "chr", "ord", "hex", "oct", "bin", "bytes", "bytearray",
-            "frozenset", "complex", "slice", "object", "Exception",
-            "ValueError", "TypeError", "KeyError", "IndexError",
-            "AttributeError", "RuntimeError", "StopIteration",
-            "FileNotFoundError", "NotImplementedError", "self", "__init__",
-            "__name__", "__main__",
-        ]
-        let bw = builtins.joined(separator: "|")
-
+        let keywords = controlKeywords + otherKeywords + ["match", "case"]
+        let builtins = builtinFunctions + builtinTypes + ["self", "__name__", "__main__"]
         return LanguageDefinition(
             identifier: "python",
             fileExtensions: ["py", "pyw"],
@@ -84,17 +119,21 @@ public enum PythonLanguage {
                 LanguageRule(pattern: #"[rRbBfFuU]{0,2}'(?:[^'\\]|\\.)*'"#, kind: .string),
                 // Comment (reached only outside strings, which are consumed first).
                 LanguageRule(pattern: #"#.*"#, kind: .comment),
-                // Decorator.
-                LanguageRule(pattern: #"@\w+(?:\.\w+)*"#, kind: .type),
-                // Keywords.
-                LanguageRule(pattern: "\\b(?:\(kw))\\b", kind: .keyword),
-                // self / cls.
-                LanguageRule(pattern: #"\b(?:self|cls)\b"#, kind: .property),
-                // Built-in functions / types / common globals (after keywords
-                // and self/cls, so those keep their own colour; strings and
-                // comments are consumed earlier, so a built-in word inside them
-                // is never matched here).
-                LanguageRule(pattern: "\\b(?:\(bw))\\b", kind: .builtin),
+                // Decorator (`entity.name.function.decorator`, `@` included).
+                LanguageRule(pattern: #"@\w+(?:\.\w+)*"#, kind: .symbolFunction),
+                softKeywordRule,
+                SyntaxRules.words(controlKeywords, .controlKeyword),
+                SyntaxRules.words(otherKeywords, .keyword),
+                // self / cls (`variable.language.special`).
+                LanguageRule(pattern: #"\b(?:self|cls)\b"#, kind: .keyword),
+                keywordArgumentRule,
+                // Built-in types / functions after keywords and self / cls;
+                // strings and comments are consumed earlier, so a built-in
+                // word inside them is never matched here.
+                SyntaxRules.words(builtinTypes, .type),
+                SyntaxRules.words(builtinFunctions, .builtin),
+                // `__name__` (`support.variable.magic`).
+                LanguageRule(pattern: #"\b__name__\b"#, kind: .symbolVariable),
                 // Numbers: hex/oct/bin, decimal/float with `_` separators,
                 // optional exponent and imaginary `j` suffix. The lookbehind
                 // stops a digit inside an identifier (e.g. `x1`) from matching.
@@ -104,7 +143,8 @@ public enum PythonLanguage {
                 ),
             ],
             keywords: keywords,
-            builtins: builtins
+            builtins: builtins,
+            identifierPolicy: identifierPolicy
         )
     }
 }

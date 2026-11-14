@@ -12,15 +12,19 @@ import Foundation
 /// rules and the comment-coloured block quote / strikethrough rules stay
 /// active (`keepsStringRules`, `keepsCommentRules`).
 ///
+/// Categories (T17.7): headings `.heading` (bold), the block-quote `>` a
+/// comment, emphasis `*x*` the control colour and `**x**` the keyword colour
+/// (Dark Modern's `markup.italic` / `markup.bold`), link text a string,
+/// backslash escapes escapes.
+///
 /// Line-approximation trade-offs:
-/// - Whole-line constructs (headings, blockquotes) colour the entire line as
-///   a single kind; inline emphasis inside a heading is not separately
-///   highlighted.
+/// - A heading colours the entire line as a single kind; inline emphasis
+///   inside a heading is not separately highlighted.
 /// - A fence inside a block quote or a list item indented by 4+ spaces is
 ///   not recognised; `<!--` inside inline code still opens a comment.
-/// - Link text is coloured including its surrounding `[` `]`, and the URL
-///   including its `(` `)`; the `(url)` rule uses a `]`-lookbehind so bare
-///   parentheses in prose are left alone.
+/// - Link text is coloured without its `[` `]`; the URL after `](` stays
+///   uncoloured (VS Code only underlines it); bare parentheses in prose are
+///   left alone.
 public enum MarkdownLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -41,10 +45,12 @@ public enum MarkdownLanguage {
             rules: [
                 // Whole-line constructs (only ever match at column 0 via `^`).
                 // ATX heading (requires a space after the #s so "#hashtag"
-                // in prose is not mistaken for a heading).
-                LanguageRule(pattern: #"^#{1,6}\s.*"#, kind: .keyword),
-                // Blockquote line.
-                LanguageRule(pattern: #"^\s*>.*"#, kind: .comment),
+                // in prose is not mistaken for a heading); a setext heading's
+                // `===` underline. Drawn bold (`HighlightTheme.isBold`).
+                LanguageRule(pattern: #"^#{1,6}\s.*"#, kind: .heading),
+                LanguageRule(pattern: #"^=+[ \t]*$"#, kind: .heading),
+                // Block quote marker (only the `>`, as VS Code).
+                LanguageRule(pattern: #"^[ \t]{0,3}>"#, kind: .comment),
                 // List markers: bullet (`- ` `* ` `+ `) and ordered (`1. `).
                 // Only the marker is coloured; the rest of the line still gets
                 // inline treatment. `.property` (VS Code's list-bullet blue) —
@@ -54,6 +60,8 @@ public enum MarkdownLanguage {
                 LanguageRule(pattern: #"^\s*\d+\.\s"#, kind: .property),
 
                 // Inline constructs (match at any position).
+                // Backslash escape (`\*`).
+                LanguageRule(pattern: #"\\[\\`*_{}\[\]()#+\-.!>~|]"#, kind: .escape),
                 // Inline code span.
                 LanguageRule(pattern: #"`[^`]+`"#, kind: .string),
                 // Strikethrough (~~…~~), dimmed like a comment.
@@ -64,13 +72,16 @@ public enum MarkdownLanguage {
                 LanguageRule(pattern: #"___[^_]+___"#, kind: .keyword),
                 LanguageRule(pattern: #"\*\*[^*]+\*\*"#, kind: .keyword),
                 LanguageRule(pattern: #"__[^_]+__"#, kind: .keyword),
-                // Italic (*…* / _…_).
-                LanguageRule(pattern: #"\*[^*\s][^*]*\*"#, kind: .keyword),
-                LanguageRule(pattern: #"_[^_\s][^_]*_"#, kind: .keyword),
-                // Link / image: text in brackets → property, URL in parens
-                // (immediately following the `]`) → string.
-                LanguageRule(pattern: #"\[[^\]]*\]"#, kind: .property),
-                LanguageRule(pattern: #"(?<=\])\([^)]*\)"#, kind: .string),
+                // Italic (*…* / _…_): `markup.italic`, which Dark Modern
+                // colours like control keywords.
+                LanguageRule(pattern: #"\*[^*\s][^*]*\*"#, kind: .controlKeyword),
+                LanguageRule(pattern: #"_[^_\s][^_]*_"#, kind: .controlKeyword),
+                // Link / image: the text in brackets a string (brackets
+                // uncoloured), the URL in parens (immediately after `]`)
+                // uncoloured, an optional quoted title a string.
+                LanguageRule(pattern: #"(?<=\[)[^\[\]\r\n]+(?=\]\()"#, kind: .string),
+                LanguageRule(pattern: #"(?<=\]\()[^)\s]*"#, kind: .plain),
+                LanguageRule(pattern: #""[^"\r\n]*"(?=\))"#, kind: .string),
             ],
             lexicalProfile: lexicalProfile
         )

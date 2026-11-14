@@ -63,6 +63,36 @@ public struct LexicalProfile: Sendable {
         }
     }
 
+    /// Longer escape sequences a string form recognises after its escape
+    /// character (M17 T17.7). Without any, an escape is the escape character
+    /// (with a hashed string's hashes) plus one escaped character (a CRLF or
+    /// a surrogate pair counting as one). A form whose text is incomplete —
+    /// `\x` without a hex digit, `\u{` without its `}` on the line — falls
+    /// back to that one-character escape. Reads forward only, never past the
+    /// scanned range's end nor across a line break.
+    public struct EscapeForms: OptionSet, Sendable, Hashable {
+        public let rawValue: UInt8
+        public init(rawValue: UInt8) { self.rawValue = rawValue }
+
+        /// `\xHH`: exactly two hex digits.
+        public static let hex2 = EscapeForms(rawValue: 1 << 0)
+        /// `\xH…`: one or more hex digits, at most 8 (C, C++, C#).
+        public static let hexRun = EscapeForms(rawValue: 1 << 1)
+        /// `\uHHHH`.
+        public static let unicode4 = EscapeForms(rawValue: 1 << 2)
+        /// `\u{H…}` (1–8 hex digits or `_`).
+        public static let unicodeBraced = EscapeForms(rawValue: 1 << 3)
+        /// `\UHHHHHHHH`.
+        public static let unicode8 = EscapeForms(rawValue: 1 << 4)
+        /// `\o`, `\oo`, `\ooo`: up to three octal digits.
+        public static let octal = EscapeForms(rawValue: 1 << 5)
+        /// CSS: `\H…` with 1–6 hex digits (instead of one character).
+        public static let cssHex = EscapeForms(rawValue: 1 << 6)
+
+        /// C-family and JavaScript: hex, `\u`, octal.
+        public static let cStyle: EscapeForms = [.hexRun, .unicode4, .unicode8, .octal]
+    }
+
     public struct StringForm: Sendable, Hashable {
         /// Literal prefixes directly before the opener (`b`, `rb`, `f`). A
         /// prefix counts only at a word boundary: the UTF-16 unit before it
@@ -79,6 +109,17 @@ public struct LexicalProfile: Sendable {
         public var escape: Character?
         /// The closer written twice is an escaped closer (C# `@"a""b"`, SQL `'it''s'`).
         public var doubledCloseEscapes: Bool
+        /// The doubled closer is reported as an `.escape` segment (YAML
+        /// `'it''s'`, as VS Code colours it); otherwise it stays string text.
+        public var doubledCloseIsEscape: Bool
+        /// Longer escape sequences after `escape` (T17.7).
+        public var escapeForms: EscapeForms
+        /// A unit that, followed by an identifier (`[A-Za-z_][A-Za-z0-9_]*`)
+        /// or one of `0-9@#?*$!-`, is a variable reference inside the string
+        /// (Bash `"$name"`, `"$1"`): reported as `.atom(.symbolVariable)`,
+        /// a token for the split guarantee. Checked after the interpolation
+        /// openers (`$(`, `${` stay interpolations) (T17.7).
+        public var variablePrefix: Character?
         public var interpolations: [InterpolationForm]
         /// When set, the form only opens in this context, checked like
         /// `AtomForm.precededBy` at the token start (before any prefix);
@@ -94,6 +135,9 @@ public struct LexicalProfile: Sendable {
                     multiline: Bool,
                     escape: Character? = "\\",
                     doubledCloseEscapes: Bool = false,
+                    doubledCloseIsEscape: Bool = false,
+                    escapeForms: EscapeForms = [],
+                    variablePrefix: Character? = nil,
                     interpolations: [InterpolationForm] = [],
                     precededBy: AtomContext? = nil) {
             self.prefixes = prefixes
@@ -103,6 +147,9 @@ public struct LexicalProfile: Sendable {
             self.multiline = multiline
             self.escape = escape
             self.doubledCloseEscapes = doubledCloseEscapes
+            self.doubledCloseIsEscape = doubledCloseIsEscape
+            self.escapeForms = escapeForms
+            self.variablePrefix = variablePrefix
             self.interpolations = interpolations
             self.precededBy = precededBy
         }
@@ -223,6 +270,13 @@ public struct LexicalProfile: Sendable {
     /// still run inside code segments. For rules that only borrow the
     /// comment colour (Markdown block quotes and strikethrough).
     public var keepsCommentRules: Bool
+    /// For `LanguageDefinition`: the token kind of interpolation openers and
+    /// closers (T17.7). `.interpolationDelimiter` by default; Bash keeps
+    /// `$(`, `${` and `` ` `` in the string colour, as VS Code does.
+    public var interpolationDelimiterKind: TokenKind
+    /// For `LanguageDefinition`: the token kind of string segments (T17.7).
+    /// `.string` by default; XML's CDATA is `.markupValue`.
+    public var stringKind: TokenKind
 
     public init(lineComments: [String] = [],
                 lineCommentPrecededBy: String? = nil,
@@ -231,7 +285,9 @@ public struct LexicalProfile: Sendable {
                 atoms: [AtomForm] = [],
                 lineBlocks: [LineBlockForm] = [],
                 keepsStringRules: Bool = false,
-                keepsCommentRules: Bool = false) {
+                keepsCommentRules: Bool = false,
+                interpolationDelimiterKind: TokenKind = .interpolationDelimiter,
+                stringKind: TokenKind = .string) {
         self.lineComments = lineComments
         self.lineCommentPrecededBy = lineCommentPrecededBy
         self.blockComments = blockComments
@@ -240,6 +296,8 @@ public struct LexicalProfile: Sendable {
         self.lineBlocks = lineBlocks
         self.keepsStringRules = keepsStringRules
         self.keepsCommentRules = keepsCommentRules
+        self.interpolationDelimiterKind = interpolationDelimiterKind
+        self.stringKind = stringKind
     }
 }
 
@@ -251,6 +309,12 @@ public enum LexicalSegment: Sendable, Hashable {
     case comment
     /// An interpolation opener or closer (`${`, `}`).
     case interpolationDelimiter
+    /// An escape sequence inside a string (T17.7): the escape character (and
+    /// a hashed string's hashes) with the escaped character or a longer form
+    /// (`StringForm.escapeForms`), or a doubled closer reported as one
+    /// (`StringForm.doubledCloseIsEscape`). Like every escape, a token for
+    /// the split guarantee.
+    case escape
     /// An `AtomForm` match, with the form's kind.
     case atom(TokenKind)
     /// A `LineBlockForm` body (and the parts of its opener / closer lines the

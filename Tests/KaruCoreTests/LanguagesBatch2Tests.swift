@@ -20,7 +20,8 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func cPreprocessorLine() {
     let c = CLanguage.make()
     let pairs = spans(c, "#include <stdio.h>")
-    #expect(kind(of: "#include", in: pairs) == .type)
+    // T17.7: `keyword.control.directive`.
+    #expect(kind(of: "#include", in: pairs) == .controlKeyword)
 }
 
 @Test func cKeywordsStringAndCharLiteral() {
@@ -28,7 +29,7 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     let pairs = spans(c, #"int main() { char c = 'x'; char *s = "hi"; return 0; }"#)
     #expect(kind(of: "int", in: pairs) == .keyword)
     #expect(kind(of: "char", in: pairs) == .keyword)
-    #expect(kind(of: "return", in: pairs) == .keyword)
+    #expect(kind(of: "return", in: pairs) == .controlKeyword)   // T17.7
     #expect(kind(of: "'x'", in: pairs) == .string)
     #expect(kind(of: #""hi""#, in: pairs) == .string)
 }
@@ -74,7 +75,8 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     let verbatim = spans(cs, #"string path = @"C:\temp\a.txt";"#)
     #expect(kind(of: #"@"C:\temp\a.txt""#, in: verbatim) == .string)
 
-    // M17 T17.3: the interpolation hole is code, its braces punctuation.
+    // M17 T17.3: the interpolation hole is code; T17.7: its braces keep the
+    // punctuation colour, as in VS Code (decision L).
     let interpolated = spans(cs, #"string s = $"hi {name}";"#)
     #expect(kind(of: #"$"hi "#, in: interpolated) == .string)
     #expect(kind(of: "{", in: interpolated) == .punctuation)
@@ -103,9 +105,11 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func javaAnnotationAndKeywords() {
     let java = JavaLanguage.make()
     let pairs = spans(java, "@Override public void run() throws Exception {}")
-    #expect(kind(of: "@Override", in: pairs) == .type)
+    // T17.7 (VS Code): the annotation name is a type, `@` uncoloured;
+    // primitive types are `storage.type.primitive` (type colour).
+    #expect(kind(of: "Override", in: pairs) == .type)
     #expect(kind(of: "public", in: pairs) == .keyword)
-    #expect(kind(of: "void", in: pairs) == .keyword)
+    #expect(kind(of: "void", in: pairs) == .type)
     #expect(kind(of: "throws", in: pairs) == .keyword)
 }
 
@@ -136,16 +140,19 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func bashVariableExpansion() {
     let bash = BashLanguage.make()
     let pairs = spans(bash, "NAME=$USER; echo ${HOME}")
-    #expect(kind(of: "$USER", in: pairs) == .property)
-    #expect(kind(of: "${HOME}", in: pairs) == .property)
+    // T17.7 (VS Code): variables; in `${…}` only the name.
+    #expect(kind(of: "NAME", in: pairs) == .symbolVariable)
+    #expect(kind(of: "$USER", in: pairs) == .symbolVariable)
+    #expect(kind(of: "HOME", in: pairs) == .symbolVariable)
+    #expect(kind(of: "${", in: pairs) == nil)
 }
 
 @Test func bashKeywordsAndComment() {
     let bash = BashLanguage.make()
     let pairs = spans(bash, "if [ -f x ]; then echo hi; fi # done")
-    #expect(kind(of: "if", in: pairs) == .keyword)
-    #expect(kind(of: "then", in: pairs) == .keyword)
-    #expect(kind(of: "fi", in: pairs) == .keyword)
+    #expect(kind(of: "if", in: pairs) == .controlKeyword)   // T17.7
+    #expect(kind(of: "then", in: pairs) == .controlKeyword)
+    #expect(kind(of: "fi", in: pairs) == .controlKeyword)
     #expect(kind(of: "# done", in: pairs) == .comment)
 }
 
@@ -182,24 +189,34 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func xmlPlistKeyValuePair() {
     let xml = XMLPlistLanguage.make()
     let pairs = spans(xml, "<key>Name</key>")
-    #expect(kind(of: "<key", in: pairs) == .keyword)
-    #expect(kind(of: "</key", in: pairs) == .keyword)
+    // T17.7: tag punctuation and tag names.
+    #expect(kind(of: "<", in: pairs) == .tagPunctuation)
+    #expect(kind(of: "key", in: pairs) == .tagName)
+    #expect(kind(of: "</", in: pairs) == .tagPunctuation)
 }
 
 @Test func xmlAttributesAndDeclaration() {
     let xml = XMLPlistLanguage.make()
+    // T17.7 (VS Code): the declaration is a tag with attributes.
     let pairs = spans(xml, #"<?xml version="1.0" encoding="UTF-8"?>"#)
-    #expect(kind(of: #"<?xml version="1.0" encoding="UTF-8"?>"#, in: pairs) == .type)
+    #expect(kind(of: "<?", in: pairs) == .tagPunctuation)
+    #expect(kind(of: "xml", in: pairs) == .tagName)
+    #expect(kind(of: "version", in: pairs) == .attributeName)
+    #expect(kind(of: #""1.0""#, in: pairs) == .markupValue)
+    #expect(kind(of: "?>", in: pairs) == .tagPunctuation)
 
     let tag = spans(xml, #"<string key="value">text</string>"#)
-    #expect(kind(of: "key", in: tag) == .property)
-    #expect(kind(of: #""value""#, in: tag) == .string)
+    #expect(kind(of: "key", in: tag) == .attributeName)
+    #expect(kind(of: #""value""#, in: tag) == .markupValue)
 }
 
 @Test func xmlDoctypeAndComment() {
     let xml = XMLPlistLanguage.make()
+    // T17.7 (VS Code): `<!` punctuation, `DOCTYPE` and the root name keywords.
     let doctype = spans(xml, "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\">")
-    #expect(kind(of: "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\">", in: doctype) == .type)
+    #expect(kind(of: "<!", in: doctype) == .tagPunctuation)
+    #expect(kind(of: "DOCTYPE", in: doctype) == .keyword)
+    #expect(kind(of: "plist", in: doctype) == .keyword)
 
     let comment = spans(xml, "<!-- hi -->")
     #expect(kind(of: "<!-- hi -->", in: comment) == .comment)

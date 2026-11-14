@@ -81,6 +81,9 @@
   `python3 -I scripts/m17/perf-summary.py <日志>` 汇总各事件的 count / p50 / p95 / max。
   M17 基线采集套件（`KARU_M17_BASELINE=1 swift test --filter M17Baseline`）另写
   `Tests/Fixtures/M17/baseline/` 与 `.build/m17-baseline/probes.txt`，普通 `swift test` 跳过。
+  T17.7 起加 `KARU_M17_LIGHT=1` 时着色导出改用浅色外观，写入未纳入版本库的 `baseline/karu-light_modern/`，
+  与 `baseline/vscode-light_modern/` 比对（`compare-colors.py … --neutral '#3b3b3b,#000000'`）；
+  高亮单趟计时（10 MB JS / Python 首跳与附近重绘）用 `KARU_T177_BENCH=1 swift test --filter HighlightPassBenchmark`。
 - `mem-benchmark.sh` 可用 `KARU_BENCH_APP_BIN=<二进制>` 指定被测构建（同机 A/B，跳过构建）；正式三轮之后
   另有两轮「推断样本（参考）」（`Tests/Fixtures/M17/inference/sample_1000.py` / `.ts`，只查 99 MB 上限）。
   各轮以 kill 结束，整体运行时应设置 `KARU_DIAGNOSTIC_DIRECTORY`，否则下一轮会恢复上一轮打开的文件。

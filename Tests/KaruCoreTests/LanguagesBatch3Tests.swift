@@ -33,20 +33,22 @@ private func commentApplied(_ text: String, selection: NSRange, language: String
 @Test func yamlKeyValueColouring() {
     let yaml = YAMLLanguage.make()
     let pairs = spans(yaml, "name: Karu")
-    #expect(kind(of: "name", in: pairs) == .property)
+    // T17.7 (VS Code): keys are `entity.name.tag`, plain scalars strings.
+    #expect(kind(of: "name", in: pairs) == .tagName)
+    #expect(kind(of: "Karu", in: pairs) == .markupValue)
 }
 
 @Test func yamlQuotedKeyAndStringValue() {
     let yaml = YAMLLanguage.make()
     let pairs = spans(yaml, #"title: "Hello World""#)
-    #expect(kind(of: "title", in: pairs) == .property)
+    #expect(kind(of: "title", in: pairs) == .tagName)   // T17.7
     #expect(kind(of: #""Hello World""#, in: pairs) == .string)
 }
 
 @Test func yamlCommentAndNumber() {
     let yaml = YAMLLanguage.make()
     let pairs = spans(yaml, "port: 8080 # the port")
-    #expect(kind(of: "port", in: pairs) == .property)
+    #expect(kind(of: "port", in: pairs) == .tagName)   // T17.7
     #expect(kind(of: "8080", in: pairs) == .number)
     #expect(kind(of: "# the port", in: pairs) == .comment)
 }
@@ -156,7 +158,7 @@ private func commentApplied(_ text: String, selection: NSRange, language: String
     #expect(kind(of: "None", in: types) == .type)
 
     let lifetime = spans(rust, "fn f<'a>(x: &'a str) {}")
-    #expect(kind(of: "'a", in: lifetime) == .property)
+    #expect(kind(of: "'a", in: lifetime) == .type)   // T17.7: `entity.name.type.lifetime`
     #expect(kind(of: "str", in: lifetime) == .type)
 }
 

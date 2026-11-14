@@ -49,27 +49,42 @@ struct OptimizationTests {
         let language = PythonLanguage.make()
         let line = #"s = f"{{literal}} {name} {len(items) + 2} {value!r:>{width}.{precision}f}" # comment"#
         let tokens = language.tokenize(line: line)
+        // T17.7 (VS Code): names inside a field are uncoloured; the field
+        // braces, the conversion and the format spec are placeholders, `{{`
+        // an escape.
         for word in ["name", "items", "value", "width", "precision"] {
-            #expect(kind(word, in: line, tokens: tokens) == .symbolVariable)
+            #expect(kind(word, in: line, tokens: tokens) == nil)
         }
+        #expect(kind("{{", in: line, tokens: tokens) == .escape)
+        #expect(kind("{name", in: line, tokens: tokens) == .interpolationDelimiter)
+        #expect(kind("!r", in: line, tokens: tokens) == .interpolationDelimiter)
+        #expect(kind(":>", in: line, tokens: tokens) == .interpolationDelimiter)
         #expect(kind("literal", in: line, tokens: tokens) == .string)
         #expect(kind("len", in: line, tokens: tokens) == .builtin)
         #expect(kind("2", in: line, tokens: tokens) == .number)
         #expect(kind("# comment", in: line, tokens: tokens) == .comment)
+        // T17.7: no fields outside f-strings — a lowercase-`r` string is a
+        // regex (prefix a keyword), a `{}` in a plain string a placeholder.
         let plain = #"r"{name}" + "{value}""#
-        #expect(language.tokenize(line: plain).allSatisfy { $0.kind == .string })
+        let plainTokens = language.tokenize(line: plain)
+        #expect(kind("r", in: plain, tokens: plainTokens) == .keyword)
+        #expect(kind("{name}", in: plain, tokens: plainTokens) == .regex)
+        #expect(kind("{value}", in: plain, tokens: plainTokens) == .interpolationDelimiter)
+        #expect(!plainTokens.contains { $0.kind == .symbolVariable })
     }
     @Test func pythonNestedQuotesAndMultilineFStrings() {
         let language = PythonLanguage.make()
         let nested = #"f"{data["key"]} {f'{other}'} { {'x': value} }""#
         let tokens = language.tokenize(line: nested)
-        for variable in ["data", "other", "value"] { #expect(kind(variable, in: nested, tokens: tokens) == .symbolVariable) }
+        // T17.7: names inside fields are uncoloured.
+        for variable in ["data", "other", "value"] { #expect(kind(variable, in: nested, tokens: tokens) == nil) }
         #expect(kind("key", in: nested, tokens: tokens) == .string)
         let source = "# ignore \"\"\"\nx = rf\"\"\"hello\n你好 {name}\n\"\"\"\ny = 2\n"
         let offset = (source as NSString).range(of: "你好").location
         var state = PythonTokenizer.state(in: source as NSString, before: offset, language: language)
         let body = "你好 {name}\n"
-        #expect(kind("name", in: body, tokens: PythonTokenizer.scan(body, language: language, state: &state)) == .symbolVariable)
+        #expect(kind("{", in: body, tokens: PythonTokenizer.scan(body, language: language, state: &state))
+                == .interpolationDelimiter)
         _ = PythonTokenizer.scan("\"\"\"\n", language: language, state: &state)
         let tail = "y = 2\n"
         #expect(kind("2", in: tail, tokens: PythonTokenizer.scan(tail, language: language, state: &state)) == .number)
@@ -89,15 +104,17 @@ struct OptimizationTests {
         tv.textStorage!.delegate = hub
         engine.setLanguage(identifier: "python")
         tv.layoutManager!.ensureLayout(for: tv.textContainer!)
-        let offset = (tv.string as NSString).range(of: "name", options: .backwards).location
+        // T17.7: the field's `{` (a placeholder) before the edit; after `f`
+        // becomes `r` the string is a raw regex string.
+        let offset = (tv.string as NSString).range(of: "{name", options: .backwards).location
         tv.scrollRangeToVisible(NSRange(location: offset, length: 0))
         engine.appearanceDidChange()
         let before = tv.layoutManager!.temporaryAttribute(.foregroundColor, atCharacterIndex: offset, effectiveRange: nil) as? NSColor
-        #expect(before === HighlightTheme().color(for: .symbolVariable))
+        #expect(before === HighlightTheme().color(for: .interpolationDelimiter))
         tv.textStorage!.replaceCharacters(in: NSRange(location: 0, length: 1), with: "r")
         engine.appearanceDidChange()
         let after = tv.layoutManager!.temporaryAttribute(.foregroundColor, atCharacterIndex: offset, effectiveRange: nil) as? NSColor
-        #expect(after === HighlightTheme().color(for: .string))
+        #expect(after === HighlightTheme().color(for: .regex))
     }
 
     private func settings() -> (ShortcutSettings, () -> Void) {

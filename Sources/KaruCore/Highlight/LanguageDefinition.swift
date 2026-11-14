@@ -3,8 +3,15 @@ import Foundation
 /// Semantic token categories a language definition can assign to a span of
 /// text. Colours live in `HighlightTheme`, keeping the definitions themselves
 /// free of any AppKit dependency (so they stay pure and unit-testable).
-public enum TokenKind: Hashable, Sendable {
+///
+/// M17 T17.7 (plan §6) splits categories by syntactic position: control-flow
+/// keywords, parameters, constants, escapes, regex literals, interpolation
+/// delimiters and the markup kinds each have their own case (and colour).
+public enum TokenKind: Hashable, Sendable, CaseIterable {
     case keyword
+    /// A control-flow keyword (`if`, `return`, `import`, …): VS Code's
+    /// `keyword.control` scopes.
+    case controlKeyword
     /// A standard-library / built-in identifier (`print`, `console`, `printf`,
     /// …). Coloured like a function name, but classified separately so it wins
     /// over the in-document symbol pass and never gets a plain-identifier look.
@@ -20,7 +27,86 @@ public enum TokenKind: Hashable, Sendable {
     case symbolFunction
     /// An in-document variable / binding name.
     case symbolVariable
+    /// A parameter at its declaration: the variable colour, a kind of its own
+    /// (for completion and position roles).
+    case parameter
+    /// A constant or enum member (`MAX_SIZE`, a JS `const` binding).
+    case constant
+    /// An escape sequence inside a string (`\n`, `\x41`, `\u{1F600}`).
+    case escape
+    /// A regular-expression literal (JS `/re/`, a Python raw string).
+    case regex
+    /// An interpolation opener / closer (`${`, `}`, Swift `\(` / `)`).
+    case interpolationDelimiter
+    /// An HTML / XML tag name (also YAML mapping keys, which VS Code scopes
+    /// as tags).
+    case tagName
+    /// The `<`, `</`, `>`, `/>` around a tag name.
+    case tagPunctuation
+    /// An HTML / XML attribute name.
+    case attributeName
+    /// A Markdown heading (drawn bold, see `HighlightTheme.isBold`).
+    case heading
+    /// A string in markup and data files — HTML / XML attribute values and
+    /// CDATA, YAML plain and block scalars: the string colour in Dark Modern,
+    /// blue in Light Modern (`light_vs.json` scopes these apart).
+    case markupValue
     case plain
+}
+
+/// How the highlighter colours identifiers the language rules leave
+/// uncoloured (M17 T17.7, plan §6: "位置确定的语法角色优先于全文符号表").
+///
+/// In the gaps between rule tokens every identifier is classified, first
+/// match wins:
+/// 1. **Position role**: a declaration of the published `DeclarationScan`
+///    at exactly this range (mapped through the edit journal) takes
+///    `roles[kind]` — also over an overridable rule token of the same range
+///    (`HighlightEngine.overridableByRoles`: a parameter named like a
+///    built-in, Python's `self` parameter).
+/// 2. **Symbol table**: a file-wide declared function / type / variable
+///    name, each category only when enabled here.
+/// 3. `otherIdentifiers` (JS / TS, C++, C#, Go, Rust: VS Code colours every
+///    reference as a variable).
+///
+/// Pure value, `Sendable`; the defaults keep the T17.4 behaviour (whole
+/// table, no roles).
+public struct IdentifierPolicy: Sendable {
+    public var tableFunctions: Bool
+    public var tableTypes: Bool
+    public var tableVariables: Bool
+    public var otherIdentifiers: TokenKind?
+    /// Declaration kind → colour at the declared name.
+    public var roles: [DeclarationScan.DeclarationKind: TokenKind]
+    /// A `.variable` declaration written after `const` (JS / TS
+    /// `const x`, destructuring included; Go `const x`) is `.constant`.
+    public var constDeclarationsAreConstants: Bool
+    /// `$` is an identifier character (JS / TS).
+    public var dollarIdentifiers: Bool
+
+    public init(tableFunctions: Bool = true, tableTypes: Bool = true, tableVariables: Bool = true,
+                otherIdentifiers: TokenKind? = nil,
+                roles: [DeclarationScan.DeclarationKind: TokenKind] = [:],
+                constDeclarationsAreConstants: Bool = false, dollarIdentifiers: Bool = false) {
+        self.tableFunctions = tableFunctions
+        self.tableTypes = tableTypes
+        self.tableVariables = tableVariables
+        self.otherIdentifiers = otherIdentifiers
+        self.roles = roles
+        self.constDeclarationsAreConstants = constDeclarationsAreConstants
+        self.dollarIdentifiers = dollarIdentifiers
+    }
+
+    /// The T17.4 behaviour: every table category, nothing else.
+    public static let tableOnly = IdentifierPolicy()
+
+    /// Functions / methods, classes / types and parameters at their
+    /// declarations (what every grammar VS Code ships colours there).
+    public static let declarationRoles: [DeclarationScan.DeclarationKind: TokenKind] = [
+        .function: .symbolFunction, .method: .symbolFunction,
+        .class: .type, .type: .type,
+        .parameter: .parameter,
+    ]
 }
 
 /// A single, ordered tokenizing rule: a compiled regular expression plus the
@@ -42,6 +128,52 @@ public struct LanguageRule {
         // swiftlint:disable:next force_try
         self.regex = try! NSRegularExpression(pattern: pattern)
         self.kind = kind
+    }
+}
+
+/// An ordered rule list compiled into one regular expression (M17 T17.7):
+/// the rules' patterns as capturing alternatives `(p0)|(p1)|…` in order, so
+/// an anchored match at a position takes the first rule that matches there
+/// — the rule loop's priority — with a single regex call instead of one per
+/// rule (the per-call cost dominated the highlight pass). The matching rule
+/// is the first alternative whose group participated. Rules must not use
+/// backreferences (group numbers shift) or match the empty string (an empty
+/// match counts as no match).
+struct RuleSet: @unchecked Sendable {   // NSRegularExpression is immutable and thread-safe
+    private let regex: NSRegularExpression?
+    private let kinds: [TokenKind]
+    /// Capture group of each rule's alternative.
+    private let groups: [Int]
+
+    init(_ rules: [LanguageRule]) {
+        var pattern = ""
+        var groups: [Int] = []
+        var next = 1
+        for (index, rule) in rules.enumerated() {
+            if index > 0 { pattern += "|" }
+            pattern += "(" + rule.regex.pattern + ")"
+            groups.append(next)
+            next += 1 + rule.regex.numberOfCaptureGroups
+        }
+        // swiftlint:disable:next force_try
+        regex = rules.isEmpty ? nil : try! NSRegularExpression(pattern: pattern)
+        kinds = rules.map(\.kind)
+        self.groups = groups
+    }
+
+    var isEmpty: Bool { regex == nil }
+
+    /// The first rule matching at `range.location` (anchored, transparent
+    /// bounds, `^` only at a real line start) and its match, or nil.
+    func match(in line: String, range: NSRange) -> (range: NSRange, kind: TokenKind)? {
+        guard let regex,
+              let match = regex.firstMatch(in: line, options: [.anchored, .withTransparentBounds, .withoutAnchoringBounds],
+                                           range: range),
+              match.range.length > 0 else { return nil }
+        for (index, group) in groups.enumerated() where match.range(at: group).location != NSNotFound {
+            return (match.range, kinds[index])
+        }
+        return nil
     }
 }
 
@@ -118,13 +250,31 @@ public struct LanguageDefinition {
     /// regex is reported as `.property` (JSON object keys: `\s*:`).
     private let propertyFollower: NSRegularExpression?
 
+    /// `rules` compiled (`RuleSet`): all of them (line-based languages, the
+    /// stateless long-line fallback), and those that run in code segments —
+    /// without `.comment` / `.string` rules unless the profile keeps them
+    /// (Python's tokenizer, which has no profile, skips both).
+    private let allRuleSet: RuleSet
+    let codeRuleSet: RuleSet
+    private let stringRuleSet: RuleSet
+
+    /// Profiled languages only (T17.7): rules matched inside string segments
+    /// (not inside escapes); the rest of the string stays `.string`. Printf
+    /// placeholders (`%s`, `%zu`) in C, C++ and Go.
+    public let stringRules: [LanguageRule]
+
+    /// How identifiers outside rule tokens are coloured (T17.7).
+    public let identifierPolicy: IdentifierPolicy
+
     public init(identifier: String,
                 fileExtensions: [String],
                 rules: [LanguageRule],
                 keywords: [String] = [],
                 builtins: [String] = [],
                 lexicalProfile: LexicalProfile? = nil,
-                propertyStringFollower: String? = nil) {
+                propertyStringFollower: String? = nil,
+                stringRules: [LanguageRule] = [],
+                identifierPolicy: IdentifierPolicy = .tableOnly) {
         self.identifier = identifier
         self.fileExtensions = fileExtensions
         self.rules = rules
@@ -134,6 +284,15 @@ public struct LanguageDefinition {
         self.lexicalScanner = lexicalProfile.map(LexicalScanner.init(profile:))
         // swiftlint:disable:next force_try
         self.propertyFollower = propertyStringFollower.map { try! NSRegularExpression(pattern: $0) }
+        self.stringRules = stringRules
+        self.identifierPolicy = identifierPolicy
+        let keepsStrings = lexicalProfile?.keepsStringRules ?? false
+        let keepsComments = lexicalProfile?.keepsCommentRules ?? false
+        self.allRuleSet = RuleSet(rules)
+        self.codeRuleSet = RuleSet(rules.filter {
+            !($0.kind == .comment && !keepsComments) && !($0.kind == .string && !keepsStrings)
+        })
+        self.stringRuleSet = RuleSet(stringRules)
     }
 
     /// Tokenizes a single line into a list of `(range, kind)` spans.
@@ -156,7 +315,7 @@ public struct LanguageDefinition {
             return tokens(in: ns, range: NSRange(location: 0, length: ns.length), state: &state)
         }
         var tokens: [(range: NSRange, kind: TokenKind)] = []
-        applyRules(in: line, from: 0, to: ns.length, offset: 0, skipStringsAndComments: false) {
+        applyRules(in: line, from: 0, to: ns.length, offset: 0, ruleSet: allRuleSet) {
             tokens.append($0)
         }
         return tokens
@@ -168,8 +327,11 @@ public struct LanguageDefinition {
     /// Ranges are absolute, ascending and non-overlapping. String and comment
     /// segments become one `.string` / `.comment` token each (a multi-line
     /// string is one token; with `propertyStringFollower`, a key string is
-    /// `.property`), interpolation delimiters `.punctuation`, atoms their
-    /// form's kind, line-block segments one token of their body kind (also
+    /// `.property`; `stringRules` matches split a string), escapes `.escape`,
+    /// interpolation delimiters the profile's `interpolationDelimiterKind`,
+    /// atoms their form's kind (a `.regex` atom split into regex body,
+    /// escapes and flags, `regexTokens`), line-block segments one token of
+    /// their body kind (also
     /// `.plain`, which keeps symbol colouring out); inside code segments the
     /// regex `rules` run line by line exactly as in `tokenize(line:)`
     /// (anchored, transparent bounds, `^` only at a real line start), limited
@@ -212,7 +374,7 @@ public struct LanguageDefinition {
         let windowEnd = max(NSMaxRange(range), min(lineEnd, NSMaxRange(range) + Self.ruleContext))
         let window = text.substring(with: NSRange(location: windowStart, length: windowEnd - windowStart))
         applyRules(in: window, from: 0, to: windowEnd - windowStart,
-                   offset: windowStart, skipStringsAndComments: false) { token in
+                   offset: windowStart, ruleSet: allRuleSet) { token in
             let piece = NSIntersectionRange(token.range, range)
             if piece.length > 0 { out.append((piece, token.kind)) }
         }
@@ -261,9 +423,7 @@ public struct LanguageDefinition {
                 let matchUpTo = upTo == limit ? min(matchLimit, NSMaxRange(lr)) : upTo
                 let (ls, base) = ruleWindow(lr, from: loc, to: matchUpTo)
                 applyRules(in: ls, from: loc - base, to: matchUpTo - base, offset: base,
-                           skipStringsAndComments: lexicalScanner != nil,
-                           keepStrings: lexicalProfile?.keepsStringRules ?? false,
-                           keepComments: lexicalProfile?.keepsCommentRules ?? false) { token in
+                           ruleSet: lexicalScanner != nil ? codeRuleSet : allRuleSet) { token in
                     if matchUpTo > upTo {
                         let clipped = NSIntersectionRange(token.range, NSRange(location: loc, length: upTo - loc))
                         if clipped.length > 0 { out.append((clipped, token.kind)) }
@@ -351,9 +511,18 @@ public struct LanguageDefinition {
                         key = isKey(NSMaxRange(segment))
                     }
                 }
-                out.append((segment, key ? .property : .string))
+                if key {
+                    out.append((segment, .property))
+                } else if stringRules.isEmpty {
+                    out.append((segment, lexicalProfile?.stringKind ?? .string))
+                } else {
+                    stringRuleTokens(in: text, segment: segment, into: &out)
+                }
             case .comment: out.append((segment, .comment))
-            case .interpolationDelimiter: out.append((segment, .punctuation))
+            case .escape: out.append((segment, .escape))
+            case .interpolationDelimiter:
+                out.append((segment, lexicalProfile?.interpolationDelimiterKind ?? .interpolationDelimiter))
+            case .atom(.regex): Self.regexTokens(in: text, atom: segment, into: &out)
             case .atom(let atomKind): out.append((segment, atomKind))
             case .block(let blockKind): out.append((segment, blockKind))
             }
@@ -361,41 +530,161 @@ public struct LanguageDefinition {
         return (out, stopped)
     }
 
-    /// The rule loop: at each position of `line[from..<to]` the first rule
-    /// that matches there wins; unmatched positions advance by one unit.
-    /// Emits ranges shifted by `offset`. `skipStringsAndComments` skips
-    /// `.comment` rules unless `keepComments`, and `.string` rules unless
-    /// `keepStrings`.
-    private func applyRules(in line: String, from: Int, to: Int, offset: Int,
-                            skipStringsAndComments: Bool, keepStrings: Bool = false, keepComments: Bool = false,
-                            _ append: ((range: NSRange, kind: TokenKind)) -> Void) {
-        var location = from
-        while location < to {
-            var matched = false
-            let searchRange = NSRange(location: location, length: to - location)
-            for rule in rules {
-                if skipStringsAndComments,
-                   (rule.kind == .comment && !keepComments) || (rule.kind == .string && !keepStrings) { continue }
-                // `.anchored` forces the match to begin exactly at `location`,
-                // giving us "first rule that matches here wins" priority.
-                // `.withTransparentBounds` lets `\b` / lookbehind see the text
-                // *before* `location` — without it the search-range start acts
-                // as a fake word boundary, so e.g. the `in` inside `main` was
-                // tokenized as a keyword. `.withoutAnchoringBounds` keeps `^`
-                // from matching at the artificial range start for the same
-                // reason (a mid-line position is not a line start).
-                guard let match = rule.regex.firstMatch(
-                          in: line,
-                          options: [.anchored, .withTransparentBounds, .withoutAnchoringBounds],
-                          range: searchRange),
-                      match.range.length > 0 else { continue }
-                append((range: NSRange(location: match.range.location + offset, length: match.range.length),
-                        kind: rule.kind))
-                location += match.range.length
-                matched = true
+    /// `segment` (a string) as `stringRules` matches with `.string` around
+    /// them.
+    private func stringRuleTokens(in text: NSString, segment: NSRange,
+                                  into out: inout [(range: NSRange, kind: TokenKind)]) {
+        let body = text.substring(with: segment)
+        var last = 0
+        applyRules(in: body, from: 0, to: segment.length, offset: 0, ruleSet: stringRuleSet) { token in
+            if token.range.location > last {
+                out.append((NSRange(location: segment.location + last, length: token.range.location - last), .string))
+            }
+            out.append((NSRange(location: segment.location + token.range.location, length: token.range.length),
+                        token.kind))
+            last = NSMaxRange(token.range)
+        }
+        if segment.length > last {
+            out.append((NSRange(location: segment.location + last, length: segment.length - last), .string))
+        }
+    }
+
+    /// A regex literal atom (`/body/flags`, T17.7) split as VS Code's
+    /// JavaScript grammar scopes it (colours of the Modern themes): the
+    /// delimiters and plain body `.regex`; escapes `.escape` except the class
+    /// escapes `\d \D \w \W \s \S \b \B` (`.regex`); quantifiers (`*`
+    /// `+` `?` `{m,n}`) `.escape`; anchors `^` `$` and the alternation `|`
+    /// `.symbolFunction` (`keyword.control.anchor` / `keyword.operator.or`);
+    /// group and class brackets (`(`, `(?:`, `(?<`, `)`, `[`, `[^`, `]`)
+    /// `.string`, a group name `.symbolVariable`; the flags `.keyword`.
+    /// Any other atom shape is one `.regex` token.
+    static func regexTokens(in text: NSString, atom: NSRange,
+                            into out: inout [(range: NSRange, kind: TokenKind)]) {
+        let end = NSMaxRange(atom)
+        guard atom.length >= 2, text.character(at: atom.location) == 47 else {   // /
+            out.append((atom, .regex))
+            return
+        }
+        // The closing `/`: the last one (flags are letters).
+        var close = end - 1
+        while close > atom.location, text.character(at: close) != 47 { close -= 1 }
+        guard close > atom.location else { out.append((atom, .regex)); return }
+        func unit(_ i: Int) -> unichar { i < close ? text.character(at: i) : 0 }
+        func append(_ start: Int, _ stop: Int, _ kind: TokenKind) {
+            guard stop > start else { return }
+            if let lastToken = out.last, lastToken.kind == kind, NSMaxRange(lastToken.range) == start {
+                out[out.count - 1].range.length += stop - start
+            } else {
+                out.append((NSRange(location: start, length: stop - start), kind))
+            }
+        }
+        append(atom.location, atom.location + 1, .regex)
+        var i = atom.location + 1
+        var inClass = false
+        while i < close {
+            let c = unit(i)
+            var stop = i + 1
+            var kind: TokenKind = .regex
+            switch c {
+            case 92:                                                    // backslash
+                let escaped = unit(i + 1)
+                stop = min(close, i + 2)
+                if (0xD800...0xDBFF).contains(escaped), stop < close { stop += 1 }
+                let classEscape = [UInt16(100), 68, 119, 87, 115, 83, 98, 66].contains(escaped)   // dDwWsSbB
+                kind = classEscape ? .regex : .escape
+            case 91 where !inClass:                                     // [ / [^
+                inClass = true
+                kind = .string
+                if unit(i + 1) == 94 { stop = i + 2 }
+            case 93 where inClass:                                      // ]
+                inClass = false
+                kind = .string
+            case _ where inClass:
+                kind = .regex
+            case 40:                                                    // ( (?: (?= (?! (?<= (?<! (?<name>
+                kind = .string
+                if unit(i + 1) == 63 {
+                    stop = i + 2
+                    if unit(stop) == 60, unit(stop + 1) != 61, unit(stop + 1) != 33 {
+                        stop += 1                                       // (?<  then the name
+                        append(i, stop, .string)
+                        var e = stop
+                        while e < close, unit(e) != 62 { e += 1 }
+                        append(stop, e, .symbolVariable)
+                        i = e
+                        continue
+                    }
+                    if unit(stop) == 60 { stop += 1 }
+                    if [UInt16(58), 61, 33].contains(unit(stop)) { stop += 1 }
+                }
+            case 41, 62:                                                // ) and a group name's >
+                kind = c == 41 ? .string : .regex
+                if c == 62, i > atom.location + 1, out.last?.kind == .symbolVariable { kind = .string }
+            case 42, 43, 63:                                            // * + ?
+                kind = .escape
+            case 123:                                                   // {m,n}
+                var e = i + 1
+                var digits = 0
+                while e < close, (48...57).contains(unit(e)) || unit(e) == 44 {
+                    if unit(e) != 44 { digits += 1 }
+                    e += 1
+                }
+                if digits > 0, e < close, unit(e) == 125 { stop = e + 1; kind = .escape }
+            case 94, 36, 124:                                           // ^ $ |
+                kind = .symbolFunction
+            default:
                 break
             }
-            if !matched { location += 1 }
+            append(i, stop, kind)
+            i = stop
+        }
+        append(close, close + 1, .regex)
+        append(close + 1, end, .keyword)
+    }
+
+    @inline(__always)
+    private static func isWordUnit(_ u: unichar) -> Bool {
+        u == 95 || (48...57).contains(u) || (65...90).contains(u) || (97...122).contains(u) || u >= 128
+    }
+
+    /// The rule loop: at each position of `line[from..<to]` the first rule
+    /// that matches there wins; unmatched positions advance by one unit —
+    /// except that when no rule matches at a word unit (`[A-Za-z0-9_]` or
+    /// ≥ U+0080), the rest of that word is skipped too (T17.7: the rules
+    /// never start inside a word with another outcome — they begin with a
+    /// non-word unit, a word-boundary guard, or match a word suffix only
+    /// when they match the whole word — so trying each unit of an unmatched
+    /// identifier only multiplied the cost by its length).
+    /// Emits ranges shifted by `offset`; `ruleSet` is the rule list in use
+    /// (all rules, the code-segment rules or `stringRules`).
+    ///
+    /// `.anchored` forces the match to begin exactly at `location`, giving
+    /// "first rule that matches here wins" priority. `.withTransparentBounds`
+    /// lets `\b` / lookbehind see the text *before* `location` — without it
+    /// the search-range start acts as a fake word boundary, so e.g. the `in`
+    /// inside `main` was tokenized as a keyword. `.withoutAnchoringBounds`
+    /// keeps `^` from matching at the artificial range start for the same
+    /// reason (a mid-line position is not a line start).
+    private func applyRules(in line: String, from: Int, to: Int, offset: Int, ruleSet: RuleSet,
+                            _ append: ((range: NSRange, kind: TokenKind)) -> Void) {
+        guard !ruleSet.isEmpty else { return }
+        var location = from
+        let units = line as NSString
+        while location < to {
+            var matched = false
+            if let match = ruleSet.match(in: line, range: NSRange(location: location, length: to - location)) {
+                append((range: NSRange(location: match.range.location + offset, length: match.range.length),
+                        kind: match.kind))
+                location += match.range.length
+                matched = true
+            }
+            if !matched {
+                let unit = units.character(at: location)
+                location += 1
+                if Self.isWordUnit(unit) {
+                    while location < to, Self.isWordUnit(units.character(at: location)) { location += 1 }
+                }
+            }
         }
     }
 }

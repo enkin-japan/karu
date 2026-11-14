@@ -5,6 +5,18 @@ import Foundation
 /// analysis keeps (`CheckpointStore`); no per-line token cache or parser
 /// dependency. `State` is a small value (`Sendable`, `Equatable`) so it can be
 /// stored in a checkpoint and compared in tests.
+///
+/// Token kinds (M17 T17.7, as VS Code's MagicPython grammar colours them in
+/// the Modern themes): a string prefix is `.keyword`; a lowercase-`r` raw
+/// string (`r`, `rb`, `br`) is a regular expression (`.regex`, with its
+/// escapes, quantifiers, groups and classes split out, `regexUnit`); an `R`
+/// or `rf` raw string is a plain `.string`; in other strings the escape
+/// sequences Python defines are `.escape` (`\q` stays string text; bytes have
+/// no `\u`, `\U`, `\N`), and in plain non-bytes strings `%s` / `{0}` format
+/// placeholders are `.interpolationDelimiter`. In an f-string, `{` / `}`, the
+/// `!r` conversion and the `:` format spec are `.interpolationDelimiter`,
+/// `{{` / `}}` `.escape`; identifiers inside a field get no kind of their own
+/// (the rules still colour keywords and built-ins there).
 public enum PythonTokenizer {
     public struct Frame: Sendable, Equatable {
         var quote: unichar = 0 // zero means replacement expression
@@ -12,6 +24,12 @@ public enum PythonTokenizer {
         var formatted = false
         var brackets: [unichar] = []
         var formatSpec = false
+        /// Raw string: a backslash only keeps the next character literal.
+        var raw = false
+        /// Raw string read as a regular expression (lowercase `r`, not `rf`).
+        var regex = false
+        /// Bytes literal: no `\u`, `\U`, `\N{…}` escapes, no placeholders.
+        var bytes = false
     }
     public struct State: Sendable, Equatable {
         var frames: [Frame] = []
@@ -71,6 +89,7 @@ public enum PythonTokenizer {
             }
             let c = unit(i)
             if let top = state.frames.last, top.quote != 0 {
+                let content: TokenKind = top.regex ? .regex : .string
                 if top.width == 1, c == 10 || c == 13 {
                     state.frames.removeLast(); i += 1; continue
                 }
@@ -83,29 +102,44 @@ public enum PythonTokenizer {
                     if next.location > i { i = next.location; continue }
                 }
                 if c == top.quote, (0..<top.width).allSatisfy({ unit(i + $0) == top.quote }) {
-                    add(i, i + top.width, .string); i += top.width; state.frames.removeLast(); continue
+                    add(i, i + top.width, content); i += top.width; state.frames.removeLast(); continue
                 }
                 if c == 92, i + 1 < length, unit(i + 1) != 123, unit(i + 1) != 125 {
                     let count = unit(i + 1) == 13 && unit(i + 2) == 10 ? 3 : 2
-                    add(i, i + count, .string); i += count; continue
+                    if !emit || top.raw && !top.regex {
+                        add(i, i + count, content); i += count; continue
+                    }
+                    let (end, kind) = top.regex
+                        ? regexEscape(at: i, count: count, unit: unit)
+                        : escape(at: i, count: count, bytes: top.bytes, formatted: top.formatted,
+                                 length: length, unit: unit)
+                    add(i, end, kind); i = end; continue
                 }
                 if top.formatted, c == 123 {
-                    if unit(i + 1) == 123 { add(i, i + 2, .string); i += 2; continue }
-                    add(i, i + 1, .punctuation); i += 1
+                    if unit(i + 1) == 123 { add(i, i + 2, .escape); i += 2; continue }
+                    add(i, i + 1, .interpolationDelimiter); i += 1
                     if state.frames.count < 64 { state.frames.append(Frame()) }
                     continue
                 }
                 if top.formatted, c == 125, unit(i + 1) == 125 {
-                    add(i, i + 2, .string); i += 2; continue
+                    add(i, i + 2, .escape); i += 2; continue
                 }
-                add(i, i + 1, .string); i += 1; continue
+                if emit, top.regex {
+                    let (end, kind) = regexUnit(at: i, length: length, unit: unit)
+                    add(i, end, kind); i = end; continue
+                }
+                if emit, !top.raw, !top.formatted, !top.bytes, c == 37 || c == 123,
+                   let end = placeholderEnd(at: i, length: length, unit: unit) {
+                    add(i, end, .interpolationDelimiter); i = end; continue
+                }
+                add(i, i + 1, content); i += 1; continue
             }
             let inExpression = state.frames.last?.quote == 0
             if inExpression, state.frames.last!.formatSpec {
-                if c == 125 { add(i, i + 1, .punctuation); state.frames.removeLast() }
+                if c == 125 { add(i, i + 1, .interpolationDelimiter); state.frames.removeLast() }
                 else if c == 123, state.frames.count < 64 {
-                    add(i, i + 1, .punctuation); state.frames.append(Frame())
-                } else { add(i, i + 1, .string) }
+                    add(i, i + 1, .interpolationDelimiter); state.frames.append(Frame())
+                } else { add(i, i + 1, .interpolationDelimiter) }
                 i += 1; continue
             }
             if c == 35 {
@@ -121,23 +155,29 @@ public enum PythonTokenizer {
             if unit(quoteAt) == 34 || unit(quoteAt) == 39 {
                 let quote = unit(quoteAt)
                 let width = unit(quoteAt + 1) == quote && unit(quoteAt + 2) == quote ? 3 : 1
-                let prefix = ns.substring(with: NSRange(location: i, length: quoteAt - i)).lowercased()
-                add(i, quoteAt + width, .string)
+                let rawPrefix = ns.substring(with: NSRange(location: i, length: quoteAt - i))
+                let prefix = rawPrefix.lowercased()
+                let formatted = prefix.contains("f")
+                let raw = prefix.contains("r")
+                let regex = raw && !formatted && rawPrefix.contains("r")
+                add(i, quoteAt, .keyword)
+                add(quoteAt, quoteAt + width, regex ? .regex : .string)
                 if state.frames.count < 64 {
-                    state.frames.append(Frame(quote: quote, width: width, formatted: prefix.contains("f")))
+                    state.frames.append(Frame(quote: quote, width: width, formatted: formatted,
+                                              raw: raw, regex: regex, bytes: prefix.contains("b")))
                 }
                 i = quoteAt + width; continue
             }
             if inExpression {
                 let last = state.frames.count - 1
                 if c == 125, state.frames[last].brackets.isEmpty {
-                    add(i, i + 1, .punctuation); state.frames.removeLast(); i += 1; continue
+                    add(i, i + 1, .interpolationDelimiter); state.frames.removeLast(); i += 1; continue
                 }
                 if c == 58, state.frames[last].brackets.isEmpty, unit(i + 1) != 61 {
-                    add(i, i + 1, .punctuation); state.frames[last].formatSpec = true; i += 1; continue
+                    add(i, i + 1, .interpolationDelimiter); state.frames[last].formatSpec = true; i += 1; continue
                 }
                 if c == 33, state.frames[last].brackets.isEmpty, [UInt16(115),114,97].contains(unit(i + 1)) {
-                    add(i, i + 2, .punctuation); i += 2; continue
+                    add(i, i + 2, .interpolationDelimiter); i += 2; continue
                 }
                 if [UInt16(40),91,123].contains(c) { state.frames[last].brackets.append(c) }
                 if let open = state.frames[last].brackets.last,
@@ -145,20 +185,12 @@ public enum PythonTokenizer {
                     state.frames[last].brackets.removeLast()
                 }
             }
-            if emit, let line {
-                let range = NSRange(location: i, length: length - i)
-                if let token = language.rules.lazy.compactMap({ rule -> (NSRange, TokenKind)? in
-                    guard rule.kind != .string && rule.kind != .comment,
-                          let match = rule.regex.firstMatch(in: line, options: [.anchored, .withTransparentBounds, .withoutAnchoringBounds], range: range), match.range.length > 0 else { return nil }
-                    return (match.range, rule.kind)
-                }).first {
-                    add(i, NSMaxRange(token.0), token.1); i = NSMaxRange(token.0); continue
-                }
+            if emit, let line,
+               let token = language.codeRuleSet.match(in: line, range: NSRange(location: i, length: length - i)) {
+                add(i, NSMaxRange(token.range), token.kind); i = NSMaxRange(token.range); continue
             }
             if identifier(c) {
-                let start = i
                 repeat { i += 1 } while i < length && identifier(unit(i))
-                if inExpression { add(start, i, .symbolVariable) }
             } else {
                 if inExpression, c != 32 && c != 9 && c != 10 && c != 13 { add(i, i + 1, .punctuation) }
                 i += 1
@@ -171,5 +203,128 @@ public enum PythonTokenizer {
             state.frames.removeLast()
         }
         return result
+    }
+
+    private static func isHex(_ u: unichar) -> Bool {
+        (48...57).contains(u) || (65...70).contains(u) || (97...102).contains(u)
+    }
+
+    /// An escape at `i` (a backslash; `count` units with a CRLF continuation)
+    /// in a non-raw string: its end and kind — `.escape` for the sequences
+    /// Python defines, `.string` for any other `\c`. Never extends over a
+    /// quote, a line break or (in an f-string) a brace, so the emitting pass
+    /// and the state-only pass agree on the state.
+    private static func escape(at i: Int, count: Int, bytes: Bool, formatted: Bool, length: Int,
+                               unit: (Int) -> unichar) -> (Int, TokenKind) {
+        let n = unit(i + 1)
+        func hexEnd(_ digits: Int) -> Int? {
+            for k in 0..<digits where i + 2 + k >= length || !isHex(unit(i + 2 + k)) { return nil }
+            return i + 2 + digits
+        }
+        switch n {
+        case 10, 13, 92, 39, 34, 97, 98, 102, 110, 114, 116, 118:   // newline \ ' " a b f n r t v
+            return (i + count, .escape)
+        case 48...55:                                               // octal
+            var e = i + 2
+            while e < length, e - i < 4, (48...55).contains(unit(e)) { e += 1 }
+            return (e, .escape)
+        case 120:                                                   // x
+            if let e = hexEnd(2) { return (e, .escape) }
+        case 117 where !bytes:                                      // u
+            if let e = hexEnd(4) { return (e, .escape) }
+        case 85 where !bytes:                                       // U
+            if let e = hexEnd(8) { return (e, .escape) }
+        case 78 where !bytes && !formatted:                         // N{…}
+            if unit(i + 2) == 123 {
+                var e = i + 3
+                while e < length, e - i < 96, ![UInt16(125), 10, 13, 34, 39].contains(unit(e)) { e += 1 }
+                if e < length, unit(e) == 125, e > i + 3 { return (e + 1, .escape) }
+            }
+        default:
+            break
+        }
+        return (i + count, .string)
+    }
+
+    /// An escape at `i` inside a regex string: `\d`-style class escapes are
+    /// `.regex`, any other escape (`\.`, `\t`, `\x41`) `.escape`.
+    private static func regexEscape(at i: Int, count: Int, unit: (Int) -> unichar) -> (Int, TokenKind) {
+        let n = unit(i + 1)
+        if [UInt16(100), 68, 119, 87, 115, 83, 98, 66, 65, 90].contains(n) { return (i + 2, .regex) }   // dDwWsSbBAZ
+        if n == 120, isHex(unit(i + 2)), isHex(unit(i + 3)) { return (i + 4, .escape) }
+        return (i + count, .escape)
+    }
+
+    /// One regex token at `i` (not a backslash or quote): quantifiers
+    /// (`*`, `+`, `?`, `{m,n}`) `.escape`, group and class brackets
+    /// `.string`, a named group's `?P<name>` `.keyword`, the rest `.regex`.
+    private static func regexUnit(at i: Int, length: Int, unit: (Int) -> unichar) -> (Int, TokenKind) {
+        let c = unit(i)
+        switch c {
+        case 42, 43:                                                // * +
+            return (i + 1, .escape)
+        case 123:                                                   // {m,n}
+            var e = i + 1
+            var digits = 0
+            while e < length, (48...57).contains(unit(e)) || unit(e) == 44 {
+                if unit(e) != 44 { digits += 1 }
+                e += 1
+            }
+            if digits > 0, e < length, unit(e) == 125 { return (e + 1, .escape) }
+        case 40:                                                    // ( and group syntax
+            guard unit(i + 1) == 63 else { return (i + 1, .string) }
+            if unit(i + 2) == 80, unit(i + 3) == 60 {               // (?P<name>: `(` only
+                return (i + 1, .string)
+            }
+            var e = i + 2
+            if unit(e) == 60 { e += 1 }                             // (?<= (?<!
+            if [UInt16(58), 61, 33].contains(unit(e)) { return (e + 1, .string) }   // : = !
+            return (i + 1, .string)
+        case 63:                                                    // ? (or ?P<name>)
+            if unit(i + 1) == 80, unit(i + 2) == 60 {
+                var e = i + 3
+                while e < length, e - i < 64, ![UInt16(62), 10, 13, 34, 39].contains(unit(e)) { e += 1 }
+                if e < length, unit(e) == 62 { return (e + 1, .keyword) }
+            }
+            return (i + 1, .escape)
+        case 41, 91, 93:                                            // ) [ ]
+            return (i + 1, .string)
+        default:
+            break
+        }
+        return (i + 1, .regex)
+    }
+
+    /// End of a `%`-format or `{}`-format placeholder at `i` in a plain
+    /// string (`%s`, `%-5.2f`, `%(name)s`, `{0}`, `{name!r:>10}`), or nil.
+    private static func placeholderEnd(at i: Int, length: Int, unit: (Int) -> unichar) -> Int? {
+        let c = unit(i)
+        if c == 37 {                                                // %
+            var e = i + 1
+            if e < length, unit(e) == 40 {                          // %(name)
+                while e < length, e - i < 64, ![UInt16(41), 10, 13, 34, 39].contains(unit(e)) { e += 1 }
+                guard e < length, unit(e) == 41 else { return nil }
+                e += 1
+            }
+            while e < length, [UInt16(45), 43, 32, 35, 48].contains(unit(e)) { e += 1 }   // flags
+            while e < length, (48...57).contains(unit(e)) || unit(e) == 42 { e += 1 }   // width
+            if e < length, unit(e) == 46 {                          // .precision
+                e += 1
+                while e < length, (48...57).contains(unit(e)) || unit(e) == 42 { e += 1 }
+            }
+            guard e < length else { return nil }
+            let conversion = unit(e)
+            let conversions: [UInt16] = Array("diouxXeEfFgGcrsa%".utf16)
+            return conversions.contains(conversion) ? e + 1 : nil
+        }
+        // {…}: an identifier, digits, `.` / `[…]` access, `!r`, `:spec`.
+        var e = i + 1
+        while e < length, e - i < 64 {
+            let u = unit(e)
+            if u == 125 { return e > i ? e + 1 : nil }
+            if u == 123 || u == 10 || u == 13 || u == 34 || u == 39 || u == 32 { return nil }
+            e += 1
+        }
+        return nil
     }
 }

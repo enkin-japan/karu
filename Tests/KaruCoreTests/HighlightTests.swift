@@ -86,7 +86,11 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
     // A value string containing an escaped quote must be one token.
     let pairs = spans(json, #"{"k": "a\"b"}"#)
     #expect(kind(of: #""k""#, in: pairs) == .property)
-    #expect(kind(of: #""a\"b""#, in: pairs) == .string)
+    // T17.7: the escape is its own token inside the string (VS Code's
+    // `constant.character.escape`); the string still ends after `b"`.
+    #expect(kind(of: #""a"#, in: pairs) == .string)
+    #expect(kind(of: #"\""#, in: pairs) == .escape)
+    #expect(kind(of: #"b""#, in: pairs) == .string)
 }
 
 @Test func tokenizerLeavesWhitespaceUntokenized() {
@@ -111,15 +115,17 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
 
 @Test func pythonBuiltinDoesNotOverrideKeywordOrSelf() {
     let py = PythonLanguage.make()
-    // `open` is a built-in, `for`/`in` keywords, `self` a property — each keeps
+    // `open` is a built-in, `for`/`in` keywords, `self` a keyword — each keeps
     // its own classification (built-in rule runs after keyword and self/cls).
+    // T17.7: `for` / `in` / `return` are control keywords, `self` is
+    // `variable.language` (the keyword colour), `type` a built-in type.
     let pairs = spans(py, "for self in open(path): return type(self)")
-    #expect(kind(of: "for", in: pairs) == .keyword)
-    #expect(kind(of: "in", in: pairs) == .keyword)
-    #expect(kind(of: "return", in: pairs) == .keyword)
-    #expect(kind(of: "self", in: pairs) == .property)
+    #expect(kind(of: "for", in: pairs) == .controlKeyword)
+    #expect(kind(of: "in", in: pairs) == .controlKeyword)
+    #expect(kind(of: "return", in: pairs) == .controlKeyword)
+    #expect(kind(of: "self", in: pairs) == .keyword)
     #expect(kind(of: "open", in: pairs) == .builtin)
-    #expect(kind(of: "type", in: pairs) == .builtin)
+    #expect(kind(of: "type", in: pairs) == .type)
 }
 
 @Test func builtinsInsideStringsAndCommentsAreNotColoured() {
@@ -135,17 +141,20 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
 @Test func javascriptBuiltinGlobalsAreColoured() {
     let js = JavaScriptLanguage.make()
     let pairs = spans(js, "console.log(Math.max(a, b));")
-    #expect(kind(of: "console", in: pairs) == .builtin)
-    #expect(kind(of: "Math", in: pairs) == .builtin)
-    // `log`/`max` are member names, not top-level built-ins → untokenized.
-    #expect(kind(of: "log", in: pairs) == nil)
+    // T17.7 (VS Code): an object before `.` is a variable, a member call a
+    // function.
+    #expect(kind(of: "console", in: pairs) == .symbolVariable)
+    #expect(kind(of: "Math", in: pairs) == .symbolVariable)
+    #expect(kind(of: "log", in: pairs) == .symbolFunction)
+    #expect(kind(of: "max", in: pairs) == .symbolFunction)
 }
 
 @Test func typescriptInheritsJavaScriptBuiltins() {
     let ts = TypeScriptLanguage.make()
     let pairs = spans(ts, "const p: Promise<number> = fetch(url);")
-    #expect(kind(of: "Promise", in: pairs) == .builtin)
-    #expect(kind(of: "fetch", in: pairs) == .builtin)
+    // T17.7: a built-in class is a type; a call is a function.
+    #expect(kind(of: "Promise", in: pairs) == .type)
+    #expect(kind(of: "fetch", in: pairs) == .symbolFunction)
     #expect(kind(of: "number", in: pairs) == .type)   // primitive type still wins
     #expect(kind(of: "const", in: pairs) == .keyword)
 }
@@ -160,23 +169,31 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
 @Test func cppInheritsCBuiltinsAndAddsStdLib() {
     let cpp = CppLanguage.make()
     let pairs = spans(cpp, "std::cout << printf();")
-    #expect(kind(of: "std", in: pairs) == .builtin)
-    #expect(kind(of: "cout", in: pairs) == .builtin)
-    #expect(kind(of: "printf", in: pairs) == .builtin)   // inherited from C
+    // T17.7 (VS Code): `std::` is a scope qualifier (type colour); `cout` is
+    // a variable like every other C++ name (identifier pass, no rule token);
+    // a call is a function.
+    #expect(kind(of: "std", in: pairs) == .type)
+    #expect(kind(of: "cout", in: pairs) == nil)
+    #expect(kind(of: "printf", in: pairs) == .symbolFunction)
     #expect(kind(of: "::", in: pairs) == .punctuation)
 }
 
 @Test func csharpJavaAndBashBuiltinsAreColoured() {
+    // T17.7 (VS Code): objects before `.` are variables, calls functions;
+    // shell commands in command position are functions (with the leading
+    // blank), their arguments strings.
     let cs = CSharpLanguage.make()
-    #expect(kind(of: "Console", in: spans(cs, "Console.WriteLine(x);")) == .builtin)
+    #expect(kind(of: "Console", in: spans(cs, "Console.WriteLine(x);")) == .symbolVariable)
+    #expect(kind(of: "WriteLine", in: spans(cs, "Console.WriteLine(x);")) == .symbolFunction)
 
     let java = JavaLanguage.make()
-    #expect(kind(of: "System", in: spans(java, "System.out.println(x);")) == .builtin)
+    #expect(kind(of: "System", in: spans(java, "System.out.println(x);")) == .symbolVariable)
 
     let bash = BashLanguage.make()
     let pairs = spans(bash, "echo hi | grep x")
-    #expect(kind(of: "echo", in: pairs) == .builtin)
-    #expect(kind(of: "grep", in: pairs) == .builtin)
+    #expect(kind(of: "echo", in: pairs) == .symbolFunction)
+    #expect(kind(of: " grep", in: pairs) == .symbolFunction)
+    #expect(kind(of: "hi", in: pairs) == .string)
 }
 
 // MARK: - Theme: Dark/Light Modern palette + dynamic appearance
@@ -483,11 +500,11 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
     #expect(kind(of: "1", in: lines[2]) == .number)
     #expect(lines[4].first?.text == " ")
     #expect(lines[4].first?.kind == .string)
-    #expect(kind(of: "${", in: lines[4]) == .punctuation)
+    #expect(kind(of: "${", in: lines[4]) == .interpolationDelimiter)   // T17.7
     #expect(kind(of: "2", in: lines[4]) == .number)
     #expect(kind(of: " if", in: lines[4]) == .string)      // template text, not a keyword
     #expect(kind(of: "end`", in: lines[5]) == .string)
-    #expect(kind(of: "return", in: lines[5]) == .keyword)
+    #expect(kind(of: "return", in: lines[5]) == .controlKeyword)   // T17.7
     #expect(kind(of: "3", in: lines[5]) == .number)
 }
 

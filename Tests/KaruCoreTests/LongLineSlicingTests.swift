@@ -161,14 +161,18 @@ private let syntheticProfile = LexicalProfile(
 
 private let cFragments = ["\"", "L\"", "u8\"", "'", "'x'", "L'x'", "u8'a'", "'\\''", "1'000", "\\", "\\\"", "//",
                           "/*", "*/", "*", "/", "\n", "\r\n", " ", "abc", "x1", "42", "😀", "(", ")", "#include",
-                          "<a.h>", "u", "L", "U", "8"]
+                          "<a.h>", "u", "L", "U", "8",
+                          // T17.7: long escape forms.
+                          "\\x4F", "\\xABCDEF0123", "\\U0001F600", "\\u20AC", "\\377", "%zu", "%s"]
 private let markupFragments = ["<!--", "-->", "--", "<", ">", "\"", "'", "a=", "<div", "\n", "\r\n", " ", "abc",
                                "&amp;", "😀", "!", "["]
 
 private let fragments: [String: [String]] = [
     "javascript": ["\"", "'", "`", "${", "}", "{", "\\", "\\\"", "\\`", "//", "/*", "*/", "*", "/", "\n", "\r\n",
                    " ", "abc", "x1", "42", "1.5", "😀", "(", ")", "+", "=", ";", "r", "é",
-                   "/re/g", "/[/]/", "\\/", "[", "]", "return ", "\t", "/'/"],
+                   "/re/g", "/[/]/", "\\/", "[", "]", "return ", "\t", "/'/",
+                   // T17.7: long escape forms, complete and cut short.
+                   "\\x41", "\\x4", "\\u0041", "\\u00", "\\u{1F600}", "\\u{", "\\012", "\\0", "u", "F"],
     "c": cFragments,
     "cpp": cFragments + ["R\"(", ")\"", "R\"d(", ")d\"", "u8R\"x(", ")x\"", "R"],
     "csharp": ["\"", "\"\"", "\"\"\"", "\"\"\"\"", "$\"", "$$\"\"\"", "$\"\"\"", "@\"", "$@\"", "@$\"", "{", "{{", "}",
@@ -182,17 +186,21 @@ private let fragments: [String: [String]] = [
     "sql": ["'", "''", "\"", "\"\"", "`", "--", "-", "/*", "*/", "*", "/", "$$", "\n", "\r\n", " ", "SELECT", "x1",
             "42", "😀", "\\"],
     "swift": ["\"", "\"\"\"", "#\"", "\"#", "##\"", "\"##", "#\"\"\"", "\"\"\"#", "\\(", "\\#(", "\\##(", ")", "(",
-              "\\", "\\\"", "#", "/*", "*/", "//", "\n", "\r\n", " ", "abc", "42", "😀"],
+              "\\", "\\\"", "#", "/*", "*/", "//", "\n", "\r\n", " ", "abc", "42", "😀",
+              "\\u{1F600}", "\\#u{41}", "\\u{", "\\#n"],
     "toml": ["\"", "\"\"\"", "'", "'''", "#", "\\", "\\\"", "=", "[", "]", "\n", "\r\n", " ", "key", "42", "😀"],
     "html": markupFragments,
     "xml": markupFragments + ["<![CDATA[", "]]>", "]]", "<?xml", "CDATA"],
     "rust": ["\"", "r\"", "r#\"", "\"#", "br##\"", "\"##", "b\"", "c\"", "'", "'a", "'x'", "b'x'", "'\\u{1F600}'",
-             "'\\''", "/*", "*/", "//", "\\", "#", "r", "b", "\n", "\r\n", " ", "abc", "42", "😀", "(", ")", "!"],
+             "'\\''", "/*", "*/", "//", "\\", "#", "r", "b", "\n", "\r\n", " ", "abc", "42", "😀", "(", ")", "!",
+             "\\x7f", "\\x7", "\\u{10FFFF}", "\\u{_1}"],
     "json": ["\"", "\\", "\\\"", "{", "}", ":", ",", "[", "]", "1.5", "-2", "true", "null", " ", "\n", "\r\n",
              "😀", "abc", "\"k\":", "\"v\""],
     "bash": ["<<", "<<-", "<<<", "EOF", "\tEOF", "'EOF'", "\"EOF\"", "\\EOF", "\n", "\r\n", "\r", " ", "\t", "#",
              "$#", "${", "$(", ")", "}", "`", "\"", "'", "$'", "\\", "\\\"", "a", "x1", "😀", ";", "|", "&", "(",
-             "\nEOF\n", "\n\tEOF\r\n", "<<EOF\n", "<<-EOF\n"],
+             "\nEOF\n", "\n\tEOF\r\n", "<<EOF\n", "<<-EOF\n",
+             // T17.7: variables inside double quotes (`"$x"`, `"$1"`, `"$@"`).
+             "$x", "$abc_1", "$1", "$@", "$$", "$-", "$"],
     "yaml": ["|", ">", "|-", ">+", "|2", "-", "- ", ":", ": ", "?", "#", " #", "\"", "'", "''", "\\", "\\\"", "\n",
              "\r\n", "\r", " ", "  ", "    ", "\t", "key", "a", "😀", "[", ",", "{", "---",
              ": |\n  ", "\n- |\n", "\n  ", "\n    "],
@@ -277,6 +285,14 @@ struct LongLineSlicingScannerTests {
             + "  r\" # c\nd: don't \"x\"\n  | x\n?  |2\n   z"),
         ("markdown", "````js\r\nbody <!-- x\r\n```\r\n  ````  \r\ntext `c` <!-- a\r\n--> b\n~~~\n~~~~\n``` a`b\n"
             + "    ```\n   ~~~\n😀\n   ~~~ \r\nend"),
+        // T17.7: long escapes (complete, cut short, next to quotes and
+        // surrogate pairs) and Bash variables inside double quotes.
+        ("javascript", "s = \"\\x41\\x4g\\u0041\\u00\\u{1F600}\\u{\\012\\0\\q\\😀\" + `a\\u{41}${b}\\x` + '\\\\'"),
+        ("cpp", "s = \"\\xABCDEF0123 \\U0001F600\\U0001 \\u20AC\\377\\8\" + L'\\x41' + u8\"\\\"\";"),
+        ("rust", "let s = \"\\x7f\\x7\\u{10FFFF}\\u{_1}\\u{\" + r\"\\x41\" + b'\\x7f';"),
+        ("swift", "let s = \"\\u{1F600}\\u{\" + #\"\\u{41}\\#u{41}\\#n\"# + \"\\(x)\\t\""),
+        ("bash", "echo \"$x$1$@$$${y}$(z)$\" '$q' \"\\$a $abc_1\""),
+        ("yaml", "a: 'it''s ''x'''\nb: \"\\x41\\u00e9\\U0001F600\\q\""),
         ("synthetic", "x = R\"d(a)\"b)d\" + R\"(z)\" + rb##\"q\"#r\"## + #\"a\\(b)c\\#(d)e\"# + \"p\\(f(1))q\"\r\n"
             + "''' a '' b '''' c ''' + ''''x'''' + b'x' + '\\u{1F600}' + F`a${b}c{d}{{e` + %a%%b%\r"
             + "/* a /* b */ c */ (* d /* e *) f😀g // end\nabc_def"),
@@ -320,7 +336,10 @@ struct LongLineSlicingScannerTests {
         state = LexicalScanState()
         json.segments(escaped, from: 0, to: escaped.length, state: &state) { segments.append(($0, $1)) }
         #expect(state.isEmpty)
-        #expect(segments.map(\.0) == [NSRange(location: 0, length: 5), NSRange(location: 5, length: 2)])
+        // T17.7: the escape (with the whole pair) is its own segment.
+        #expect(segments.map(\.0) == [NSRange(location: 0, length: 1), NSRange(location: 1, length: 3),
+                                       NSRange(location: 4, length: 1), NSRange(location: 5, length: 2)])
+        #expect(segments.map(\.1) == [.string, .escape, .string, .code])
         // A target at or past `to` stops at `to`.
         state = LexicalScanState()
         #expect(rust.advance(ns, from: 0, to: ns.length, stoppingAtSafePointFrom: 99, state: &state) == ns.length)
@@ -519,13 +538,19 @@ private final class SlicePainter {
 }
 
 /// The colours one full single pass of `tokens` over the whole text gives,
-/// per unit of a requested range.
+/// per unit of a requested range — with the identifier pass the engine adds
+/// (T17.7: JS colours every identifier; no declarations here, so no roles
+/// and no table).
 private struct FullPass: @unchecked Sendable {
     let tokens: [(range: NSRange, kind: TokenKind)]
 
     init(_ def: LanguageDefinition, _ ns: NSString) {
         var state = LexicalScanState()
-        tokens = def.tokens(in: ns, range: NSRange(location: 0, length: ns.length), state: &state)
+        let whole = NSRange(location: 0, length: ns.length)
+        var ruleTokens = def.tokens(in: ns, range: whole, state: &state)
+        let identifiers = HighlightEngine.identifierTokens(in: ns, range: whole, tokens: &ruleTokens, roles: [],
+                                                           table: nil, policy: def.identifierPolicy)
+        tokens = (ruleTokens + identifiers).sorted { $0.range.location < $1.range.location }
     }
 
     /// Computed off the main actor, so the heavy reference pass does not hold
@@ -612,7 +637,11 @@ struct LongLineSlicingBandTests {
             #expect(band.painted.location >= start && NSMaxRange(band.painted) >= end, "trial \(trial): \(band.painted)")
             #expect(band.tokens.allSatisfy { NSIntersectionRange($0.range, band.painted) == $0.range })
             var mine = [ObjectIdentifier?](repeating: nil, count: band.painted.length)
-            for token in band.tokens {
+            // T17.7: plus the identifier pass the engine runs over the band.
+            var ruleTokens = band.tokens
+            let identifiers = HighlightEngine.identifierTokens(in: ns, range: band.painted, tokens: &ruleTokens,
+                                                               roles: [], table: nil, policy: def.identifierPolicy)
+            for token in ruleTokens + identifiers {
                 guard let colour = HighlightTheme().color(for: token.kind) else { continue }
                 for i in token.range.location..<NSMaxRange(token.range) {
                     mine[i - band.painted.location] = ObjectIdentifier(colour)
@@ -726,7 +755,8 @@ struct LongLineSlicingEngineTests {
             #expect(NSLocationInRange(offset, band), "\(label): \(offset) not in \(band)")
             let colours = expectBandMatches(painter, full, label)
             #expect(colours.contains(colour(.comment)) && colours.contains(colour(.string))
-                    && colours.contains(colour(.punctuation)), "\(label): band lacks comment / string / ${ colour")
+                    && colours.contains(colour(.interpolationDelimiter)) && colours.contains(colour(.escape)),
+                    "\(label): band lacks comment / string / ${ / escape colour")
         }
         let checkpoints = painter.engine.analysis.checkpoints.entries
         #expect(checkpoints.contains { $0.offset < lineStart })

@@ -12,6 +12,9 @@ import Testing
 // It records the *current* behaviour; it asserts only fixture integrity, not
 // quality targets. Outputs:
 //   - Tests/Fixtures/M17/baseline/karu/<highlight sample>.colors.tsv
+//   - with `KARU_M17_LIGHT=1` (T17.7) the highlight dump renders under the
+//     light appearance (Light Modern) into `baseline/karu-light_modern/`
+//     instead (not committed; compare with `vscode-light_modern/`)
 //   - Tests/Fixtures/M17/baseline/completion-baseline.tsv
 //   - Tests/Fixtures/M17/baseline/completion-summary.md
 //   - .build/m17-baseline/probes.txt (machine-dependent timings; not committed)
@@ -38,6 +41,8 @@ private enum M17Paths {
 }
 
 private let baselineEnabled = ProcessInfo.processInfo.environment["KARU_M17_BASELINE"] != nil
+/// T17.7: dump the highlight colours under the light appearance.
+private let baselineLight = ProcessInfo.processInfo.environment["KARU_M17_LIGHT"] == "1"
 
 // MARK: - Shared helpers
 
@@ -76,21 +81,27 @@ private func makeEditorLikeView(frame: NSRect) -> (NSScrollView, EditorTextView)
 }
 
 @MainActor
-private func makeWindow(contentSize: NSSize, content: NSView) -> NSWindow {
+private func makeWindow(contentSize: NSSize, content: NSView,
+                        appearance: NSAppearance.Name = .darkAqua) -> NSWindow {
     let window = NSWindow(contentRect: NSRect(origin: .zero, size: contentSize),
                           styleMask: [.titled, .resizable, .closable],
                           backing: .buffered, defer: true)
     window.isReleasedWhenClosed = false
-    window.appearance = NSAppearance(named: .darkAqua)
+    window.appearance = NSAppearance(named: appearance)
     window.contentView = content
     return window
 }
 
-/// Resolves `color` under darkAqua in sRGB as lowercase `#rrggbb`.
+/// Resolves `color` under an appearance (darkAqua by default) in sRGB as
+/// lowercase `#rrggbb`.
 @MainActor
 private final class DarkHexResolver {
     private var cache: [ObjectIdentifier: String] = [:]
-    private let dark = NSAppearance(named: .darkAqua)!
+    private let dark: NSAppearance
+
+    init(appearance: NSAppearance.Name = .darkAqua) {
+        dark = NSAppearance(named: appearance)!
+    }
 
     func hex(_ color: NSColor) -> String {
         let key = ObjectIdentifier(color)
@@ -388,7 +399,9 @@ struct M17BaselineTests {
     @Test func dumpHighlightColours() throws {
         let files = try highlightSampleFiles()
         #expect(files.count >= 24)
-        let resolver = DarkHexResolver()
+        let appearance: NSAppearance.Name = baselineLight ? .aqua : .darkAqua
+        let outDirectory = baselineLight ? "karu-light_modern" : "karu"
+        let resolver = DarkHexResolver(appearance: appearance)
         for file in files {
             let text = try readText(file.url)
             let length = (text as NSString).length
@@ -396,7 +409,7 @@ struct M17BaselineTests {
 
             let frame = NSRect(x: 0, y: 0, width: 800, height: 600)
             let (scrollView, textView) = makeEditorLikeView(frame: frame)
-            let window = makeWindow(contentSize: frame.size, content: scrollView)
+            let window = makeWindow(contentSize: frame.size, content: scrollView, appearance: appearance)
             defer { window.close() }
             textView.string = text
             let layoutManager = textView.layoutManager!
@@ -422,7 +435,7 @@ struct M17BaselineTests {
 
             let runs = foregroundRuns(layoutManager, length: length, resolver: resolver)
             let tsv = runs.map { "\($0.0)\t\($0.1)\t\($0.2)\n" }.joined()
-            let out = M17Paths.baseline.appendingPathComponent("karu/\(file.relative).colors.tsv")
+            let out = M17Paths.baseline.appendingPathComponent("\(outDirectory)/\(file.relative).colors.tsv")
             try FileManager.default.createDirectory(at: out.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
             try tsv.write(to: out, atomically: true, encoding: .utf8)

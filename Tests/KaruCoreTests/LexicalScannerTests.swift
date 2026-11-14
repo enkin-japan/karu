@@ -155,19 +155,23 @@ struct LexicalScannerTests {
     // MARK: - Escapes and single-line strings
 
     @Test func escapesIncludingEscapedQuoteAtLineEnd() {
+        // T17.7: an escape sequence is its own `.escape` segment.
         expectSegments(scan(jsLike, #"x = "a\"b" + 'c\'d';"#).segments, [
-            ("x = ", .code), (#""a\"b""#, .string), (" + ", .code), (#"'c\'d'"#, .string), (";", .code),
+            ("x = ", .code), (#""a"#, .string), (#"\""#, .escape), (#"b""#, .string), (" + ", .code),
+            ("'c", .string), (#"\'"#, .escape), ("d'", .string), (";", .code),
         ])
         // An escaped quote right before the line end: the string is
         // unterminated and ends with its line.
         let open = scan(jsLike, "s = \"abc\\\"\nlet y")
-        expectSegments(open.segments, [("s = ", .code), ("\"abc\\\"", .string), ("\nlet y", .code)])
+        expectSegments(open.segments, [("s = ", .code), ("\"abc", .string), ("\\\"", .escape), ("\nlet y", .code)])
         #expect(open.state.isEmpty)
-        // Escape + newline continues the string (LF, CR and CRLF).
+        // Escape + newline continues the string (LF, CR and CRLF; the
+        // terminator belongs to the escape).
         for terminator in ["\n", "\r", "\r\n"] {
             let continued = scan(jsLike, "s = \"abc\\\(terminator)def\" x")
             expectSegments(continued.segments,
-                           [("s = ", .code), ("\"abc\\\(terminator)def\"", .string), (" x", .code)])
+                           [("s = ", .code), ("\"abc", .string), ("\\\(terminator)", .escape), ("def\"", .string),
+                            (" x", .code)])
         }
     }
 
@@ -215,14 +219,15 @@ struct LexicalScannerTests {
             Form(delimiter: .hashed(lead: "", hash: "#", quote: "\"", hashesApplyToEscapes: true),
                  multiline: false, interpolations: [.init(open: "\\(", close: ")")]),
         ]))
+        // T17.7: `\#"` (escape + hashes + escaped unit) is an escape segment.
         expectSegments(scan(swiftLike, ##"x #"a \(x) \#(y + f(1)) \#"q"# z"##).segments, [
             ("x ", .code), (##"#"a \(x) "##, .string), (##"\#("##, .interpolationDelimiter), ("y + f(1)", .code),
-            (")", .interpolationDelimiter), (##" \#"q"#"##, .string), (" z", .code),
+            (")", .interpolationDelimiter), (" ", .string), (##"\#""##, .escape), (##"q"#"##, .string), (" z", .code),
         ])
         // n = 0: the ordinary escape and interpolation.
         expectSegments(scan(swiftLike, #""a \"b\" \(c)""#).segments, [
-            (#""a \"b\" "#, .string), (#"\("#, .interpolationDelimiter), ("c", .code),
-            (")", .interpolationDelimiter), (#"""#, .string),
+            (#""a "#, .string), (#"\""#, .escape), ("b", .string), (#"\""#, .escape), (" ", .string),
+            (#"\("#, .interpolationDelimiter), ("c", .code), (")", .interpolationDelimiter), (#"""#, .string),
         ])
 
         // Rust raw strings: any number of hashes, no escapes.
@@ -257,7 +262,8 @@ struct LexicalScannerTests {
 
     @Test func prefixesAndLeadsNeedAWordBoundary() {
         // `xr"…"` is the identifier `xr` and an ordinary (escaping) string.
-        expectSegments(scan(rust, #"xr"\"" y"#).segments, [("xr", .code), (#""\"""#, .string), (" y", .code)])
+        expectSegments(scan(rust, #"xr"\"" y"#).segments,
+                       [("xr", .code), (#"""#, .string), (#"\""#, .escape), (#"""#, .string), (" y", .code)])
         // `r"\"` is raw: the backslash does not escape.
         expectSegments(scan(rust, #"r"\" + 1"#).segments, [(#"r"\""#, .string), (" + 1", .code)])
         expectSegments(scan(rust, #"xb"q" b"q""#).segments,
@@ -274,8 +280,9 @@ struct LexicalScannerTests {
     // MARK: - Atoms
 
     @Test func atomsNeverOpenStrings() {
+        // T17.7: Rust lifetimes are `.type` atoms (`entity.name.type.lifetime`).
         expectSegments(scan(rust, #"let q = '"'; f::<'a>(b'"', '\'', x) "s""#).segments, [
-            ("let q = ", .code), (#"'"'"#, .atom(.string)), ("; f::<", .code), ("'a", .atom(.property)),
+            ("let q = ", .code), (#"'"'"#, .atom(.string)), ("; f::<", .code), ("'a", .atom(.type)),
             (">(", .code), (#"b'"'"#, .atom(.string)), (", ", .code), (#"'\''"#, .atom(.string)),
             (", x) ", .code), (#""s""#, .string),
         ])

@@ -6,40 +6,98 @@ import AppKit
 /// against whichever appearance the text view is drawing in and flips live on a
 /// light/dark switch without the theme storing two concrete values. `.plain`
 /// returns `nil` (no attribute → the view's default text colour).
+///
+/// M17 T17.7 (plan §6, decision L): every value is taken from VS Code 1.146.0's
+/// `dark_modern.json` / `light_modern.json` and their include chain
+/// (`dark_plus.json` → `dark_vs.json`, `light_plus.json` → `light_vs.json`;
+/// the Modern files themselves add no token colours). Theme files © Microsoft,
+/// MIT licence. Only syntax colours: the editor background, foreground,
+/// selection and gutter keep following the system.
 public struct HighlightTheme {
     public init() {}
 
     public func color(for kind: TokenKind) -> NSColor? {
+        Self.colors[kind] ?? nil
+    }
+
+    /// The packed `0xRRGGBB` pair (Dark Modern, Light Modern) of `kind`, or
+    /// nil for `.plain`. The single source of the palette (tests check it).
+    public static func hex(for kind: TokenKind) -> (dark: UInt32, light: UInt32)? {
         switch kind {
-        case .keyword:        return Self.keyword
-        // Built-ins share the function colour (VS Code renders both in yellow /
-        // brown), while staying a distinct token so the rule wins over symbols.
-        case .builtin:        return Self.function
-        case .string:         return Self.string
-        case .number:         return Self.number
-        case .comment:        return Self.comment
-        case .type:           return Self.type
-        // Keys / member-style names (JSON keys, shell `$VAR`, `self` / `cls`)
-        // read as the variable blue, matching VS Code's property colour.
-        case .property:       return Self.variable
-        case .punctuation:    return Self.punctuation
-        // In-document declared symbols reuse the function / variable colours.
-        case .symbolFunction: return Self.function
-        case .symbolVariable: return Self.variable
-        case .plain:          return nil
+        // `keyword`, `storage`, `constant.language`, `variable.language`.
+        case .keyword:                return (0x569CD6, 0x0000FF)
+        // `keyword.control` (dark_plus / light_plus).
+        case .controlKeyword:         return (0xC586C0, 0xAF00DB)
+        // Built-ins share the function colour (`support.function`), while
+        // staying a distinct token so the rule wins over symbols.
+        case .builtin:                return (0xDCDCAA, 0x795E26)
+        case .string:                 return (0xCE9178, 0xA31515)
+        case .number:                 return (0xB5CEA8, 0x098658)
+        case .comment:                return (0x6A9955, 0x008000)
+        // `entity.name.type`, `support.type` (T17.0 found Karu's 0x4EC9B2 typo).
+        case .type:                   return (0x4EC9B0, 0x267F99)
+        // Keys / member-style names (JSON keys, shell `$VAR`) read as the
+        // variable blue, VS Code's `variable` / property colour.
+        case .property:               return (0x9CDCFE, 0x001080)
+        case .punctuation:            return (0xD4D4D4, 0x000000)
+        // `entity.name.function`.
+        case .symbolFunction:         return (0xDCDCAA, 0x795E26)
+        // `variable`; parameters share it (`variable.parameter`).
+        case .symbolVariable:         return (0x9CDCFE, 0x001080)
+        case .parameter:              return (0x9CDCFE, 0x001080)
+        // `variable.other.constant`, `variable.other.enummember`.
+        case .constant:               return (0x4FC1FF, 0x0070C1)
+        // `constant.character.escape`.
+        case .escape:                 return (0xD7BA7D, 0xEE0000)
+        // `string.regexp`.
+        case .regex:                  return (0xD16969, 0x811F3F)
+        // `punctuation.definition.template-expression.begin/end`,
+        // `punctuation.section.embedded`.
+        case .interpolationDelimiter: return (0x569CD6, 0x0000FF)
+        // `entity.name.tag`.
+        case .tagName:                return (0x569CD6, 0x800000)
+        // `punctuation.definition.tag`.
+        case .tagPunctuation:         return (0x808080, 0x800000)
+        // `entity.other.attribute-name`.
+        case .attributeName:          return (0x9CDCFE, 0xE50000)
+        // `markup.heading` (bold).
+        case .heading:                return (0x569CD6, 0x800000)
+        // `string` in Dark Modern; Light Modern's `string.quoted.*.html|xml`,
+        // `string.unquoted.cdata.xml`, `string.unquoted.*.yaml`.
+        case .markupValue:            return (0xCE9178, 0x0000FF)
+        case .plain:                  return nil
         }
     }
 
-    // MARK: - Palette (Dark Modern / Light Modern approximations)
+    /// Kinds drawn bold (`markup.heading` is `fontStyle: bold` in both
+    /// themes). Temporary attributes cannot change the font, so the engine
+    /// draws them with a fill-and-stroke emphasis (`emphasisStrokeWidth`)
+    /// that leaves layout untouched.
+    public static func isBold(_ kind: TokenKind) -> Bool { kind == .heading }
 
-    private static let keyword     = dynamic(dark: 0x569CD6, light: 0x0000FF)
-    private static let string      = dynamic(dark: 0xCE9178, light: 0xA31515)
-    private static let number      = dynamic(dark: 0xB5CEA8, light: 0x098658)
-    private static let comment     = dynamic(dark: 0x6A9955, light: 0x008000)
-    private static let type        = dynamic(dark: 0x4EC9B2, light: 0x267F99)
-    private static let function    = dynamic(dark: 0xDCDCAA, light: 0x795E26)
-    private static let variable    = dynamic(dark: 0x9CDCFE, light: 0x001080)
-    private static let punctuation = dynamic(dark: 0xD4D4D4, light: 0x000000)
+    /// Negative stroke width (percent of the font size) for bold kinds: the
+    /// glyphs are filled and outlined in the same colour, which thickens them
+    /// at draw time only — advances, line fragments and caret positions are
+    /// those of the regular font.
+    public static let emphasisStrokeWidth: CGFloat = -3.0
+
+    // MARK: - Palette
+
+    /// One dynamic colour per kind, built once.
+    private static let colors: [TokenKind: NSColor?] = {
+        var out: [TokenKind: NSColor?] = [:]
+        var shared: [UInt64: NSColor] = [:]
+        for kind in TokenKind.allCases {
+            guard let pair = hex(for: kind) else { out[kind] = .some(nil); continue }
+            // Kinds with the same pair share one colour object, so adjacent
+            // runs of e.g. `.symbolFunction` and `.builtin` coalesce.
+            let key = UInt64(pair.dark) << 32 | UInt64(pair.light)
+            let color = shared[key] ?? dynamic(dark: pair.dark, light: pair.light)
+            shared[key] = color
+            out[kind] = color
+        }
+        return out
+    }()
 
     /// Builds a dynamic colour that returns `dark` under a dark appearance and
     /// `light` otherwise, resolved at draw time so temporary-attribute colours
@@ -120,9 +178,18 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// off, so it is part of the `isRuntimeStateReleased` guarantee.
     private var symbolTable: WordIndex.SymbolTable?
 
-    /// A single compiled identifier matcher, reused across every symbol pass.
-    // swiftlint:disable:next force_try
-    private static let identifierRegex = try! NSRegularExpression(pattern: #"[A-Za-z_]\w*"#)
+    /// Identifier matchers of the gap pass (`identifierTokens`), compiled
+    /// once: not preceded by an identifier character (the search uses
+    /// transparent bounds), a letter or `_` first; the JS / TS one with `$`.
+    // swiftlint:disable force_try
+    private nonisolated static let identifierRegex = try! NSRegularExpression(pattern: #"(?<!\w)[\p{L}_]\w*"#)
+    private nonisolated static let dollarIdentifierRegex = try! NSRegularExpression(
+        pattern: #"(?<![\w$])[\p{L}_$][\w$]*"#)
+    // swiftlint:enable force_try
+
+    /// Whether bold emphasis strokes (`HighlightTheme.isBold`) may be held
+    /// somewhere; cleared together with the colour.
+    private var emphasisHeld = false
 
     /// Whether the `highlight` module is currently on.
     private var moduleEnabled: Bool
@@ -383,8 +450,18 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         guard let textView, let layoutManager = textView.layoutManager else { return }
         // Length without copying the document (`textView.string` copies).
         let length = textView.textStorage?.length ?? (textView.string as NSString).length
-        layoutManager.removeTemporaryAttribute(.foregroundColor,
-                                               forCharacterRange: NSRange(location: 0, length: length))
+        removeColour(NSRange(location: 0, length: length), from: layoutManager)
+        emphasisHeld = false
+    }
+
+    /// Clears the highlighter's temporary attributes in `range`: the
+    /// foreground colour, and the emphasis stroke when any may be held.
+    private func removeColour(_ range: NSRange, from layoutManager: NSLayoutManager) {
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+        if emphasisHeld {
+            layoutManager.removeTemporaryAttribute(.strokeWidth, forCharacterRange: range)
+            layoutManager.removeTemporaryAttribute(.strokeColor, forCharacterRange: range)
+        }
     }
 
     /// Snaps `raw` (a character range derived from a glyph query) outward to
@@ -592,23 +669,34 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         // and a window where two bands are held.
         if let held = colouredRange {
             for piece in Self.ranges(held, minus: paintChars, clampedTo: ns.length) {
-                layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: piece)
+                removeColour(piece, from: layoutManager)
             }
         }
-        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: paintChars)
+        removeColour(paintChars, from: layoutManager)
         colouredRange = paintChars
 
-        let tokens = band.tokens
-        for token in tokens {
-            guard let color = theme.color(for: token.kind) else { continue }
-            layoutManager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: token.range)
-        }
-        // In-document symbol colouring runs *after* the language tokens and
-        // only in the spans they left uncovered, so string / comment / keyword
-        // colours always win over symbol colours.
-        if let symbolTable, !symbolTable.isEmpty {
-            colourSymbols(in: ns, range: paintChars, tokens: tokens, table: symbolTable,
-                          layoutManager: layoutManager)
+        // Identifiers the rules left uncoloured (T17.7): position roles from
+        // the published declarations (also over an overridable rule token of
+        // the same range), then the symbol table and the language's default,
+        // per `IdentifierPolicy`. String / comment / keyword colours always
+        // win over symbol colours.
+        var tokens = band.tokens
+        let roles = roleTokens(in: paintChars, ns: ns, language: language)
+        let identifiers = Self.identifierTokens(in: ns, range: paintChars, tokens: &tokens, roles: roles,
+                                                table: symbolTable, policy: language.identifierPolicy)
+        for list in [tokens, identifiers] {
+            for token in list {
+                guard let color = theme.color(for: token.kind) else { continue }
+                layoutManager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: token.range)
+                if HighlightTheme.isBold(token.kind) {
+                    // Bold without a font change: fill and stroke in the same
+                    // colour (drawing only; layout and caret metrics stay).
+                    layoutManager.addTemporaryAttributes([.strokeWidth: HighlightTheme.emphasisStrokeWidth,
+                                                          .strokeColor: color],
+                                                         forCharacterRange: token.range)
+                    emphasisHeld = true
+                }
+            }
         }
 
         // Record the band we actually painted so subsequent scroll ticks that
@@ -935,40 +1023,130 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         return NSRange(location: start, length: end - start)
     }
 
-    /// Colours the declared-symbol identifiers of `range`, but only in the
-    /// character gaps left uncovered by `tokens` (absolute, ascending) — so a
-    /// name inside a string / comment / keyword keeps that colour. Each gap is
-    /// scanned for `[A-Za-z_]\w*` identifiers, coloured by their category:
-    /// functions → `.symbolFunction`, types → `.type` (reused), variables →
-    /// `.symbolVariable`.
-    private func colourSymbols(in ns: NSString, range: NSRange,
-                               tokens: [(range: NSRange, kind: TokenKind)],
-                               table: WordIndex.SymbolTable,
-                               layoutManager: NSLayoutManager) {
-        guard range.length > 0 else { return }
+    // MARK: - Identifiers and position roles (T17.7)
+
+    /// Rule token kinds a position role may replace when the role's range is
+    /// exactly the token's (a parameter named like a built-in, Python's
+    /// `self` parameter, a method named `get`). Strings, comments, numbers,
+    /// control keywords and the rest never change.
+    nonisolated static let overridableByRoles: Set<TokenKind> = [
+        .keyword, .builtin, .property, .type, .symbolFunction, .symbolVariable, .constant, .parameter,
+    ]
+
+    /// The position roles inside `band` (live offsets, ascending): every
+    /// declaration of the published snapshot whose kind has a role in the
+    /// language's `IdentifierPolicy`, mapped through the edit journal and
+    /// kept only when the live text there still reads its name. Nothing
+    /// when the snapshot is of another language or the journal is
+    /// unmappable. Decodes only the band's declarations (seek points).
+    private func roleTokens(in band: NSRange, ns: NSString,
+                            language: LanguageDefinition) -> [(range: NSRange, kind: TokenKind)] {
+        let policy = language.identifierPolicy
+        guard !policy.roles.isEmpty, let (snapshot, journal) = analysis.publishedDeclarations,
+              snapshot.scan.languageIdentifier == language.identifier,
+              let from = journal.mapToBase(band.location),
+              let to = journal.mapToBase(NSMaxRange(band)) else { return [] }
+        let exact = journal.isEmpty
+        var out: [(range: NSRange, kind: TokenKind)] = []
+        snapshot.scan.forEachDeclaration(from: from, to: to + 1) { location, name, kind in
+            guard var role = policy.roles[kind] else { return }
+            let length = name.utf16.count
+            guard let live = exact ? location : journal.mapFromBase(location),
+                  live >= band.location, live + length <= NSMaxRange(band),
+                  ns.compare(name, options: .literal, range: NSRange(location: live, length: length)) == .orderedSame
+            else { return }
+            if kind == .variable, policy.constDeclarationsAreConstants,
+               Self.isConstDeclaration(at: live, in: ns) {
+                role = .constant
+            }
+            if let last = out.last, NSMaxRange(last.range) > live { return }
+            out.append((NSRange(location: live, length: length), role))
+        }
+        return out
+    }
+
+    /// Whether the binding name at `location` is declared by `const`: going
+    /// back over blanks, line breaks, `,` `[` `{` `:` `.` and other binding
+    /// names (destructuring: `const {a, b: c}`, `const [x, ...rest]`), at
+    /// most 160 units, the first `const` / `let` / `var` word decides.
+    nonisolated static func isConstDeclaration(at location: Int, in ns: NSString) -> Bool {
+        let floor = max(0, location - 160)
+        var q = location - 1
+        func isWord(_ u: unichar) -> Bool {
+            u == 95 || u == 36 || (48...57).contains(u) || (65...90).contains(u) || (97...122).contains(u)
+        }
+        while q >= floor {
+            let u = ns.character(at: q)
+            if isWord(u) {
+                var s = q
+                while s > floor, isWord(ns.character(at: s - 1)) { s -= 1 }
+                let word = ns.substring(with: NSRange(location: s, length: q - s + 1))
+                if word == "const" { return true }
+                if word == "let" || word == "var" { return false }
+                q = s - 1
+                continue
+            }
+            guard [UInt16(32), 9, 10, 13, 44, 91, 123, 58, 46].contains(u) else { return false }
+            q -= 1
+        }
+        return false
+    }
+
+    /// The identifier tokens of `range` (pure, T17.7): applies `roles`
+    /// (ascending live ranges) to the overridable `tokens` of the same range
+    /// (in place), then classifies every identifier in the gaps the tokens
+    /// leave — a role at its exact range, else the symbol table (the
+    /// categories `policy` enables), else `policy.otherIdentifiers`.
+    nonisolated static func identifierTokens(in ns: NSString, range: NSRange,
+                                             tokens: inout [(range: NSRange, kind: TokenKind)],
+                                             roles: [(range: NSRange, kind: TokenKind)],
+                                             table: WordIndex.SymbolTable?,
+                                             policy: IdentifierPolicy) -> [(range: NSRange, kind: TokenKind)] {
+        var out: [(range: NSRange, kind: TokenKind)] = []
+        guard range.length > 0 else { return out }
+        // Roles over rule tokens of exactly the same range.
+        if !roles.isEmpty {
+            var r = 0
+            for index in tokens.indices {
+                let token = tokens[index].range
+                while r < roles.count, roles[r].range.location < token.location { r += 1 }
+                guard r < roles.count else { break }
+                if roles[r].range == token, overridableByRoles.contains(tokens[index].kind) {
+                    tokens[index].kind = roles[r].kind
+                }
+            }
+        }
+        let table = table.flatMap { $0.isEmpty ? nil : $0 }
+        guard !roles.isEmpty || table != nil || policy.otherIdentifiers != nil else { return out }
+
         let band = ns.substring(with: range)
         let bandNS = band as NSString
         let base = range.location
+        let regex = policy.dollarIdentifiers ? dollarIdentifierRegex : identifierRegex
+        var nextRole = 0
 
         func scanGap(_ gap: NSRange) {
             guard gap.length > 0 else { return }
-            Self.identifierRegex.enumerateMatches(in: band, range: gap) { match, _, _ in
+            regex.enumerateMatches(in: band, options: [.withTransparentBounds], range: gap) { match, _, _ in
                 guard let r = match?.range else { return }
-                let word = bandNS.substring(with: r)
-                let color: NSColor?
-                if table.functions.contains(word) {
-                    color = theme.color(for: .symbolFunction)
-                } else if table.types.contains(word) {
-                    color = theme.color(for: .type)
-                } else if table.variables.contains(word) {
-                    color = theme.color(for: .symbolVariable)
-                } else {
-                    color = nil
+                let absolute = NSRange(location: base + r.location, length: r.length)
+                while nextRole < roles.count, roles[nextRole].range.location < absolute.location { nextRole += 1 }
+                if nextRole < roles.count, roles[nextRole].range == absolute {
+                    out.append((absolute, roles[nextRole].kind))
+                    return
                 }
-                guard let color else { return }
-                layoutManager.addTemporaryAttribute(
-                    .foregroundColor, value: color,
-                    forCharacterRange: NSRange(location: base + r.location, length: r.length))
+                var kind = policy.otherIdentifiers
+                if let table {
+                    let word = bandNS.substring(with: r)
+                    if policy.tableFunctions, table.functions.contains(word) {
+                        kind = .symbolFunction
+                    } else if policy.tableTypes, table.types.contains(word) {
+                        kind = .type
+                    } else if policy.tableVariables, table.variables.contains(word) {
+                        kind = .symbolVariable
+                    }
+                }
+                if let kind { out.append((absolute, kind)) }
             }
         }
 
@@ -984,5 +1162,6 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         if pos < range.length {
             scanGap(NSRange(location: pos, length: range.length - pos))
         }
+        return out
     }
 }

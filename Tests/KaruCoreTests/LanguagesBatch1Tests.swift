@@ -42,7 +42,8 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func markdownHeadingIsWholeLineKeyword() {
     let md = MarkdownLanguage.make()
     let pairs = spans(md, "## Heading here")
-    #expect(kind(of: "## Heading here", in: pairs) == .keyword)
+    // T17.7: headings have their own kind (`markup.heading`, drawn bold).
+    #expect(kind(of: "## Heading here", in: pairs) == .heading)
 }
 
 @Test func markdownInlineCodeAndEmphasis() {
@@ -55,8 +56,11 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func markdownLinkSplitsTextAndURL() {
     let md = MarkdownLanguage.make()
     let pairs = spans(md, "see [txt](http://x) end")
-    #expect(kind(of: "[txt]", in: pairs) == .property)
-    #expect(kind(of: "(http://x)", in: pairs) == .string)
+    // T17.7 (VS Code): the link text is a string without its brackets; the
+    // URL stays uncoloured (VS Code only underlines it).
+    #expect(kind(of: "txt", in: pairs) == .string)
+    #expect(kind(of: "http://x", in: pairs) == .plain)
+    #expect(kind(of: "[", in: pairs) == nil)
 }
 
 @Test func markdownListMarkerAndBlockquote() {
@@ -65,7 +69,9 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     // un-highlighted) to .property (VS Code's list-bullet blue).
     #expect(kind(of: "- ", in: spans(md, "- item")) == .property)
     #expect(kind(of: "1. ", in: spans(md, "1. item")) == .property)
-    #expect(kind(of: "> quoted", in: spans(md, "> quoted")) == .comment)
+    // T17.7 (VS Code): only the quote marker takes the comment colour.
+    #expect(kind(of: ">", in: spans(md, "> quoted")) == .comment)
+    #expect(kind(of: " quoted", in: spans(md, "> quoted")) == nil)
     // M17 T17.3: a fence opener line belongs to the fenced block, uncoloured
     // like VS Code's fence of an unknown language (was `.comment`).
     #expect(kind(of: "```swift", in: spans(md, "```swift")) == .plain)
@@ -77,8 +83,9 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     let py = PythonLanguage.make()
     let pairs = spans(py, "def foo(self, x=1_000): return 0xFF")
     #expect(kind(of: "def", in: pairs) == .keyword)
-    #expect(kind(of: "return", in: pairs) == .keyword)
-    #expect(kind(of: "self", in: pairs) == .property)
+    // T17.7: control keyword; `self` is `variable.language` (keyword colour).
+    #expect(kind(of: "return", in: pairs) == .controlKeyword)
+    #expect(kind(of: "self", in: pairs) == .keyword)
     #expect(kind(of: "1_000", in: pairs) == .number)   // underscore separator
     #expect(kind(of: "0xFF", in: pairs) == .number)    // hex
 }
@@ -95,12 +102,17 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func pythonFStringCommentAndDecorator() {
     let py = PythonLanguage.make()
     let pairs = spans(py, #"s = f"hi {name}"  # note"#)
-    #expect(kind(of: #"f"hi "#, in: pairs) == .string)
-    #expect(kind(of: "name", in: pairs) == .symbolVariable)
+    // T17.7 (VS Code): the prefix is `storage.type.string` (keyword colour),
+    // the field braces placeholders, a name inside a field uncoloured.
+    #expect(kind(of: "f", in: pairs) == .keyword)
+    #expect(kind(of: #""hi "#, in: pairs) == .string)
+    #expect(kind(of: "{", in: pairs) == .interpolationDelimiter)
+    #expect(kind(of: "name", in: pairs) == nil)
     #expect(kind(of: "# note", in: pairs) == .comment)
 
+    // T17.7: a decorator is `entity.name.function.decorator`.
     let deco = spans(py, "@app.route")
-    #expect(kind(of: "@app.route", in: deco) == .type)
+    #expect(kind(of: "@app.route", in: deco) == .symbolFunction)
 }
 
 @Test func pythonImaginaryNumber() {
@@ -122,10 +134,11 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func javascriptTemplateStringAndBlockComment() {
     let js = JavaScriptLanguage.make()
     let pairs = spans(js, "const x = `tmpl ${y}`; /* c */ z = 1;")
-    // M17 T17.2: the `${…}` interpolation is code between two punctuation
-    // delimiters, no longer part of one string token.
+    // M17 T17.2: the `${…}` interpolation is code between two delimiters,
+    // no longer part of one string token; T17.7: the delimiters have their
+    // own kind.
     #expect(kind(of: "`tmpl ", in: pairs) == .string)
-    #expect(pairs.filter { $0.kind == .punctuation }.map(\.text) == ["${", "}"])
+    #expect(pairs.filter { $0.kind == .interpolationDelimiter }.map(\.text) == ["${", "}"])
     #expect(kind(of: "`", in: pairs) == .string)
     #expect(pairs.contains { $0.text.contains("y") } == false)   // plain identifier in code
     #expect(kind(of: "/* c */", in: pairs) == .comment)
@@ -168,24 +181,28 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func htmlTagAttributesAndValues() {
     let html = HTMLLanguage.make()
     let pairs = spans(html, #"<div class="a" id='b'></div>"#)
-    #expect(kind(of: "<div", in: pairs) == .keyword)
-    #expect(kind(of: "</div", in: pairs) == .keyword)
-    #expect(kind(of: "class", in: pairs) == .property)
-    #expect(kind(of: "id", in: pairs) == .property)
-    #expect(kind(of: #""a""#, in: pairs) == .string)
-    #expect(kind(of: "'b'", in: pairs) == .string)
+    // T17.7: tag punctuation, tag name, attribute name and value kinds.
+    #expect(kind(of: "<", in: pairs) == .tagPunctuation)
+    #expect(kind(of: "div", in: pairs) == .tagName)
+    #expect(kind(of: "</", in: pairs) == .tagPunctuation)
+    #expect(kind(of: ">", in: pairs) == .tagPunctuation)
+    #expect(kind(of: "class", in: pairs) == .attributeName)
+    #expect(kind(of: "id", in: pairs) == .attributeName)
+    #expect(kind(of: #""a""#, in: pairs) == .markupValue)
+    #expect(kind(of: "'b'", in: pairs) == .markupValue)
 }
 
 @Test func htmlEntityAndComment() {
     let html = HTMLLanguage.make()
-    #expect(kind(of: "&amp;", in: spans(html, "x &amp; y")) == .number)
-    #expect(kind(of: "&#169;", in: spans(html, "&#169;")) == .number)
+    // T17.7: `constant.character.entity` (keyword colour).
+    #expect(kind(of: "&amp;", in: spans(html, "x &amp; y")) == .keyword)
+    #expect(kind(of: "&#169;", in: spans(html, "&#169;")) == .keyword)
     #expect(kind(of: "<!-- hi -->", in: spans(html, "<!-- hi -->")) == .comment)
 }
 
 @Test func htmlCustomElementTagName() {
     let html = HTMLLanguage.make()
-    #expect(kind(of: "<my-element", in: spans(html, "<my-element>")) == .keyword)
+    #expect(kind(of: "my-element", in: spans(html, "<my-element>")) == .tagName)   // T17.7
 }
 
 // MARK: - CSS
@@ -194,7 +211,7 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     let css = CSSLanguage.make()
     let pairs = spans(css, "color: #fff; margin: 10px;")
     #expect(kind(of: "color", in: pairs) == .property)
-    #expect(kind(of: "#fff", in: pairs) == .number)
+    #expect(kind(of: "#fff", in: pairs) == .string)   // T17.7: `constant.other.color.rgb-value`
     #expect(kind(of: "margin", in: pairs) == .property)
     #expect(kind(of: "10px", in: pairs) == .number)
 }
@@ -202,7 +219,7 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func cssAtRuleImportantAndComment() {
     let css = CSSLanguage.make()
     let pairs = spans(css, "@media screen { /* c */ } .x { color: red !important; }")
-    #expect(kind(of: "@media", in: pairs) == .keyword)
+    #expect(kind(of: "@media", in: pairs) == .controlKeyword)   // T17.7: `keyword.control.at-rule`
     #expect(kind(of: "/* c */", in: pairs) == .comment)
     #expect(kind(of: "!important", in: pairs) == .keyword)
 }

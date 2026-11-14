@@ -16,30 +16,50 @@ import Foundation
 /// - Numbers accept the common integer/float suffixes (`u`, `U`, `l`, `L`,
 ///   `f`, `F`) but do not validate that a given suffix combination is
 ///   actually legal C.
+///
+/// **Categories by position** (T17.7, as VS Code's C grammar scopes them):
+/// preprocessor directives and control-flow keywords are control keywords; a
+/// `#define`d name a keyword; `name(` a function call; `obj.` / `obj->` and
+/// the member after them variables; printf conversions in strings
+/// (`%zu`) placeholders. Other identifiers stay uncoloured: VS Code colours
+/// neither local variables nor struct / typedef names in C, only function
+/// names and parameters at their declarations (`identifierPolicy`).
+/// Escapes: `\xH…`, `\uHHHH`, `\UHHHHHHHH`, octal.
 public enum CLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
 
-    /// C keywords. Exposed so `CppLanguage` can extend this set rather than
-    /// duplicate it.
-    public static let keywords: [String] = [
-        "int", "char", "long", "short", "unsigned", "signed", "float", "double",
-        "void", "struct", "union", "enum", "typedef", "static", "extern",
-        "const", "volatile", "register", "auto", "if", "else", "for", "while",
-        "do", "switch", "case", "default", "break", "continue", "return",
-        "goto", "sizeof", "inline", "restrict",
+    /// Control-flow keywords (`keyword.control`).
+    public static let controlKeywords: [String] = [
+        "if", "else", "for", "while", "do", "switch", "case", "default", "break",
+        "continue", "return", "goto",
     ]
 
-    /// C standard-library functions / macros / common typedefs. Exposed so
-    /// `CppLanguage` can extend this set rather than duplicate it.
+    /// The other C keywords (`storage.type`, `storage.modifier`,
+    /// `keyword.operator.sizeof`), with the standard typedefs and streams VS
+    /// Code scopes like them (`size_t`, `stderr`, `NULL`).
+    public static let otherKeywords: [String] = [
+        "int", "char", "long", "short", "unsigned", "signed", "float", "double",
+        "void", "struct", "union", "enum", "typedef", "static", "extern",
+        "const", "volatile", "register", "auto", "sizeof", "inline", "restrict",
+        "_Bool", "bool", "size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
+        "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t",
+        "uint64_t", "stdin", "stdout", "stderr", "NULL", "true", "false",
+    ]
+
+    /// C keywords (completion's list). Exposed so `CppLanguage` can extend
+    /// this set rather than duplicate it.
+    public static let keywords: [String] = controlKeywords + otherKeywords
+
+    /// C standard-library functions / macros (`support.function`). Exposed
+    /// so `CppLanguage` can extend this set rather than duplicate it.
     public static let builtins: [String] = [
         "printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf",
         "sscanf", "malloc", "calloc", "realloc", "free", "memcpy", "memmove",
         "memset", "strlen", "strcpy", "strncpy", "strcmp", "strncmp",
         "strcat", "fopen", "fclose", "fread", "fwrite", "fseek", "ftell",
         "fflush", "fgets", "fputs", "putchar", "getchar", "puts", "exit",
-        "abort", "assert", "NULL", "FILE", "size_t", "stdin", "stdout",
-        "stderr", "EOF",
+        "abort", "assert", "FILE", "EOF",
     ]
 
     /// Builds a `\b(word1|word2|…)\b` rule producing `kind`.
@@ -65,7 +85,8 @@ public enum CLanguage {
         lineComments: ["//"],
         blockComments: [.init(open: "/*", close: "*/")],
         strings: [
-            .init(prefixes: encodingPrefixes, delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+            .init(prefixes: encodingPrefixes, delimiter: .fixed(open: "\"", close: "\""), multiline: false,
+                  escapeForms: .cStyle),
         ],
         atoms: [charLiteral],
         keepsStringRules: true
@@ -75,13 +96,27 @@ public enum CLanguage {
     /// `.string` rule; quoted literals are the profile's).
     static let includeRule = LanguageRule(pattern: #"(?<=#include)[ \t]*<[^>\r\n]*>"#, kind: .string)
 
+    /// Preprocessor directive token (only at a line start, via `^`):
+    /// `keyword.control.directive`.
+    static let directiveRule = LanguageRule(pattern: #"^\s*#\s*\w+"#, kind: .controlKeyword)
+
+    /// The name a `#define` introduces (`entity.name.function.preprocessor`,
+    /// the keyword colour).
+    static let macroNameRule = LanguageRule(pattern: #"(?<=#define[ \t]{1,8})[A-Za-z_]\w*"#, kind: .keyword)
+
+    /// C's identifiers (T17.7): functions from the table (declarations and
+    /// `name(` calls) and function / parameter roles; no variable or type
+    /// colours for references.
+    static let identifierPolicy = IdentifierPolicy(tableTypes: false, tableVariables: false,
+                                                   roles: [.function: .symbolFunction, .method: .symbolFunction,
+                                                           .parameter: .parameter])
+
     /// Preprocessor / include / number rules shared with C++ (comments,
     /// strings and character literals are the profile's).
     static func baseRules() -> [LanguageRule] {
         [
-            // Preprocessor directive token (only matches at the start of the
-            // line, via `^`).
-            LanguageRule(pattern: #"^\s*#\w+"#, kind: .type),
+            directiveRule,
+            macroNameRule,
             includeRule,
             // Numbers: hex with integer suffixes, or decimal/float with
             // optional exponent and integer/float suffixes. The lookbehind
@@ -99,15 +134,21 @@ public enum CLanguage {
             identifier: "c",
             fileExtensions: ["c", "h"],
             rules: baseRules() + [
-                wordRule(keywords, kind: .keyword),
-                // Standard-library functions / macros / typedefs after keywords
+                wordRule(controlKeywords, kind: .controlKeyword),
+                wordRule(otherKeywords, kind: .keyword),
+                // Standard-library functions / macros after keywords
                 // (disjoint sets); rules only run in code segments, so a
                 // built-in word inside a string or comment is never reached.
                 wordRule(builtins, kind: .builtin),
+                SyntaxRules.call(),
+                SyntaxRules.object(arrow: true),
+                SyntaxRules.member(.symbolVariable, arrow: true),
             ],
             keywords: keywords,
             builtins: builtins,
-            lexicalProfile: lexicalProfile
+            lexicalProfile: lexicalProfile,
+            stringRules: [SyntaxRules.printfPlaceholder],
+            identifierPolicy: identifierPolicy
         )
     }
 }

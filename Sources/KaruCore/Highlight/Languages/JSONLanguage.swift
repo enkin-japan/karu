@@ -16,7 +16,7 @@ public enum JSONLanguage {
 
     /// Strings only; shared with JSONL.
     public static let lexicalProfile = LexicalProfile(
-        strings: [.init(delimiter: .fixed(open: "\"", close: "\""), multiline: false)]
+        strings: [.init(delimiter: .fixed(open: "\"", close: "\""), multiline: false, escapeForms: [.unicode4])]
     )
 
     /// What follows a key string (`propertyStringFollower`); shared with JSONL.

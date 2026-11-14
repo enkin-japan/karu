@@ -63,6 +63,14 @@ private let string: Set<TokenKind?> = [.string]
 private let comment: Set<TokenKind?> = [.comment]
 private let keyword: Set<TokenKind?> = [.keyword]
 private let punctuation: Set<TokenKind?> = [.punctuation]
+/// T17.7: a string with an escape sequence is string + escape tokens.
+private let escaped: Set<TokenKind?> = [.string, .escape]
+/// T17.7: interpolation openers / closers.
+private let delimiter: Set<TokenKind?> = [.interpolationDelimiter]
+/// T17.7: HTML / XML attribute values, CDATA, YAML scalars.
+private let markupValue: Set<TokenKind?> = [.markupValue]
+/// T17.7: `<` + tag name.
+private let tagStart: Set<TokenKind?> = [.tagPunctuation, .tagName]
 private let plain: Set<TokenKind?> = [.plain]
 
 /// The scanner state at the end of `text`.
@@ -95,14 +103,14 @@ struct LexicalProfilesTests {
         #expect(a.kinds(of: "L'\\''") == string)
         #expect(a.kinds(of: "1'000'000").contains(nil))      // separators stay code
         #expect(a.kinds(of: "'000") != string)
-        #expect(a.kinds(of: "\"a \\\" b /* no */\"") == string)
+        #expect(a.kinds(of: "\"a \\\" b /* no */\"") == escaped)
         #expect(a.kinds(of: "// line \"q\"") == comment)
         #expect(a.kinds(of: "u8\"x\"") == string)
         #expect(a.kinds(of: "L\"y\"") == string)
-        #expect(a.kinds(of: "\"line \\\ncontinued\"") == string)  // escaped newline continues
+        #expect(a.kinds(of: "\"line \\\ncontinued\"") == escaped)  // escaped newline continues
         #expect(a.kinds(of: "int", occurrence: 4) == keyword)
         #expect(a.kinds(of: "<stdio.h>") == string)
-        #expect(a.kinds(of: "#include") == [.type])
+        #expect(a.kinds(of: "#include") == [.controlKeyword])
     }
 
     @Test func cppRawStringsWithDelimitersAndPrefixes() throws {
@@ -130,12 +138,12 @@ struct LexicalProfilesTests {
             /* block "x"
              */ int y;
             """)
-        #expect(a.kinds(of: "\"\"\"\n    text \"q\" \\\"\"\" still\n    // no comment\n    \"\"\"") == string)
-        #expect(a.kinds(of: "int") == keyword)
+        #expect(a.kinds(of: "\"\"\"\n    text \"q\" \\\"\"\" still\n    // no comment\n    \"\"\"") == escaped)
+        #expect(a.kinds(of: "int") == [.type])   // T17.7: `storage.type.primitive`
         #expect(a.kinds(of: "'\"'") == string)
         #expect(a.kinds(of: "\"a\"") == string)
         #expect(a.kinds(of: "/* block \"x\"\n */") == comment)
-        #expect(a.kinds(of: "int", occurrence: 2) == keyword)
+        #expect(a.kinds(of: "int", occurrence: 2) == [.type])
     }
 
     @Test func csharpVerbatimRawAndInterpolatedStrings() throws {
@@ -156,10 +164,11 @@ struct LexicalProfilesTests {
             q {r}"; int n;
             var iv = @$"{u}"; char c = '"';
             """)
-        #expect(a.kinds(of: "@\"C:\\dir\\\"\"q\"\" more\nsecond line\"") == string)
+        // VS Code colours a verbatim string's `""` as an escape (T17.7, decision L).
+        #expect(a.kinds(of: "@\"C:\\dir\\\"\"q\"\" more\nsecond line\"") == [.string, .escape])
         #expect(a.kinds(of: "int") == keyword)
         #expect(a.kinds(of: "$\"a ") == string)
-        #expect(a.kinds(of: "{", occurrence: 1) == punctuation)
+        #expect(a.kinds(of: "{", occurrence: 1) == [.punctuation])
         #expect(a.kinds(of: "b + ") == code)
         #expect(a.kinds(of: "\"c\"") == string)
         #expect(a.kinds(of: "} {{lit}} d\"") == [.punctuation, .string])
@@ -198,7 +207,7 @@ struct LexicalProfilesTests {
         #expect(a.kinds(of: "1") == [.number])
         #expect(a.kinds(of: "// c") == comment)
         #expect(a.kinds(of: "'\"'") == string)
-        #expect(a.kinds(of: "\"a\\\"b\"") == string)
+        #expect(a.kinds(of: "\"a\\\"b\"") == escaped)
         #expect(a.kinds(of: "/* multi\nline */") == comment)
         #expect(a.kinds(of: "var") == keyword)
     }
@@ -212,10 +221,10 @@ struct LexicalProfilesTests {
             continued"; }
             """)
         #expect(a.kinds(of: "\"x /* no */\"") == string)
-        #expect(a.kinds(of: "'it\\'s'") == string)
+        #expect(a.kinds(of: "'it\\'s'") == escaped)
         #expect(a.kinds(of: "/* multi \"q\"\n   line */") == comment)
         #expect(a.kinds(of: "color") == [.property])
-        #expect(a.kinds(of: "\"line \\\ncontinued\"") == string)
+        #expect(a.kinds(of: "\"line \\\ncontinued\"") == escaped)
     }
 
     @Test func sqlMultiLineStringsDoubledQuotesAndComments() throws {
@@ -255,14 +264,14 @@ struct LexicalProfilesTests {
         #expect(a.kinds(of: "/* outer /* inner */ still */") == comment)
         #expect(a.kinds(of: "let") == keyword)
         #expect(a.kinds(of: "\"\"\"\n  Hi ") == string)
-        #expect(a.kinds(of: "\\(") == punctuation)
+        #expect(a.kinds(of: "\\(") == delimiter)
         #expect(a.kinds(of: "name + ") == code)
         #expect(a.kinds(of: "\"x\"") == string)
-        #expect(a.kinds(of: ") and ") == [.punctuation, .string])
+        #expect(a.kinds(of: ") and ") == [.interpolationDelimiter, .string])
         #expect(a.kinds(of: "\"y\"") == string)
         #expect(a.kinds(of: "let", occurrence: 3) == keyword)
         #expect(a.kinds(of: "#\"a \\(no) ") == string)
-        #expect(a.kinds(of: "\\#(") == punctuation)
+        #expect(a.kinds(of: "\\#(") == delimiter)
         #expect(a.kinds(of: "yes") == code)
         #expect(a.kinds(of: " \"#") == string)
         #expect(a.kinds(of: "let", occurrence: 5) == keyword)
@@ -270,7 +279,7 @@ struct LexicalProfilesTests {
         #expect(a.kinds(of: "z") == code)
         #expect(a.kinds(of: " \"\"\"#") == string)
         #expect(a.kinds(of: "let", occurrence: 7) == keyword)
-        #expect(a.kinds(of: "\"q\\\"r\"") == string)
+        #expect(a.kinds(of: "\"q\\\"r\"") == escaped)
         #expect(a.kinds(of: "qq") == code)
     }
 
@@ -288,13 +297,13 @@ struct LexicalProfilesTests {
             f = 'raw \\' # comment
             [owner."quoted key"]
             """)
-        #expect(a.kinds(of: "\"\"\"\nx = \"q\" # no\nline \\\n\"\"\"") == string)
+        #expect(a.kinds(of: "\"\"\"\nx = \"q\" # no\nline \\\n\"\"\"") == escaped)
         #expect(a.kinds(of: "b") == [.property])
         #expect(a.kinds(of: "'''\nc\\n # no\n'''") == string)
         #expect(a.kinds(of: "\"key\"") == [.property])
         #expect(a.kinds(of: "'v'") == string)
         #expect(a.kinds(of: "# comment \"x\"") == comment)
-        #expect(a.kinds(of: "\"esc \\\" # no\"") == string)
+        #expect(a.kinds(of: "\"esc \\\" # no\"") == escaped)
         #expect(a.kinds(of: "'raw \\'") == string)
         #expect(a.kinds(of: "# comment", occurrence: 2) == comment)
         #expect(a.kinds(of: "[owner.") == [.type])
@@ -307,11 +316,11 @@ struct LexicalProfilesTests {
             <div class="fake"> "q"
             --> <b title='t'>y</b>
             """)
-        #expect(a.kinds(of: "\"a\"") == string)
+        #expect(a.kinds(of: "\"a\"") == markupValue)
         #expect(a.kinds(of: "<!-- one\n<div class=\"fake\"> \"q\"\n-->") == comment)
-        #expect(a.kinds(of: "<b") == keyword)
-        #expect(a.kinds(of: "'t'") == string)
-        #expect(a.kinds(of: "title") == [.property])
+        #expect(a.kinds(of: "<b") == tagStart)
+        #expect(a.kinds(of: "'t'") == markupValue)
+        #expect(a.kinds(of: "title") == [.attributeName])
     }
 
     @Test func xmlCDATAAndComments() throws {
@@ -321,11 +330,11 @@ struct LexicalProfilesTests {
             ]]></a> <!-- c "z"
             --> <c/>
             """)
-        #expect(a.kinds(of: "\"1\"") == string)
-        #expect(a.kinds(of: "<![CDATA[\n<b>\"q\" <!-- no --> ]] >\n]]>") == string)
-        #expect(a.kinds(of: "</a") == keyword)
+        #expect(a.kinds(of: "\"1\"") == markupValue)
+        #expect(a.kinds(of: "<![CDATA[\n<b>\"q\" <!-- no --> ]] >\n]]>") == markupValue)
+        #expect(a.kinds(of: "</a") == tagStart)
         #expect(a.kinds(of: "<!-- c \"z\"\n-->") == comment)
-        #expect(a.kinds(of: "<c") == keyword)
+        #expect(a.kinds(of: "<c") == tagStart)
     }
 
     @Test(arguments: ["javascript", "typescript"])
@@ -343,20 +352,22 @@ struct LexicalProfilesTests {
             m = /a
             b/;
             """)
-        #expect(a.kinds(of: "/re/g") == string)
+        // T17.7: regex literals are `.regex` (escapes, class brackets and
+        // flags split out); a member call is a function.
+        #expect(a.kinds(of: "/re/g") == [.regex, .keyword])
         #expect(a.kinds(of: " / b / ") == code)
         #expect(a.kinds(of: ") /re/") == code)                  // `)` then `/`: division
-        #expect(a.kinds(of: "/re\\/x[/\"]/") == string)        // escaped `/`, `/` and `"` in a class
-        #expect(a.kinds(of: "return") == keyword)
+        #expect(a.kinds(of: "/re\\/x[/\"]/") == [.regex, .escape, .string])   // escaped `/`, `/` and `"` in a class
+        #expect(a.kinds(of: "return") == [.controlKeyword])
         #expect(a.kinds(of: ") / 2 / 3") == [nil, .number])
-        #expect(a.kinds(of: "/'/") == string)
-        #expect(a.kinds(of: "/\"/") == string)
-        #expect(a.kinds(of: "/}/") == string)                  // `}` in a regex does not close `${`
-        #expect(a.kinds(of: ".test(s) ") == code)
-        #expect(a.kinds(of: "} u`") == [.punctuation, .string])
+        #expect(a.kinds(of: "/'/") == [.regex])
+        #expect(a.kinds(of: "/\"/") == [.regex])
+        #expect(a.kinds(of: "/}/") == [.regex])                // `}` in a regex does not close `${`
+        #expect(a.kinds(of: ".test(s) ") == [nil, .symbolFunction])
+        #expect(a.kinds(of: "} u`") == [.interpolationDelimiter, .string])
         #expect(a.kinds(of: "/* c */") == comment)
         #expect(a.kinds(of: " / b;") == code)
-        #expect(a.kinds(of: "/x/;") == [.string, nil])         // after `typeof`
+        #expect(a.kinds(of: "/x/;") == [.regex, nil])          // after `typeof`
         #expect(a.kinds(of: " /x/ 2") == [nil, .number])        // after an identifier
         #expect(a.kinds(of: "/a\nb/") == code)                   // never across lines
     }
@@ -390,21 +401,23 @@ struct LexicalProfilesTests {
             echo next
             """)
         #expect(a.kinds(of: "body $x \"q\" # no") == string)
-        #expect(a.kinds(of: "EOF\necho") == [nil, .builtin])      // terminator line is code
+        // T17.7: a command word is a function (`entity.name.command`), its
+        // arguments strings; a terminator line stays uncoloured.
+        #expect(a.kinds(of: "EOF\necho") == [nil, .symbolFunction])      // terminator line is code
         #expect(a.kinds(of: "# c") == comment)
         #expect(a.kinds(of: "\t\tline one") == string)
         #expect(a.kinds(of: "\tEND\n") == code)                   // `<<-` strips the tabs
         #expect(a.kinds(of: "\tA\n") == string)                   // `<<` does not
-        #expect(a.kinds(of: "A\ncat <<'Q'") == [nil, .builtin])
-        #expect(a.kinds(of: "grep") == [.builtin])                 // the opener line stays code
+        #expect(a.kinds(of: "A\ncat <<'Q'") == [nil, .symbolFunction])
+        #expect(a.kinds(of: "grep") == [.symbolFunction])          // the opener line stays code
         #expect(a.kinds(of: "\"s\"") == string)
         #expect(a.kinds(of: "# tail") == comment)
         #expect(a.kinds(of: "$HOME 'x'") == string)
         #expect(a.kinds(of: "raw") == string)
         #expect(a.kinds(of: "EOF x\nD x\nD \n") == string)          // trailing text: no terminator
-        #expect(a.kinds(of: "D\ncat <<<") == [nil, .builtin])
+        #expect(a.kinds(of: "D\ncat <<<") == [nil, .symbolFunction])
         #expect(a.kinds(of: "\"word\"") == string)                 // here-string: no heredoc
-        #expect(a.kinds(of: "echo next") == [.builtin, nil])
+        #expect(a.kinds(of: "echo next") == [.symbolFunction, nil, .string])
         #expect(try endState("bash", "cat <<EOF\nno end\n$x").frames
                 == [.heredoc(terminator: "EOF", stripTabs: false, inBody: true)])
         let open = try analyse("bash", "cat <<EOF\nno end\n$x")
@@ -422,14 +435,15 @@ struct LexicalProfilesTests {
             """)
         #expect(!a.kinds(of: "$# ${#x} a#b").contains(.comment))
         #expect(a.kinds(of: "# real") == comment)
-        #expect(a.kinds(of: "\"$(") == [.string, .punctuation])
+        // T17.7: Bash keeps `$(` / `)` in the string colour (VS Code).
+        #expect(a.kinds(of: "\"$(") == string)
         #expect(a.kinds(of: "\")\"") == string)                     // the quoted `)` does not close
-        #expect(a.kinds(of: ")\"; echo") == [.punctuation, .string, nil, .builtin])
+        #expect(a.kinds(of: ")\"; echo") == [.string, nil, .symbolFunction])
         #expect(a.kinds(of: "'it'\"'\"'s'") == string)
         #expect(a.kinds(of: "s' x") == [.string, nil])
         #expect(a.kinds(of: "\"multi\nline ") == string)
         #expect(a.kinds(of: " # no\"") == string)
-        #expect(a.kinds(of: "$'tab\\t\\'q'") == string)
+        #expect(a.kinds(of: "$'tab\\t\\'q'") == escaped)
         #expect(a.kinds(of: "' e") == [.string, nil])
     }
 
@@ -460,29 +474,31 @@ struct LexicalProfilesTests {
               body h
             i: 1
             """)
-        #expect(a.kinds(of: "line # not comment\n  key: v\n\n  more") == string)
-        #expect(a.kinds(of: "b: >-") == [.property, nil])         // the dedent ends the block
-        #expect(a.kinds(of: "folded") == string)
-        #expect(a.kinds(of: "two") == string)
-        #expect(a.kinds(of: "d: plain") == [.property, nil])
+        // T17.7 (VS Code): keys are tags, block bodies and plain scalars
+        // `.markupValue`, the block indicator control and its sign keyword.
+        #expect(a.kinds(of: "line # not comment\n  key: v\n\n  more") == markupValue)
+        #expect(a.kinds(of: "b: >-") == [.tagName, nil, .controlKeyword, .keyword])   // the dedent ends the block
+        #expect(a.kinds(of: "folded") == markupValue)
+        #expect(a.kinds(of: "two") == markupValue)
+        #expect(a.kinds(of: "d: plain") == [.tagName, nil, .markupValue])
         #expect(a.kinds(of: "# comment") == comment)
-        #expect(a.kinds(of: "item body") == string)
-        #expect(a.kinds(of: "- key") == [nil, .property])
-        #expect(a.kinds(of: "nested body") == string)
-        #expect(a.kinds(of: "other") == [.property])
-        #expect(a.kinds(of: "don't say \"hi\" here") == code)
+        #expect(a.kinds(of: "item body") == markupValue)
+        #expect(a.kinds(of: "- key") == [nil, .tagName])
+        #expect(a.kinds(of: "nested body") == markupValue)
+        #expect(a.kinds(of: "other") == [.tagName])
+        #expect(a.kinds(of: "don't say \"hi\" here") == markupValue)
         #expect(a.kinds(of: "\"quoted key\"") == [.property])
         #expect(a.kinds(of: "'v'") == string)
         #expect(a.kinds(of: "'a'") == string)
         #expect(a.kinds(of: "\"b\"") == string)
-        #expect(a.kinds(of: "a#b") == code)
+        #expect(a.kinds(of: "a#b") == markupValue)
         #expect(a.kinds(of: "# c") == comment)
         #expect(a.kinds(of: "# after indicator") == comment)
-        #expect(a.kinds(of: "body h") == string)
-        #expect(a.kinds(of: "i: 1") == [.property, nil, .number])
+        #expect(a.kinds(of: "body h") == markupValue)
+        #expect(a.kinds(of: "i: 1") == [.tagName, nil, .number])
         // Something else after the indicator: no block scalar.
         let b = try analyse("yaml", "a: | x\n  b: c\n")
-        #expect(b.kinds(of: "b") == [.property])
+        #expect(b.kinds(of: "b") == [.tagName])
         #expect(try endState("yaml", "a: |\n  body\n\n").frames == [.indentedBlock(parentIndent: 0, inBody: true)])
     }
 

@@ -101,6 +101,9 @@ public struct LexicalScanner: Sendable {
         let multiline: Bool
         let escape: unichar?
         let doubledCloseEscapes: Bool
+        let doubledCloseIsEscape: Bool
+        let escapeForms: LexicalProfile.EscapeForms
+        let variablePrefix: unichar?
         let interpolations: [Interpolation]
         let contentMarkers: CharacterSet
     }
@@ -236,6 +239,8 @@ public struct LexicalScanner: Sendable {
             }
             var content: [unichar] = [closeAnchor]
             if let escape { content.append(escape) }
+            let variablePrefix = form.variablePrefix.map(unit)
+            if let variablePrefix { content.append(variablePrefix) }
             for i in interps where !i.escapeLed {
                 content.append(i.open[0])
                 if let e = i.escapedOpen { content.append(e[0]) }
@@ -248,6 +253,9 @@ public struct LexicalScanner: Sendable {
                                     opening: opening, anchor: anchor, closeAnchor: closeAnchor,
                                     multiline: form.multiline, escape: escape,
                                     doubledCloseEscapes: form.doubledCloseEscapes,
+                                    doubledCloseIsEscape: form.doubledCloseEscapes && form.doubledCloseIsEscape,
+                                    escapeForms: form.escapeForms,
+                                    variablePrefix: variablePrefix,
                                     interpolations: interps, contentMarkers: set(content)))
         }
         strings = specs
@@ -824,18 +832,29 @@ public struct LexicalScanner: Sendable {
                     }
                     if opened { break }
                     // Plain escape: the escape (+ hashes) and one escaped
-                    // character; CRLF after it counts as one line continuation,
-                    // a surrogate pair as one character (a search must never
-                    // start on a low surrogate: Foundation then skips a unit).
+                    // character — or a longer form (`escapeForms`); CRLF
+                    // after it counts as one line continuation, a surrogate
+                    // pair as one character (a search must never start on a
+                    // low surrogate: Foundation then skips a unit).
                     var q = afterEscape
                     if q < to {
                         let escaped = at(q)
                         let pair = q + 1 < to
                             && ((escaped == Self.cr && at(q + 1) == Self.lf)
                                 || ((0xD800...0xDBFF).contains(escaped) && (0xDC00...0xDFFF).contains(at(q + 1))))
-                        q += pair ? 2 : 1
+                        if pair {
+                            q += 2
+                        } else if !spec.escapeForms.isEmpty,
+                                  let end = Self.longEscapeEnd(text, escaped: q, to: to, forms: spec.escapeForms) {
+                            q = end
+                        } else {
+                            q += 1
+                        }
                     }
-                    pos = min(q, to)
+                    q = min(q, to)
+                    emitter.mark(p, .escape)
+                    emitter.mark(q, contextKind(state))
+                    pos = q
                     break
                 }
 
@@ -856,7 +875,12 @@ public struct LexicalScanner: Sendable {
                         if spec.doubledCloseEscapes, let again = closeEnd(spec, count: Int(count),
                                                                           delimiter: delimiter, at: end, to: to,
                                                                           matches: matches) {
-                            pos = again          // escaped closer: content
+                            // Escaped closer: content, or an escape segment.
+                            if spec.doubledCloseIsEscape {
+                                emitter.mark(p, .escape)
+                                emitter.mark(again, contextKind(state))
+                            }
+                            pos = again
                             break
                         }
                         state.frames.removeLast()
@@ -884,11 +908,83 @@ public struct LexicalScanner: Sendable {
                     handled = true
                     break
                 }
+                if !handled, let prefix = spec.variablePrefix, c == prefix, p + 1 < to {
+                    // A variable reference (`$name`, `$1`, `$@`).
+                    let next = at(p + 1)
+                    var end = p
+                    if next == 95 || (65...90).contains(next) || (97...122).contains(next) {
+                        end = p + 2
+                        while end < to, Self.isIdentifier(at(end)), at(end) < 128 { end += 1 }
+                    } else if (48...57).contains(next) || [UInt16(64), 35, 63, 42, 36, 33, 45].contains(next) {
+                        end = p + 2                                     // 0-9 @ # ? * $ ! -
+                    }
+                    if end > p {
+                        emitter.mark(p, .atom(.symbolVariable))
+                        emitter.mark(end, contextKind(state))
+                        pos = end
+                        handled = true
+                    }
+                }
                 if !handled { pos = p + 1 }
             }
         }
         emitter.finish(at: to)
         return to
+    }
+
+    /// End of a long escape whose escaped character is at `q` (`escapeForms`),
+    /// or nil when none applies there (the escape is then one character).
+    /// Reads forward from `q`, never at or past `to`, never past a line break.
+    private static func longEscapeEnd(_ text: NSString, escaped q: Int, to: Int,
+                                      forms: LexicalProfile.EscapeForms) -> Int? {
+        @inline(__always) func at(_ i: Int) -> unichar { text.character(at: i) }
+        func isHex(_ u: unichar) -> Bool {
+            (48...57).contains(u) || (65...70).contains(u) || (97...102).contains(u)
+        }
+        /// Hex digits from `start`, at most `limit`; the end position.
+        func hexRun(from start: Int, limit: Int) -> Int {
+            var e = start
+            while e < to, e - start < limit, isHex(at(e)) { e += 1 }
+            return e
+        }
+        let c = at(q)
+        switch c {
+        case 120:   // x
+            if forms.contains(.hexRun) {
+                let e = hexRun(from: q + 1, limit: 8)
+                return e > q + 1 ? e : nil
+            }
+            if forms.contains(.hex2) {
+                let e = hexRun(from: q + 1, limit: 2)
+                return e == q + 3 ? e : nil
+            }
+        case 117:   // u
+            if forms.contains(.unicodeBraced), q + 1 < to, at(q + 1) == 123 {
+                var e = q + 2
+                while e < to, e - (q + 2) < 8, isHex(at(e)) || at(e) == 95 { e += 1 }
+                if e > q + 2, e < to, at(e) == 125 { return e + 1 }
+            }
+            if forms.contains(.unicode4) {
+                let e = hexRun(from: q + 1, limit: 4)
+                if e == q + 5 { return e }
+            }
+        case 85:    // U
+            if forms.contains(.unicode8) {
+                let e = hexRun(from: q + 1, limit: 8)
+                if e == q + 9 { return e }
+            }
+        default:
+            break
+        }
+        if forms.contains(.octal), (48...55).contains(c) {
+            var e = q + 1
+            while e < to, e - q < 3, (48...55).contains(at(e)) { e += 1 }
+            return e
+        }
+        if forms.contains(.cssHex), isHex(c) {
+            return hexRun(from: q, limit: 6)
+        }
+        return nil
     }
 
     /// End of the string's closer at `p`, or nil when `p` does not close it.

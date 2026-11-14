@@ -11,7 +11,8 @@
 // Run it with VS Code's bundled Electron in node mode (it can read asar):
 //   ELECTRON_RUN_AS_NODE=1 "<VS Code.app>/Contents/MacOS/Code" scripts/m17/vscode-tokens.js \
 //       "<VS Code.app>" <theme-file-basename> <out-dir> <in-root> [files…]
-// e.g. theme dark_modern or 2026-dark. With no files, every file under
+// e.g. theme dark_modern, light_modern (T17.7: `baseline/vscode-light_modern`)
+// or 2026-dark. With no files, every file under
 // <in-root> is processed. Files whose extension has no VS Code grammar are
 // listed as skipped.
 'use strict';

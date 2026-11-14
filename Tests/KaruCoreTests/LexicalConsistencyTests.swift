@@ -67,8 +67,8 @@ private func isSafeSplit(_ ns: NSString, _ p: Int, interiors: Set<Int> = []) -> 
 /// Positions strictly inside a token a word-level split could still cut:
 /// any occurrence of a multi-unit delimiter of `profile` (comment openers and
 /// closers, fixed string delimiters, interpolation openers — `<![CDATA[` has
-/// a word inside), and the atoms of the single pass `segments` (a JS regex
-/// literal can contain words).
+/// a word inside), and the atoms and escapes of the single pass `segments`
+/// (a JS regex literal can contain words; T17.7: `\x7f` is one escape).
 private func tokenInteriors(_ ns: NSString, _ profile: LexicalProfile,
                             segments: [(NSRange, LexicalSegment)]) -> Set<Int> {
     var delimiters = profile.lineComments
@@ -92,7 +92,10 @@ private func tokenInteriors(_ ns: NSString, _ profile: LexicalProfile,
         }
     }
     for (range, kind) in segments {
-        guard case .atom = kind else { continue }
+        switch kind {
+        case .atom, .escape: break
+        default: continue
+        }
         for k in 1..<max(1, range.length) { out.insert(range.location + k) }
     }
     return out.union(lineBlockInteriors(ns, profile))

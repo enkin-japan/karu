@@ -11,22 +11,60 @@ import Foundation
 ///
 /// Not modelled: regex literals (`/…/`, `#/…/#`) stay plain code, so a quote
 /// inside one can open a string.
+///
+/// **Categories by position** (T17.7, VS Code's Swift grammar): control-flow
+/// keywords (`import`, `guard`, `in`, …) apart from the others; the imported
+/// module a type; `name(` a call and an argument label (`f(of: 1)`) a
+/// function; `.member` a variable; `$0` a keyword; enum case names
+/// constants. References to variables stay uncoloured (as VS Code; file-level
+/// variables stay in the navigator, `identifierPolicy` only drops their
+/// colour). Escapes: `\u{…}`.
 public enum SwiftLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
 
-    public static let keywords: [String] = [
+    public static let keywords: [String] = controlKeywords + otherKeywords
+
+    /// Control-flow keywords (`keyword.control`).
+    public static let controlKeywords: [String] = [
+        "if", "else", "for", "while", "repeat", "do", "switch", "case", "default",
+        "break", "continue", "return", "fallthrough", "guard", "defer", "where",
+        "in", "try", "catch", "throw", "import", "yield",
+    ]
+
+    public static let otherKeywords: [String] = [
         "func", "var", "let", "class", "struct", "enum", "protocol",
-        "extension", "guard", "defer", "init", "deinit", "throws", "rethrows",
-        "async", "await", "actor", "if", "else", "for", "while", "repeat",
-        "do", "switch", "case", "default", "break", "continue", "return",
-        "where", "in", "as", "is", "try", "catch", "throw", "import",
-        "public", "private", "internal", "fileprivate", "open", "static",
-        "final", "lazy", "weak", "unowned", "mutating", "nonmutating",
+        "extension", "init", "deinit", "throws", "rethrows", "async", "await",
+        "actor", "as", "is", "public", "private", "internal", "fileprivate", "open",
+        "static", "final", "lazy", "weak", "unowned", "mutating", "nonmutating",
         "override", "convenience", "required", "subscript", "typealias",
         "associatedtype", "inout", "some", "any", "self", "Self", "super",
         "nil", "true", "false", "willSet", "didSet", "get", "set",
     ]
+
+    /// Swift's identifiers (T17.7): functions and types from the table,
+    /// variables only at nothing — VS Code colours neither `let` / `var`
+    /// declarations nor references; parameters at their declarations.
+    static let identifierPolicy = IdentifierPolicy(tableVariables: false,
+                                                   roles: IdentifierPolicy.declarationRoles)
+
+    /// An argument label in a call or parameter list (`f(of: 1)`,
+    /// `func f(_ a: Int, at b: Int)`): VS Code colours it as a function.
+    static let labelRule = LanguageRule(
+        pattern: #"(?<=[(,][ \t]{0,8})[A-Za-z_]\w*(?=(?:[ \t]+[A-Za-z_]\w*)?[ \t]*:(?!:))"#, kind: .symbolFunction)
+
+    /// Enum case names: after `case`, and after commas on such a line
+    /// (`variable.other.enummember`). The cheap context checks come first,
+    /// so the long lookbehind only runs after `case ` or a comma.
+    static let enumCaseRule = LanguageRule(
+        pattern: #"(?<=[ \t,])(?=[A-Za-z_]\w*[ \t]*(?:,|=|\(|$|//|/\*))(?<=\bcase[ \t]{1,8}|,[ \t]{0,4})(?<=^[ \t]{0,32}(?:indirect[ \t]{1,8})?case[ \t]{1,8}(?:[A-Za-z_]\w{0,40}(?:\([^()\r\n]{0,80}\))?[ \t]{0,4},[ \t]{0,4}){0,8})[A-Za-z_]\w*"#,
+        kind: .constant)
+
+    /// The `case` of an enum case declaration (`case a, b`) is a declaration
+    /// keyword, not the control keyword of a `switch` (`case .a:`).
+    static let enumCaseKeywordRule = LanguageRule(
+        pattern: #"case(?<=^[ \t]{0,32}(?:indirect[ \t]{1,8})?case)(?=[ \t]+[A-Za-z_]\w*(?:\([^()\r\n]{0,80}\))?[ \t]*(?:,|=|$|//|/\*))"#,
+        kind: .keyword)
 
     /// Common standard-library types, coloured as types.
     public static let types: [String] = [
@@ -55,9 +93,9 @@ public enum SwiftLanguage {
         blockComments: [.init(open: "/*", close: "*/", nests: true)],
         strings: [
             .init(delimiter: .hashed(lead: "", hash: "#", quote: "\"\"\"", hashesApplyToEscapes: true),
-                  multiline: true, interpolations: [.init(open: "\\(", close: ")")]),
+                  multiline: true, escapeForms: [.unicodeBraced], interpolations: [.init(open: "\\(", close: ")")]),
             .init(delimiter: .hashed(lead: "", hash: "#", quote: "\"", hashesApplyToEscapes: true),
-                  multiline: false, interpolations: [.init(open: "\\(", close: ")")]),
+                  multiline: false, escapeForms: [.unicodeBraced], interpolations: [.init(open: "\\(", close: ")")]),
         ]
     )
 
@@ -74,15 +112,26 @@ public enum SwiftLanguage {
                     pattern: #"(?<![\w.])(?:0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|(?:\d[\d_]*(?:\.[\d_]*)?)(?:[eE][+-]?\d+)?)"#,
                     kind: .number
                 ),
-                wordRule(keywords, kind: .keyword),
+                // The imported module (`entity.name.type`).
+                LanguageRule(pattern: #"(?<=\bimport[ \t]{1,8})[A-Za-z_]\w*"#, kind: .type),
+                labelRule,
+                enumCaseKeywordRule,
+                enumCaseRule,
+                wordRule(controlKeywords, kind: .controlKeyword),
+                wordRule(otherKeywords, kind: .keyword),
+                // `$0` closure arguments.
+                LanguageRule(pattern: #"\$\d+"#, kind: .keyword),
                 // Standard-library types then global functions (disjoint from
                 // keywords; rules only run in code segments).
                 wordRule(types, kind: .type),
                 wordRule(builtins, kind: .builtin),
+                SyntaxRules.call(),
+                SyntaxRules.member(.symbolVariable),
             ],
             keywords: keywords,
             builtins: types + builtins,
-            lexicalProfile: lexicalProfile
+            lexicalProfile: lexicalProfile,
+            identifierPolicy: identifierPolicy
         )
     }
 }

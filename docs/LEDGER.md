@@ -49,7 +49,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | ✅ 自动化通过；伪声明全部排除，一致率 77.7% → 80.7% |
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ✅ 自动化通过；作用域 top1 24/24，误弹 0 |
 | T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | ⬜ |
-| T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ⬜ |
+| T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ✅ 自动化通过；一致率深色 94.9%、浅色 91.6% |
 | T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ⬜ |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ⬜ |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ⬜ |
@@ -425,6 +425,42 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - 查询索引在每次发布新快照后的第一次请求时才懒建。
     - 统计探针 (4) 仍在测已经不用的旧 `WordIndex.suggestions`。
     - debug 下文档词分片最长 8.3 ms，release 下 4.0 ms 达标。
+
+- T17.7 配色与按位置分类（main 定接口，implementer 实现，main 审查 diff 并修两处，2026-11-14）：
+  - **色板**：新增 controlKeyword、parameter（与变量同色、类别独立）、constant、escape、regex、interpolationDelimiter、tagName、attributeName、heading（加粗），类型色笔误修正为 `#4EC9B0`。
+    - 另增两个表外类别：`tagPunctuation`（`#808080` / `#800000`）、`markupValue`（`#CE9178` / `#0000FF`）。两者的色值都来自主题文件，删掉会让 HTML/XML/YAML 的一致率明显下降（main 认可）。
+    - 深浅两套色值都按 VS Code 1.146.0 的 include 链（`*_modern` → `*_plus` → `*_vs`）逐项核对，`TokenKind` 改为 `CaseIterable`，测试逐个断言两种外观的 hex。
+  - **加粗标题**：用临时属性描边实现（`strokeWidth -3`，描边色等于前景色）。测试证明加与不加描边，字形位置、行片段完全一致，只有像素变化。
+  - **实现**：
+    - 扫描器新增 `.escape` 片段，长形式由 `StringForm.escapeForms` 声明；YAML 的 `''` 用 `doubledCloseIsEscape` 报为转义。转义在切分意义上仍是 token。
+    - JS/TS 正则 atom 归为 `.regex`，内部再细分出转义、量词、分组和 flags；插值边界映射为 `.interpolationDelimiter`，可按语言改（`interpolationDelimiterKind`）。
+    - `IdentifierPolicy`（每种语言一份）：声明位置的角色优先（取自已发布的声明快照，经编辑日志映射，并核对该处仍是声明名），其次是全文符号表，最后是语言的默认类别。声明快照每 64 个声明加一个 seek 点，只解码色带内的声明。
+    - 每门语言的规则编译成一个合并的交替正则（`RuleSet`），每个位置只调用一次；在词首没匹配到规则时跳过整个词。规则输出与逐条匹配一致，有覆盖全部夹具的等价测试。
+  - **main 审查修改**：C# 按 VS Code 处理（决策 L）。插值的 `{` `}` 改用标点色；逐字字符串里的 `""` 算转义。csharp 一致率 96.1 → **98.3**，相应三处测试期望已改。
+  - **与 VS Code 的一致率**（开工时现跑 → 本次）：
+    - **深色 80.7% → 94.9%**（含 main 的 C# 修正）；**浅色 76.1% → 91.6%**（C# 修正前测得）。没有样本下降。
+    - 深色：python 58.1 → 98.8、yaml 53.5 → 99.9、java 80.1 → 99.8、javascript 94.7 → 99.8、typescript 61.6 → 98.5、go 80.1 → 98.9、rust 79.8 → 97.2、html 79.9 → 97.2、swift 69.5 → 95.9、bash 59.6 → 93.1、markdown 76.9 → 91.0、cpp 69.2 → 85.5、css 67.3 → 80.4。
+    - 剩余差异较大的是嵌入语言（page.html 54.3、fences.md 64.2、jsx 79.3、tsx 84.3，属 T17.8），以及 C++ `R"glsl(` 嵌入、CSS 选择器、浅色下 JSON 键（`#0451A5`，没有对应类别）。
+    - 新增浅色参照目录 `Tests/Fixtures/M17/baseline/vscode-light_modern/`（23 个 TSV，用 `vscode-tokens.js` 按 `light_modern` 生成）；`KARU_M17_LIGHT=1` 时导出浅色 dump。
+  - **用户可见变化（发布说明）**：
+    - Python 不再给名字的引用处着色，只给 `def`/`class` 名和参数着色，与 VS Code 一致。
+    - JS/TS 和 Rust 里，未被调用的函数名改为变量色。
+    - C 不再给类型和变量的引用着色；Java、Swift 不再给变量的引用着色。
+    - Swift 文件级变量不再着色，但仍在导航里，解决了 T17.4b 留下的问题。
+    - Markdown 斜体用控制关键字色（Dark Modern 的 `markup.italic` 就是这个色）。
+    - HTML 中后面跟空白的布尔属性不着色。
+  - **改动的旧测试期望**：都是类别细分带来的。含转义的字符串拆成 string + escape；return/if/`#include` 等改为 controlKeyword；插值边界改为 interpolationDelimiter（C# 为标点）；Python 的 self、前缀、f-string 字段、装饰器；各语言内置名；标记语言的标签、属性、值；YAML 键与标量；Markdown 标题等。完整清单见 implementer 报告的分类。
+  - **测试**：
+    - 新增 `SyntaxCategoryTests`（22 个，7 个套件）：色板、转义、控制关键字、常量规则（`HTTPServer`、单字母不算）、声明位置角色、加粗不影响布局。
+    - 随机切分和对抗样本都补了长转义与 Bash 变量的片段。
+    - 全量 **1188 tests / 80 suites** 通过（main 复跑）；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+    - implementer 另渲染了深浅两种外观的截图（Markdown、Python、TS、HTML）核对。
+  - **性能**（debug、800×600）：
+    - 10 MB JS：首跳 137 → 131 ms，附近重绘中位数 2.6 → **1.6 ms**。
+    - 10 MB Python：首跳 135 → 132 ms，附近重绘中位数 9.7 → **5.1 ms**。
+  - **内存**：没跑 mem-benchmark。新增常驻只有声明快照的 seek 表（每 64 个声明约 8 B，40 万个声明约 50 KB），以及每个语言定义多一个合并后的正则。留到 T17.15 的整体对照。
+  - **第三方声明**：新增 `docs/THIRD-PARTY-NOTICES.md`，注明主题色来自 VS Code（MIT）。是否把声明放进 App 包或「关于」窗口，在发版时由 main 决定（涉及 bundle-macos.sh）。
+  - **未做**：TS 枚举成员着常量色（遍历器还不认识枚举成员）；CSS 选择器、浅色下的 JSON 键；嵌入语言（T17.8）。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

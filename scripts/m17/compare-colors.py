@@ -9,7 +9,8 @@ spans with their text.
 
 Colours in --neutral (default: the Dark Modern editor foreground and the
 operator grey) count as "no colour", because Karu leaves those runs uncoloured
-while VS Code paints some of them explicitly.
+while VS Code paints some of them explicitly. For Light Modern references use
+--neutral '#3b3b3b,#000000' (its editor foreground and operator black).
 
 Usage:
   python3 -I scripts/m17/compare-colors.py <samples-root> <karu-dir> <vscode-dir> \
@@ -22,12 +23,20 @@ import pathlib
 import sys
 
 NAMES = {
+    # Dark Modern
     "#569cd6": "keyword", "#c586c0": "control", "#ce9178": "string",
     "#b5cea8": "number", "#6a9955": "comment", "#4ec9b0": "type",
-    "#4ec9b2": "type(karu)", "#dcdcaa": "function", "#9cdcfe": "variable",
+    "#4ec9b2": "type(karu<T17.7)", "#dcdcaa": "function", "#9cdcfe": "variable",
     "#4fc1ff": "constant", "#d7ba7d": "escape", "#d16969": "regex",
     "#808080": "tag-punct", "#6796e6": "list-marker", "#f44747": "invalid",
     "#d4d4d4": "neutral", "#cccccc": "neutral", "": "none",
+    # Light Modern (T17.7)
+    "#0000ff": "keyword/markup-value", "#af00db": "control", "#a31515": "string",
+    "#098658": "number", "#008000": "comment", "#267f99": "type",
+    "#795e26": "function", "#001080": "variable", "#0070c1": "constant",
+    "#ee0000": "escape", "#811f3f": "regex", "#800000": "tag/heading",
+    "#e50000": "attribute", "#0451a5": "light-blue", "#cd3131": "invalid",
+    "#3b3b3b": "neutral", "#000000": "neutral",
 }
 
 

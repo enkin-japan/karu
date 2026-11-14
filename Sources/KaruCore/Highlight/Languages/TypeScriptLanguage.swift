@@ -16,45 +16,45 @@ public enum TypeScriptLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
 
-    /// TypeScript-only declaration / modifier keywords (added to JS's set).
+    /// TypeScript-only declaration / modifier keywords (added to JS's set;
+    /// `as` is a control keyword in both).
     static let extraKeywords: [String] = [
         "interface", "type", "enum", "namespace", "declare", "readonly",
-        "keyof", "infer", "as", "satisfies", "implements", "private", "public",
-        "protected", "abstract",
+        "keyof", "infer", "satisfies", "implements", "private", "public",
+        "protected", "abstract", "is", "override",
     ]
 
-    /// Built-in primitive type names, coloured as types.
+    /// Built-in primitive type names, coloured as types (`void` too: VS Code
+    /// scopes it `support.type.primitive` in TypeScript).
     static let typeNames: [String] = [
         "never", "unknown", "any", "string", "number", "boolean", "symbol",
-        "object",
+        "object", "bigint", "void",
     ]
 
-    /// TypeScript-only utility types, added to JS's built-in set.
+    /// TypeScript-only utility types, added to JS's built-in classes.
     static let extraBuiltins: [String] = [
         "Partial", "Required", "Readonly", "Record", "Pick", "Omit",
         "Exclude", "Extract", "NonNullable", "ReturnType", "Parameters",
-        "Awaited",
+        "Awaited", "Capitalize", "Uncapitalize", "Uppercase", "Lowercase",
+        "InstanceType", "ConstructorParameters",
     ]
 
     public static func make() -> LanguageDefinition {
         buildCount += 1
-        let keywords = JavaScriptLanguage.keywords + extraKeywords
+        let otherKeywords = JavaScriptLanguage.otherKeywords.filter { $0 != "void" } + extraKeywords
+        let keywords = JavaScriptLanguage.controlKeywords + otherKeywords
         let builtins = JavaScriptLanguage.builtins + extraBuiltins
         return LanguageDefinition(
             identifier: "typescript",
             fileExtensions: ["ts"],
-            rules: JavaScriptLanguage.baseRules() + [
-                // Types before keywords (disjoint word sets, but keep types
-                // visible as `.type`).
-                JavaScriptLanguage.wordRule(typeNames, kind: .type),
-                JavaScriptLanguage.wordRule(keywords, kind: .keyword),
-                // Built-in globals / utility types last (disjoint from the
-                // above); rules only run in code segments.
-                JavaScriptLanguage.wordRule(builtins, kind: .builtin),
-            ],
+            rules: JavaScriptLanguage.rules(controls: JavaScriptLanguage.controlKeywords, keywords: otherKeywords,
+                                            typeWords: typeNames,
+                                            builtinTypes: JavaScriptLanguage.builtinTypes + extraBuiltins,
+                                            builtinFunctions: JavaScriptLanguage.builtinFunctions),
             keywords: keywords + typeNames,
             builtins: builtins,
-            lexicalProfile: JavaScriptLanguage.lexicalProfile
+            lexicalProfile: JavaScriptLanguage.lexicalProfile,
+            identifierPolicy: JavaScriptLanguage.identifierPolicy
         )
     }
 }

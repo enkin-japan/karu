@@ -27,9 +27,17 @@ public enum SQLLanguage {
         "CREATE", "TABLE", "INDEX", "VIEW", "DROP", "ALTER", "ADD", "COLUMN",
         "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "UNIQUE", "DEFAULT",
         "CHECK", "CONSTRAINT", "DISTINCT", "UNION", "ALL", "EXISTS", "CASE",
-        "WHEN", "THEN", "ELSE", "END", "CAST", "COUNT", "SUM", "AVG", "MIN",
-        "MAX",
+        "WHEN", "THEN", "ELSE", "END", "CAST", "IF", "RETURNS", "RETURN",
+        "BEGIN", "COMMIT", "ROLLBACK", "WITH", "RECURSIVE", "ASC", "DESC",
+        // Types (`storage.type`, the keyword colour).
+        "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "DECIMAL", "NUMERIC",
+        "REAL", "FLOAT", "DOUBLE", "PRECISION", "CHAR", "VARCHAR", "TEXT",
+        "BOOLEAN", "BOOL", "DATE", "TIME", "TIMESTAMP", "INTERVAL", "BLOB",
+        "SERIAL", "BIGSERIAL", "UUID", "JSON", "JSONB",
     ]
+
+    /// Aggregate functions (`support.function.aggregate`).
+    static let functions: [String] = ["COUNT", "SUM", "AVG", "MIN", "MAX"]
 
     /// Comments, strings and quoted identifiers.
     public static let lexicalProfile = LexicalProfile(
@@ -48,7 +56,9 @@ public enum SQLLanguage {
             identifier: "sql",
             fileExtensions: ["sql"],
             rules: [
-                // Keywords, case-insensitive.
+                // Aggregate functions, then keywords, case-insensitive.
+                LanguageRule(pattern: "(?i)\\b(?:\(functions.joined(separator: "|")))\\b(?=\\s*\\()",
+                             kind: .builtin),
                 LanguageRule(pattern: "(?i)\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
                 // Numbers.
                 LanguageRule(
@@ -56,7 +66,7 @@ public enum SQLLanguage {
                     kind: .number
                 ),
             ],
-            keywords: keywords,
+            keywords: keywords + functions,
             lexicalProfile: lexicalProfile
         )
     }

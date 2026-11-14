@@ -363,7 +363,9 @@ struct DeclTokenizer: Sendable {
             case .code:
                 previousWasLiteral = false
                 tokenizeCode(&units, from: range.location, to: NSMaxRange(range), length: length, into: &out)
-            case .string, .atom, .block:
+            case .string, .escape, .atom, .block:
+                // An escape (T17.7) splits a string into several segments;
+                // they stay one literal token.
                 if !previousWasLiteral {
                     push(DeclToken(kind: .literal, start: range.location, end: NSMaxRange(range)), &units, &out)
                 }

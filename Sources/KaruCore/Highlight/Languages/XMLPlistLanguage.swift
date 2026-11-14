@@ -11,12 +11,14 @@ import Foundation
 /// Code colours it) span lines. As in HTML there are no quote string forms;
 /// attribute values stay single-line regex rules (`keepsStringRules`).
 ///
+/// Categories (T17.7): as HTML (`MarkupRules`); the XML declaration and
+/// processing instructions are tags (`<?`, name, attributes, `?>`),
+/// `<!DOCTYPE name` / `<!ENTITY name` keywords.
+///
 /// Remaining approximations (shared with HTML):
-/// - The XML declaration and `<!DOCTYPE …>` are matched per line
-///   (complete-on-line, or open-to-end-of-line).
-/// - Attribute names are matched as any `name=` token and attribute values
-///   as any quoted string on one line, without verifying they sit inside a
-///   tag; a value spanning lines is not coloured.
+/// - Tags are recognised line by line: on a tag's continuation lines only
+///   `name=` attributes are coloured; a value spanning lines is not
+///   coloured.
 public enum XMLPlistLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -27,7 +29,8 @@ public enum XMLPlistLanguage {
         strings: [
             .init(delimiter: .fixed(open: "<![CDATA[", close: "]]>"), multiline: true, escape: nil),
         ],
-        keepsStringRules: true
+        keepsStringRules: true,
+        stringKind: .markupValue
     )
 
     public static func make() -> LanguageDefinition {
@@ -36,22 +39,20 @@ public enum XMLPlistLanguage {
             identifier: "xml",
             fileExtensions: ["xml", "plist", "svg", "xib", "storyboard"],
             rules: [
-                // XML declaration: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"<\?.*?\?>"#, kind: .type),
-                LanguageRule(pattern: #"<\?.*"#, kind: .type),
-                // DOCTYPE: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"<!DOCTYPE.*?>"#, kind: .type),
-                LanguageRule(pattern: #"<!DOCTYPE.*"#, kind: .type),
-                // Tag name, including the opening `<` or `</` and any
-                // namespace prefix (e.g. `<key`, `</string`, `<ns:tag`).
-                LanguageRule(pattern: #"</?[a-zA-Z][\w:-]*"#, kind: .keyword),
-                // Attribute value strings.
-                LanguageRule(pattern: #""[^"]*""#, kind: .string),
-                LanguageRule(pattern: #"'[^']*'"#, kind: .string),
-                // Entity reference (`&amp;`, `&#169;`).
-                LanguageRule(pattern: #"&#?\w+;"#, kind: .number),
-                // Attribute name (a word immediately before `=`).
-                LanguageRule(pattern: #"[\w:-]+(?==)"#, kind: .property),
+                MarkupRules.tagOpen,
+                // Processing instruction / XML declaration target.
+                LanguageRule(pattern: #"(?<=<\?)[A-Za-z_][\w:.-]*"#, kind: .tagName),
+                MarkupRules.declarationKeyword,
+                MarkupRules.declaredName,
+                MarkupRules.tagName,
+                MarkupRules.tagClose,
+                MarkupRules.doubleQuotedValue,
+                MarkupRules.singleQuotedValue,
+                // A quoted literal in a declaration (`<!ENTITY e "v">`).
+                LanguageRule(pattern: #""[^"\r\n]*"(?=[ \t]*>)"#, kind: .string),
+                MarkupRules.entity,
+                MarkupRules.attributeInTag,
+                MarkupRules.attributeBeforeEquals,
             ],
             lexicalProfile: lexicalProfile
         )

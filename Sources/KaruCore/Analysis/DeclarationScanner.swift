@@ -22,6 +22,11 @@ struct DeclarationBuilder: Sendable {
     private var masks: [UInt8] = []
     private(set) var encoded: [UInt8] = []
     private var lastLocation = 0
+    /// Declarations encoded so far, and a seek point (`encoded` index,
+    /// running location before it) every `DeclarationScan.seekStride` of
+    /// them (T17.7: the highlighter decodes only its band).
+    private var declarationCount = 0
+    private var seeks: [Int32] = []
     /// Declarations that arrived out of document order and were dropped
     /// (a walker bug; tests assert it stays 0).
     private(set) var droppedOutOfOrder = 0
@@ -87,6 +92,11 @@ struct DeclarationBuilder: Sendable {
             }
         }
         masks[Int(index)] |= bit
+        if declarationCount > 0, declarationCount % DeclarationScan.seekStride == 0 {
+            seeks.append(Int32(clamping: encoded.count))
+            seeks.append(Int32(clamping: lastLocation))
+        }
+        declarationCount += 1
         appendVarint(token.start - lastLocation)
         appendVarint(Int(index) << 4 | DeclarationScan.code(kind, listed: listed))
         lastLocation = token.start
@@ -235,7 +245,8 @@ struct DeclarationBuilder: Sendable {
                                completionSymbols: table.all, names: Array(names[...]),
                                encodedLocations: encoded.withUnsafeBufferPointer { Array($0) },
                                outline: outline.withUnsafeBufferPointer { Array($0) },
-                               scopeCount: order.count, documentLength: documentLength)
+                               scopeCount: order.count, documentLength: documentLength,
+                               declarationSeeks: seeks.withUnsafeBufferPointer { Array($0) })
     }
 }
 

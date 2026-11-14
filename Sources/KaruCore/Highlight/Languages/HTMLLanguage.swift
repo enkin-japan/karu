@@ -8,11 +8,13 @@ import Foundation
 /// values stay single-line regex rules (`keepsStringRules`), which run in
 /// the code outside comments.
 ///
+/// Categories (T17.7): tag punctuation, tag names, attribute names, values
+/// and entities as VS Code's HTML grammar colours them (`MarkupRules`).
+///
 /// Remaining approximations:
-/// - Attribute names are matched as any `name=` token and attribute values as
-///   any quoted string on one line, without verifying they sit inside a tag;
-///   a value spanning lines is not coloured, and a `<!--` inside a value
-///   opens a comment.
+/// - Tags are recognised line by line: on a tag's continuation lines only
+///   `name=` attributes are coloured; a value spanning lines is not
+///   coloured, and a `<!--` inside a value opens a comment.
 /// - Embedded `<script>` / `<style>` bodies are not switched to JS / CSS.
 public enum HTMLLanguage {
     /// See `JSONLanguage.buildCount`.
@@ -30,16 +32,18 @@ public enum HTMLLanguage {
             identifier: "html",
             fileExtensions: ["html", "htm"],
             rules: [
-                // Tag name, including the opening `<` or `</` (e.g. `<div`,
-                // `</span`, `<my-element`).
-                LanguageRule(pattern: #"</?[a-zA-Z][\w-]*"#, kind: .keyword),
-                // Attribute value strings.
-                LanguageRule(pattern: #""[^"]*""#, kind: .string),
-                LanguageRule(pattern: #"'[^']*'"#, kind: .string),
-                // Entity reference (`&amp;`, `&#169;`).
-                LanguageRule(pattern: #"&#?\w+;"#, kind: .number),
-                // Attribute name (a word immediately before `=`).
-                LanguageRule(pattern: #"[\w-]+(?==)"#, kind: .property),
+                MarkupRules.tagOpen,
+                // `<!DOCTYPE` (`entity.name.tag.doctype`) and its root name
+                // (an attribute name in VS Code's HTML grammar).
+                LanguageRule(pattern: #"(?<=<!)[A-Za-z]+"#, kind: .tagName),
+                LanguageRule(pattern: #"(?<=<!DOCTYPE[ \t]{1,8})[\w:.-]+"#, kind: .attributeName),
+                MarkupRules.tagName,
+                MarkupRules.tagClose,
+                MarkupRules.doubleQuotedValue,
+                MarkupRules.singleQuotedValue,
+                MarkupRules.entity,
+                MarkupRules.attributeInTag,
+                MarkupRules.attributeBeforeEquals,
             ],
             lexicalProfile: lexicalProfile
         )

@@ -8,20 +8,44 @@ import Foundation
 /// `c` prefixes), raw strings `r"…"` / `r#"…"#` (any number of hashes, `b` /
 /// `c` prefixes, no escapes). Character literals (`'x'`, `'\''`, `b'x'`) and
 /// lifetimes (`'a`) are atoms, so a `'"'` never opens a string.
-/// - Lifetimes are coloured like properties; character literals like strings.
+/// - Lifetimes are coloured like types (VS Code: `entity.name.type.lifetime`
+///   for the name; the apostrophe is included here); character literals like
+///   strings.
 /// - Macro invocations (`println!`, `vec!`) are coloured like functions via the
 ///   `word!` rule.
+///
+/// **Categories by position** (T17.7, VS Code's Rust grammar): control-flow
+/// keywords (`for`, `match`, `return`, …) apart from the others; a path
+/// segment before `::` a type; `name(` a call; a field after `.` and an
+/// all-caps constant uncoloured (`constant.other.caps`); every other
+/// identifier a variable. Escapes: `\xHH`, `\u{…}`.
 public enum RustLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
 
-    public static let keywords: [String] = [
-        "as", "async", "await", "break", "const", "continue", "crate", "dyn",
-        "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in",
-        "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
-        "self", "Self", "static", "struct", "super", "trait", "true", "type",
-        "union", "unsafe", "use", "where", "while",
+    public static let keywords: [String] = controlKeywords + otherKeywords
+
+    /// Control-flow keywords (`keyword.control`).
+    public static let controlKeywords: [String] = [
+        "await", "break", "continue", "else", "for", "if", "loop", "match", "return",
+        "while", "yield",
     ]
+
+    public static let otherKeywords: [String] = [
+        "as", "async", "const", "crate", "dyn", "enum", "extern", "false", "fn",
+        "impl", "in", "let", "mod", "move", "mut", "pub", "ref", "self", "Self",
+        "static", "struct", "super", "trait", "true", "type", "union", "unsafe",
+        "use", "where",
+    ]
+
+    /// Rust's identifiers (T17.7): types from the table, every other name a
+    /// variable — also a function's name where it is not declared or called
+    /// (VS Code's `variable.other`).
+    static let identifierPolicy: IdentifierPolicy = {
+        var roles = IdentifierPolicy.declarationRoles
+        roles[.variable] = .symbolVariable
+        return IdentifierPolicy(tableFunctions: false, otherIdentifiers: .symbolVariable, roles: roles)
+    }()
 
     /// Common standard-library types / enum variants, coloured as types.
     public static let types: [String] = [
@@ -41,14 +65,15 @@ public enum RustLanguage {
                                                             hashesApplyToEscapes: false),
                   multiline: true, escape: nil),
             // Ordinary (byte / C) strings; they may span lines.
-            .init(prefixes: ["b", "c"], delimiter: .fixed(open: "\"", close: "\""), multiline: true),
+            .init(prefixes: ["b", "c"], delimiter: .fixed(open: "\"", close: "\""), multiline: true,
+                  escapeForms: [.hex2, .unicodeBraced]),
         ],
         atoms: [
             // Character / byte literal, before the lifetime so `'x'` wins.
             .init(pattern: #"'(?:[^'\\\r\n]|\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f_]{1,6}\}|[^\r\n]))'"#,
                   firstCharacters: "'", kind: .string, prefixes: ["b"]),
             // Lifetime / label.
-            .init(pattern: #"'[A-Za-z_][A-Za-z0-9_]*"#, firstCharacters: "'", kind: .property),
+            .init(pattern: #"'[A-Za-z_][A-Za-z0-9_]*"#, firstCharacters: "'", kind: .type),
         ]
     )
 
@@ -70,12 +95,26 @@ public enum RustLanguage {
                     pattern: #"(?<![\w.])(?:0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|(?:\d[\d_]*(?:\.[\d_]*)?)(?:[eE][+-]?\d+)?)(?:[iuf](?:8|16|32|64|128|size))?"#,
                     kind: .number
                 ),
-                wordRule(keywords, kind: .keyword),
+                wordRule(controlKeywords, kind: .controlKeyword),
+                wordRule(otherKeywords, kind: .keyword),
                 wordRule(types, kind: .type),
+                // An attribute's name (`#[derive(`, `#[cfg(`) uncoloured, the
+                // derived traits types.
+                LanguageRule(pattern: #"(?<=#!?\[)[A-Za-z_]\w*"#, kind: .plain),
+                LanguageRule(pattern: #"(?<=[(, \t])(?<=#\[derive\([^)\r\n]{0,200})[A-Za-z_]\w*"#, kind: .type),
+                // A `use` path's last names (`use std::fmt;`) uncoloured; the
+                // segments before `::` are types (`scopeQualifier`).
+                LanguageRule(pattern: #"(?<=[ \t:{,])(?<=^[ \t]{0,32}(?:pub(?:\([\w ]{0,16}\))?[ \t]{1,8})?use[ \t]{1,8}[\w:{}, \t]{0,200})[A-Za-z_]\w*(?![ \t]*::)"#,
+                             kind: .plain),
+                SyntaxRules.call(),
+                SyntaxRules.scopeQualifier,
+                SyntaxRules.member(.plain),
+                SyntaxRules.upperSnake(.plain),
             ],
             keywords: keywords,
             builtins: types,
-            lexicalProfile: lexicalProfile
+            lexicalProfile: lexicalProfile,
+            identifierPolicy: identifierPolicy
         )
     }
 }
