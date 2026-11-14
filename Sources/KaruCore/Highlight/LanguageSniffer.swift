@@ -29,9 +29,9 @@ public enum LanguageSniffer {
         // 1. Shebang: the interpreter name pins the language.
         if let first = lines.first, first.hasPrefix("#!") {
             if first.contains("python") { return "python" }
-            if matches(first, "\\b(ts-node|tsx)\\b") { return "typescript" }
+            if matches(first, "\\b(ts-node|tsx)\\b") { return probe.typeScriptFlavour }
             if matches(first, "\\bswift\\b") { return "swift" }
-            if matches(first, "\\b(deno|bun)\\b") { return probe.looksTypeScript ? "typescript" : "javascript" }
+            if matches(first, "\\b(deno|bun)\\b") { return probe.looksTypeScript ? probe.typeScriptFlavour : "javascript" }
             if matches(first, "\\b(bash|zsh|sh)\\b") { return "bash" }
             if first.contains("node") { return "javascript" }
         }
@@ -70,18 +70,22 @@ public enum LanguageSniffer {
         // 11. ES-module imports (`import X from 'y'`) are JavaScript-only syntax —
         // Python spells it `from y import X` — so this must outrank the Python
         // rule, whose `^import\s` would otherwise claim these lines.
-        if countMatchingLines(lines, "^import .* from ") >= 2 { return probe.looksTypeScript ? "typescript" : "javascript" }
+        if countMatchingLines(lines, "^import .* from ") >= 2 {
+            return probe.looksTypeScript ? probe.typeScriptFlavour : "javascript"
+        }
 
         // 12. Python: two or more statement-leading keywords.
         if countMatchingLines(lines, "^(def|class|import|from)\\s") >= 2 { return "python" }
 
-        // 13. JavaScript; refined to TypeScript when clear type syntax appears.
+        // 13. JavaScript; refined to TypeScript when clear type syntax appears
+        // (TypeScript JSX when JSX markup appears too, T17.8b; JavaScript
+        // always has JSX on, so it needs no refinement).
         if countMatchingLines(lines, "^(import .* from|const |let |function )") >= 2 {
-            return probe.looksTypeScript ? "typescript" : "javascript"
+            return probe.looksTypeScript ? probe.typeScriptFlavour : "javascript"
         }
 
         // 14. TypeScript without enough JS statement lines: two TS-only signals.
-        if probe.typeScriptSignalCount >= 2 { return "typescript" }
+        if probe.typeScriptSignalCount >= 2 { return probe.typeScriptFlavour }
 
         // 15. C++ without an include: two C++-only signals.
         if probe.cppSignalCount >= 2 { return "cpp" }
@@ -169,6 +173,11 @@ public enum LanguageSniffer {
         static let tsReturnType = re(#"\)\s*:\s*(string|number|boolean|void|any|unknown|never|Promise<[^>\n]*>)\s*(\{|=>)"#)
         static let tsImportType = re(#"^\s*import\s+type\s"#)
         static let tsMember = re(#"^\s*(public|private|protected|readonly)\s+(readonly\s+)?\w+\s*[?!]?:\s*\w"#)
+
+        // JSX (T17.8b): an element after `return`, `=>`, `(`, `?` or `:`, and
+        // a closing or self-closing tag.
+        static let jsxOpen = re(#"(?:\breturn|=>|[(?:])\s*<[A-Za-z][\w.:-]*[\s/>]"#)
+        static let jsxClose = re(#"</[A-Za-z][\w.:-]*\s*>|/>"#)
     }
 
     /// Lazily evaluated signal checks over one sample.
@@ -247,6 +256,13 @@ public enum LanguageSniffer {
 
         /// Any clear type syntax (used once the text is already JS-like).
         var looksTypeScript: Bool { typeScriptSignalCount >= 1 }
+
+        /// JSX markup: an element in an expression position plus a closing
+        /// or self-closing tag.
+        var looksJSX: Bool { has(Pattern.jsxOpen) && has(Pattern.jsxClose) }
+
+        /// `typescriptreact` when the TypeScript sample contains JSX.
+        var typeScriptFlavour: String { looksJSX ? "typescriptreact" : "typescript" }
     }
 
     // MARK: - JSON / JSONL

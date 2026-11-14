@@ -50,8 +50,8 @@ public enum MarkdownLanguage {
               aliases: ["python", "py", "python3", "py3"]),
         .init(identifier: "javascript", profile: JavaScriptLanguage.lexicalProfile,
               aliases: ["javascript", "js", "jsx", "mjs", "cjs", "node"]),
-        .init(identifier: "typescript", profile: JavaScriptLanguage.lexicalProfile,
-              aliases: ["typescript", "ts", "tsx", "mts", "cts"]),
+        .init(identifier: "typescript", profile: TypeScriptLanguage.lexicalProfile,
+              aliases: ["typescript", "ts", "mts", "cts"]),
         .init(identifier: "bash", profile: BashLanguage.lexicalProfile,
               aliases: ["bash", "sh", "shell", "zsh", "shellscript", "console"]),
         .init(identifier: "json", profile: JSONLanguage.lexicalProfile, aliases: ["json", "jsonc", "json5"]),
@@ -71,6 +71,9 @@ public enum MarkdownLanguage {
         .init(identifier: "swift", profile: SwiftLanguage.lexicalProfile, aliases: ["swift"]),
         .init(identifier: "sql", profile: SQLLanguage.lexicalProfile, aliases: ["sql"]),
         .init(identifier: "markdown", profile: baseProfile, aliases: ["markdown", "md"]),
+        // T17.8b: TypeScript JSX (JavaScript fences have JSX on).
+        .init(identifier: "typescriptreact", profile: TypeScriptReactLanguage.lexicalProfile,
+              aliases: ["tsx", "typescriptreact"]),
     ]
 
     /// HTML comments and fenced code blocks with their embedded languages

@@ -13,6 +13,7 @@ enum IdentifierText {
     /// Languages whose identifiers may contain `$`.
     static func allowsDollar(_ languageIdentifier: String) -> Bool {
         languageIdentifier == "javascript" || languageIdentifier == "typescript"
+            || languageIdentifier == "typescriptreact"
     }
 
     @inline(__always)

@@ -104,6 +104,9 @@ struct DeclarationScanBenchmarkTests {
              { try Self.repeatedFixtures(["highlight/java.java", "completion/explicit/Invoice.java"]) }),
             ("10 MB Swift (highlight/swift.swift + account.swift)", "swift",
              { try Self.repeatedFixtures(["highlight/swift.swift", "completion/explicit/account.swift"]) }),
+            // T17.8b: JSX reaches the walker as literals and interpolations.
+            ("10 MB TSX (highlight/embedded/component.tsx)", "typescriptreact",
+             { try Self.repeatedFixtures(["highlight/embedded/component.tsx"]) }),
         ]
         if let only { documents = documents.filter { only.contains($0.1) } }
         for (label, language, make) in documents {

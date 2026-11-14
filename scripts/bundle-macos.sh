@@ -62,7 +62,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 				<string>txt</string><string>md</string><string>markdown</string>
 				<string>json</string><string>jsonl</string><string>ndjson</string>
 				<string>py</string><string>pyw</string><string>js</string>
-				<string>mjs</string><string>cjs</string><string>ts</string>
+				<string>mjs</string><string>cjs</string><string>jsx</string><string>ts</string><string>tsx</string>
 				<string>html</string><string>htm</string><string>css</string>
 				<string>c</string><string>h</string><string>cpp</string>
 				<string>cc</string><string>cxx</string><string>hpp</string>

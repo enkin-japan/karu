@@ -83,7 +83,7 @@ public struct CompletionContext: Sendable, Equatable {
     static func selfNames(_ languageIdentifier: String) -> Set<String> {
         switch languageIdentifier {
         case "python": return ["self", "cls"]
-        case "javascript", "typescript", "java", "csharp", "cpp": return ["this"]
+        case "javascript", "typescript", "typescriptreact", "java", "csharp", "cpp": return ["this"]
         case "swift", "rust": return ["self"]
         default: return []
         }
@@ -149,15 +149,18 @@ public struct CompletionContext: Sendable, Equatable {
     /// The position class of `state`, the lexical state at the caret. Read
     /// from the host's frames only: an embedded language's body (an HTML
     /// `<script>` / `<style>` start tag or body, a fence) is code whatever
-    /// the child's state (T17.8a; T17.8c will ask the child).
+    /// the child's state (T17.8a; T17.8c will ask the child). JSX (T17.8b):
+    /// a tag and a `{…}` expression are code, an attribute string a string,
+    /// children text a string (no auto popup in text).
     public static func position(of state: LexicalScanState) -> Position {
         switch state.frames.last {
-        case nil, .interpolation?: return .code
+        case nil, .interpolation?, .jsxExpression?: return .code
         case .lineComment?, .blockComment?: return .comment
-        case .string?: return .string
+        case .string?, .jsxText?: return .string
         case .heredoc(_, _, let inBody)?: return inBody ? .string : .code
         case .indentedBlock(_, let inBody)?: return inBody ? .string : .code
         case .fence?, .rawTextTag?, .rawText?: return .code
+        case .jsxTag(_, let phase, _, _)?: return phase == 2 || phase == 3 ? .string : .code
         }
     }
 

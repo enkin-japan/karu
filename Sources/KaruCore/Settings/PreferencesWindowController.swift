@@ -88,6 +88,7 @@ public final class PreferencesWindowController: NSWindowController, NSWindowDele
         ("css", "CSS"),
         ("javascript", "JavaScript"),
         ("typescript", "TypeScript"),
+        ("typescriptreact", "TypeScript JSX"),
         ("python", "Python"),
         ("c", "C"),
         ("cpp", "C++"),

@@ -24,6 +24,14 @@ import os
 /// up to its end tag. When stopping, one step searches at most
 /// `embedWindow` units past the target. One level only.
 ///
+/// **JSX** (T17.8b, `LexicalProfile.jsx`): a `<` in code that opens an
+/// element pushes a `jsxTag` frame; one tree's nested elements, closing tags
+/// and children text then live in that one frame (its depth counter), so a
+/// deep tree costs no frames; each `{…}` expression pushes a `jsxExpression`
+/// frame of code whose `}` returns to the tag or text below. A tag is scanned
+/// token by token: blanks, a tag or attribute name (read whole, up to `to`),
+/// a string, `{`, a comment, `>` / `/>`, a stray unit.
+///
 /// **Ranges.** Both accept any `[from, to)`, not necessarily line-aligned. The
 /// scanner never reads at or beyond `to`; it may read *before* `from`, but
 /// only the single unit in front of a string / atom prefix (the word-boundary
@@ -36,9 +44,13 @@ import os
 /// line up to `fenceInfoReach` units back when it ends (its info string), a
 /// raw-text start tag from its `<` (at most `startTagReach` units) when its
 /// `>` is reached (its `type`), a child's own reads of these kinds (into the
-/// host text before its body too) or, when stopping at a safe point, the
-/// unit in front of `from` itself. These reads depend on the text alone,
-/// never on the state, so they cannot break the split guarantee below.
+/// host text before its body too), a JSX opener's `context` (like an atom's
+/// `precededBy`), the unit in front of a `<` inside a JSX tag (TSX type
+/// arguments follow a name) or of a `>` in type arguments (`=>`), or, when
+/// stopping at a safe point, the unit in front of `from` itself and — TSX —
+/// up to `typeParameterReach` + 1 units back to a `<` whose type-parameter
+/// check a stop must not cut. These reads depend on the text alone, never on
+/// the state, so they cannot break the split guarantee below.
 ///
 /// **Split guarantee.** For a split point `b` in `[a, c)`, scanning `a..<b`
 /// then `b..<c` gives the same end state as scanning `a..<c`, and the
@@ -56,7 +68,13 @@ import os
 /// raw-text start tag opener (`<script` with its blank, `/` or `>`), an end
 /// tag (`</script` with its delimiter), a CRLF ending a known-language fence's
 /// opener line or inside its body, and inside a body any token of the child
-/// language. Line starts are always safe (no token
+/// language — or, for JSX (T17.8b), an opener in code (`<` with its next
+/// unit; in TSX through the text its type-parameter check reads on the
+/// line: the identifier, blanks and `,` / `=` / `extends` / `const` + blank +
+/// identifier start), a `<` in children with its next unit (`</`, `<name`,
+/// `<>`), a tag name or attribute name (read whole; cut, the rest reads as
+/// an attribute name), a TSX type-argument identifier, `/>` and a `//` / `/*`
+/// in a tag. Line starts are always safe (no token
 /// crosses a line break: escape + newline counts as one escape; a line
 /// block's line-start checks run at the line start, from the text after it).
 ///
@@ -74,7 +92,11 @@ import os
 /// not right after the opener's name); a plain raw-text body is like string
 /// content. Inside a child's body a safe point is the child's own safe
 /// point, which lies before the end tag or the next possible closer line,
-/// never inside them. Checkpoints and the highlighter split only at line
+/// never inside them. In a JSX tag every non-blank unit starts a token (a
+/// safe point lies among the blanks before it), in a tag string or type
+/// arguments any friendly point before the closer / next angle bracket, in
+/// children text any friendly point before the next `<` or `{`, and a JSX
+/// expression is code. Checkpoints and the highlighter split only at line
 /// starts and at returned safe points.
 ///
 /// **Lines.** CR, LF and CRLF terminate lines. A line comment, and a
@@ -85,7 +107,9 @@ import os
 ///
 /// **Depth.** At most `LexicalScanState.maximumDepth` frames. An opener met at
 /// the cap is not opened (its characters stay code / content); a nesting
-/// block comment counts depth inside one frame and is not limited by the cap.
+/// block comment counts depth inside one frame and is not limited by the cap,
+/// and so do the nested elements of one JSX tree (a `{` at the cap stays
+/// text or tag filler).
 public struct LexicalScanner: Sendable {
     public let profile: LexicalProfile
 
@@ -199,6 +223,19 @@ public struct LexicalScanner: Sendable {
     private let embedCache: EmbedCache?
     private let fenceAliases: [String: UInt8]
     private var hasEmbeds: Bool { embedCache != nil }
+    /// T17.8b: JSX (`LexicalProfile.jsx`) — the expression-position context
+    /// (nil: no JSX), TSX rules, and what ends a code run in a JSX expression.
+    private let jsxContext: AtomContext?
+    private let jsxTypeScript: Bool
+    private let jsxExpressionMarkers: CharacterSet
+    /// First units of every opener `scanCode` tries before brackets: line
+    /// and block comments, string anchors, atoms, heredoc / raw-text `<`,
+    /// block-scalar `|` `>` — as an ASCII bitmask (two words), and whether
+    /// any lies beyond ASCII.
+    private let openerMask: [UInt64]
+    private let openersBeyondASCII: Bool
+    /// JSX children text: a child element / closing tag, or an expression.
+    private static let jsxTextMarkers = CharacterSet(charactersIn: "<{")
     private static let lineBreaks = CharacterSet(charactersIn: "\r\n")
     /// Start-tag scanning (T17.8a): `>` or `=` between attributes; anything
     /// but a blank after `=`; the closing quote; the end of an unquoted value.
@@ -206,6 +243,7 @@ public struct LexicalScanner: Sendable {
     private static let tagBlanks = CharacterSet(charactersIn: " \t\n\u{0C}\r")
     private static let tagNonBlank = tagBlanks.inverted
     private static let doubleQuote = CharacterSet(charactersIn: "\"")
+    private static let angleBrackets = CharacterSet(charactersIn: "<>")
     private static let singleQuote = CharacterSet(charactersIn: "'")
     private static let unquotedValueEnd = tagBlanks.union(CharacterSet(charactersIn: ">"))
 
@@ -238,6 +276,9 @@ public struct LexicalScanner: Sendable {
     /// How far back a block-scalar indicator looks for its line start (the
     /// parent indentation); beyond it, any non-blank body line ends the scalar.
     static let blockScalarLineReach = 4_096
+    /// TSX (T17.8b): the longest identifier plus blanks a `<`'s
+    /// type-parameter check reads; beyond it the `<` opens an element.
+    static let typeParameterReach = 256
     /// How far a raw-text start tag is re-read from its `<` for its `type`
     /// (T17.8a); attributes beyond are ignored.
     public static let startTagReach = 4_096
@@ -399,8 +440,19 @@ public struct LexicalScanner: Sendable {
         if indented != nil { code += [124, 62] }            // | >
         // Line breaks end a heredoc opener line and lead to line starts.
         if !profile.lineBlocks.isEmpty { code += [Self.cr, Self.lf] }
-        if !profile.rawTextElements.isEmpty { code.append(60) }   // <
+        if !profile.rawTextElements.isEmpty || profile.jsx != nil { code.append(60) }   // <
         codeMarkers = set(code)
+        jsxContext = profile.jsx.map { AtomContext($0.context) }
+        jsxTypeScript = profile.jsx?.typeScript ?? false
+        jsxExpressionMarkers = set(code + Array("{}".utf16))
+        var openers: [unichar] = lineComments.map { $0[0] } + blocks.map { $0.open[0] } + strings.map(\.anchor)
+        for atom in atoms { openers += atom.first }
+        if heredoc != nil || !profile.rawTextElements.isEmpty { openers.append(60) }   // <
+        if indented != nil { openers += [124, 62] }                                       // | >
+        var mask: [UInt64] = [0, 0]
+        for u in openers where u < 128 { mask[Int(u) >> 6] |= 1 << UInt64(u & 63) }
+        openerMask = mask
+        openersBeyondASCII = openers.contains { $0 >= 128 }
         var interp = code + [Self.cr, Self.lf] + Array("()[]{}".utf16)
         for spec in strings { interp += spec.interpolations.map(\.close) }
         interpolationMarkers = set(interp)
@@ -583,6 +635,9 @@ public struct LexicalScanner: Sendable {
         case .rawTextTag?: return .code
         // A child body is marked by the child's own run.
         case .rawText(_, let language)?: return language == 0 ? .block(.plain) : .code
+        case .jsxTag(_, let phase, _, _)?: return phase == 2 || phase == 3 ? .string : .atom(.plain)
+        case .jsxText?: return .atom(.plain)
+        case .jsxExpression?: return .code
         }
     }
 
@@ -795,7 +850,19 @@ public struct LexicalScanner: Sendable {
             if Self.isIdentifier(previous) && Self.isIdentifier(current) { return false }
             if previous == Self.cr && current == Self.lf { return false }
             if code, let scalar = Unicode.Scalar(previous), lookbackUnits.contains(scalar) { return false }
+            if code, jsxTypeScript, insideTypeParameterCheck(q) { return false }
             return true
+        }
+        /// TSX (T17.8b): `q` lies in the text a `<`'s type-parameter check
+        /// reads (`<T |,`): after `<`, an identifier and blanks.
+        func insideTypeParameterCheck(_ q: Int) -> Bool {
+            let floor = max(0, q - Self.typeParameterReach - 1)
+            var k = q - 1
+            while k >= floor, at(k) == 32 || at(k) == 9 { k -= 1 }
+            let identifierEnd = k
+            while k >= floor, Self.isJSXIdentifierPart(at(k)) { k -= 1 }
+            guard k >= floor, k < identifierEnd, at(k) == 60 else { return false }   // <
+            return Self.isJSXNameStart(at(k + 1))
         }
         /// At a loop top past the target: the first safe point between `pos`
         /// and a lower bound of the next token start, or nil.
@@ -815,6 +882,19 @@ public struct LexicalScanner: Sendable {
             case .heredoc(_, _, true)?, .indentedBlock(_, true)?, .fence(_, _, true, _)?, .rawText?:
                 markers = Self.lineBreaks; code = false
             case .indentedBlock(_, false)?: markers = Self.nonBlank; code = false
+            // JSX (T17.8b): in a tag every non-blank unit starts a token
+            // (names are read whole); strings and type arguments end at their
+            // closer; text at a child tag or an expression.
+            case .jsxTag(_, let phase, _, _)?:
+                switch phase {
+                case 2: markers = Self.doubleQuote
+                case 3: markers = Self.singleQuote
+                case 4: markers = Self.angleBrackets
+                default: markers = Self.tagNonBlank
+                }
+                code = false
+            case .jsxText?: markers = Self.jsxTextMarkers; code = false
+            case .jsxExpression?: markers = jsxExpressionMarkers; code = true
             case .fence(let marker, _, false, _)?:
                 markers = marker == 96 ? Self.backtickInfoMarkers : Self.lineBreaks; code = false
             // Each unit of a start tag is a step of its own; only the opener
@@ -839,9 +919,12 @@ public struct LexicalScanner: Sendable {
             let hit = text.rangeOfCharacter(from: markers, options: [],
                                             range: NSRange(location: searchStart, length: windowEnd - searchStart))
             let bound = hit.location == NSNotFound ? windowEnd : hit.location
+            // A JSX element's `<` and the unit after it are one token.
+            var avoid = -1
+            if case .jsxTag(_, 0, false, _)? = state.frames.last, pos > 0, at(pos - 1) == 60 { avoid = pos }
             var q = pos
             while q <= bound {
-                if friendly(q, code: code) { return q }
+                if q != avoid, friendly(q, code: code) { return q }
                 q += 1
             }
             return nil
@@ -906,6 +989,159 @@ public struct LexicalScanner: Sendable {
             let q = scanner.run(text, from: pos, to: end, stop: target, state: &child, emitter: &emitter, nested: true)
             emitter.language = 0
             return q
+        }
+
+        // MARK: JSX (T17.8b)
+
+        /// One token inside a JSX tag (see `LexicalProfile.JSXForm` and
+        /// `LexicalScanState.Frame.jsxTag`); the new position.
+        // swiftlint:disable:next cyclomatic_complexity function_body_length
+        func jsxTagStep(depth: UInt32, phase: UInt8, closing: Bool, angles: UInt8, limit: Int) -> Int {
+            func setPhase(_ next: UInt8, angles: UInt8 = 0) {
+                state.frames[state.frames.count - 1] = .jsxTag(depth: depth, phase: next, closing: closing,
+                                                               angles: angles)
+            }
+            switch phase {
+            case 2, 3:
+                // A string: no escapes, may span lines.
+                let hit = text.rangeOfCharacter(from: phase == 2 ? Self.doubleQuote : Self.singleQuote, options: [],
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { return afterPlainRun(limit) }
+                setPhase(1)
+                emitter.mark(hit.location + 1, .atom(.plain))
+                return hit.location + 1
+            case 4:
+                // TSX type arguments: identifiers are types; `=>` is no closer.
+                var q = pos
+                while q < limit {
+                    let u = at(q)
+                    if u == 60 || u == 62 || Self.isJSXNameStart(u) { break }
+                    q += 1
+                }
+                guard q < limit else { return afterPlainRun(limit) }
+                let u = at(q)
+                if u == 60 {
+                    setPhase(4, angles: angles == UInt8.max ? angles : angles + 1)
+                    return q + 1
+                }
+                if u == 62 {
+                    if q > 0, at(q - 1) == 61 { return q + 1 }             // =>
+                    if angles <= 1 { setPhase(1) } else { setPhase(4, angles: angles - 1) }
+                    return q + 1
+                }
+                var e = q + 1
+                while e < to, Self.isJSXIdentifierPart(at(e)) { e += 1 }
+                emitter.mark(q, .atom(.type))
+                emitter.mark(e, .atom(.plain))
+                return e
+            default:
+                break
+            }
+            // Phases 0 and 1: the next token after blanks (usually at `pos`).
+            var p = pos
+            var c = at(p)
+            if c == 32 || c == 9 || c == 10 || c == 12 || c == 13 {
+                let hit = text.rangeOfCharacter(from: Self.tagNonBlank, options: [],
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { return afterPlainRun(limit) }
+                p = hit.location
+                c = at(p)
+            }
+            switch c {
+            case 62:                                                        // >
+                return endJSXTag(at: p, end: p + 1, depth: depth, closing: closing, selfClosing: false)
+            case 47:                                                        // /
+                if p + 1 < to, at(p + 1) == 62 {
+                    return endJSXTag(at: p, end: p + 2, depth: depth, closing: closing, selfClosing: true)
+                }
+                if let count = lineCommentLength(text, at: p, to: to, matches: matches),
+                   Self.push(.lineComment, &state) {
+                    emitter.mark(p, .comment)
+                    return p + count
+                }
+                for (index, block) in blocks.enumerated() where block.open[0] == c && matches(block.open, p, to) {
+                    guard Self.push(.blockComment(form: UInt8(index), depth: 1), &state) else { break }
+                    emitter.mark(p, .comment)
+                    return p + block.open.count
+                }
+                return p + 1
+            case 123:                                                       // {
+                if Self.push(.jsxExpression(braces: 0), &state) {
+                    emitter.mark(p, .interpolationDelimiter)
+                    emitter.mark(p + 1, .code)
+                    codeStart = p + 1
+                }
+                return p + 1
+            case 34, 39:                                                    // " '
+                setPhase(c == 34 ? 2 : 3)
+                emitter.mark(p, .string)
+                return p + 1
+            case 60:                                                        // <
+                // TSX type arguments right after the tag name.
+                if jsxTypeScript, !closing, phase == 1, p > 0, Self.isJSXNamePart(at(p - 1)) {
+                    setPhase(4, angles: 1)
+                }
+                return p + 1
+            default:
+                guard Self.isJSXNameStart(c) else {
+                    if phase == 0 { setPhase(1) }
+                    return p + 1
+                }
+                var e = p + 1
+                while e < to, Self.isJSXNamePart(at(e)) { e += 1 }
+                if phase == 0 {
+                    markJSXTagName(from: p, to: e)
+                    setPhase(1)
+                } else {
+                    emitter.mark(p, .atom(.attributeName))
+                }
+                emitter.mark(e, .atom(.plain))
+                return e
+            }
+        }
+        /// Colours a tag name: a lowercase intrinsic tag or a component
+        /// (each part of `ns:name` on its own, the `:` plain).
+        func markJSXTagName(from start: Int, to end: Int) {
+            var local = start
+            var q = start
+            while q < end, at(q) != 58 { q += 1 }                           // :
+            if q < end {
+                emitter.mark(start, .atom(.tagName))
+                emitter.mark(q, .atom(.plain))
+                local = q + 1
+            }
+            guard local < end else { return }
+            var intrinsic = (97...122).contains(at(local))
+            var k = local + 1
+            while intrinsic, k < end {
+                let u = at(k)
+                intrinsic = (97...122).contains(u) || (48...57).contains(u)
+                k += 1
+            }
+            emitter.mark(local, .atom(intrinsic ? .tagName : .type))
+        }
+        /// The tag's `>` (or `/>`) at `p`: the children of the element it
+        /// opens, the parent's children after a self-closing or closing tag,
+        /// or — when the tree's outermost element ends — the context below.
+        func endJSXTag(at p: Int, end: Int, depth: UInt32, closing: Bool, selfClosing: Bool) -> Int {
+            emitter.mark(p, .atom(.tagPunctuation))
+            let remaining: UInt32
+            if closing {
+                remaining = depth > 0 ? depth - 1 : 0
+            } else if selfClosing {
+                remaining = depth
+            } else {
+                remaining = depth == UInt32.max ? depth : depth + 1
+            }
+            if remaining == 0 {
+                state.frames.removeLast()
+                emitter.mark(end, contextKind(state))
+                codeStart = end
+            } else {
+                state.frames[state.frames.count - 1] = .jsxText(depth: remaining)
+                emitter.mark(end, .atom(.plain))
+            }
+            return end
         }
 
         while pos < to {
@@ -1004,6 +1240,38 @@ public struct LexicalScanner: Sendable {
             case .rawText:
                 // Handled above (embedded bodies).
                 pos = to
+
+            case .jsxTag(let depth, let phase, let closing, let angles):
+                pos = jsxTagStep(depth: depth, phase: phase, closing: closing, angles: angles, limit: limit)
+
+            case .jsxText(let depth):
+                let hit = text.rangeOfCharacter(from: Self.jsxTextMarkers, options: [],
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
+                let p = hit.location
+                if at(p) == 123 {                                           // {
+                    pos = p + 1
+                    if Self.push(.jsxExpression(braces: 0), &state) {
+                        emitter.mark(p, .interpolationDelimiter)
+                        emitter.mark(p + 1, .code)
+                        codeStart = p + 1
+                    }
+                    break
+                }
+                // `<` + its next unit is one token: `</`, `<name`, `<>`.
+                guard p + 1 < to else { pos = p + 1; break }
+                let next = at(p + 1)
+                let closingTag = next == 47                                 // /
+                guard closingTag || next == 62 || Self.isJSXNameStart(next) else { pos = p + 1; break }
+                state.frames[state.frames.count - 1] = .jsxTag(depth: depth, phase: 0, closing: closingTag, angles: 0)
+                emitter.mark(p, .atom(.tagPunctuation))
+                pos = closingTag ? p + 2 : p + 1
+                emitter.mark(pos, .atom(.plain))
+
+            case .jsxExpression:
+                pos = scanCode(text, pos, to, limit, &state, &emitter, &codeStart, inInterpolation: false,
+                               inJSXExpression: true, matches: matches, prefixStart: prefixStart, boundary: boundary)
+                if pos == limit, limit < to { pos = afterPlainRun(limit) }
 
             case .heredoc(_, _, false):
                 // The rest of the opener line: code; its line break starts the body.
@@ -1421,6 +1689,72 @@ public struct LexicalScanner: Sendable {
         return fenceAliases[word] ?? 0
     }
 
+    // MARK: - JSX (T17.8b)
+
+    private static let constWord = Array("const".utf16)
+    private static let extendsWord = Array("extends".utf16)
+
+    /// A unit that may start a JSX tag or attribute name, or a TSX type
+    /// argument identifier: an ASCII letter, `_`, `$`, or ≥ U+0080 except a
+    /// low surrogate and the blanks `DeclTokenizer` treats as spaces.
+    @inline(__always)
+    static func isJSXNameStart(_ u: unichar) -> Bool {
+        if u < 128 { return (97...122).contains(u) || (65...90).contains(u) || u == 95 || u == 36 }
+        return !(0xDC00...0xDFFF).contains(u) && u != 0xA0 && u != 0xFEFF && u != 0x2028 && u != 0x2029
+            && u != 0x3000
+    }
+
+    /// An identifier unit after the first (`isJSXNameStart`, digits, low surrogates).
+    @inline(__always)
+    static func isJSXIdentifierPart(_ u: unichar) -> Bool {
+        isJSXNameStart(u) || (48...57).contains(u) || (0xDC00...0xDFFF).contains(u)
+    }
+
+    /// A unit of a JSX tag or attribute name after the first: identifier
+    /// units, `-`, `.`, `:`.
+    @inline(__always)
+    static func isJSXNamePart(_ u: unichar) -> Bool {
+        isJSXIdentifierPart(u) || u == 45 || u == 46 || u == 58
+    }
+
+    /// The `<` at `p` (in code) opens a JSX element: an identifier start or
+    /// `>` follows, the context before it allows an expression, and — TSX —
+    /// it is no type parameter list (`<T,`, `<T =`, `<T extends`, `<const T`,
+    /// read forward on the line, before `to`; an identifier and blanks
+    /// longer than `typeParameterReach` make an element). A cut before the
+    /// check is decided also makes an element, so safe points avoid that
+    /// text (`insideTypeParameterCheck`).
+    private func opensJSX(_ text: NSString, at p: Int, to: Int) -> Bool {
+        guard let context = jsxContext, p + 1 < to else { return false }
+        let next = text.character(at: p + 1)
+        guard next == 62 || Self.isJSXNameStart(next) else { return false }
+        guard Self.allows(context, before: p, in: text) else { return false }
+        guard jsxTypeScript, next != 62 else { return true }
+        @inline(__always) func at(_ i: Int) -> unichar { text.character(at: i) }
+        let reach = min(to, p + 1 + Self.typeParameterReach)
+        var e = p + 2
+        while e < reach, Self.isJSXIdentifierPart(at(e)) { e += 1 }
+        var f = e
+        while f < reach, at(f) == 32 || at(f) == 9 { f += 1 }
+        guard f < reach else { return true }
+        let u = at(f)
+        if u == 44 || u == 61 { return false }                               // , =
+        guard f > e else { return true }
+        // `<const T`: the identifier is `const`, a name follows the blanks.
+        if e - (p + 1) == 5, at(p + 1) == 99, Self.isJSXNameStart(u) {     // c
+            var k = 1
+            while k < 5, at(p + 1 + k) == Self.constWord[k] { k += 1 }
+            if k == 5 { return false }
+        }
+        // `<T extends`: the word `extends`, then no identifier unit.
+        if u == 101, f + 7 <= to {                                           // e
+            var k = 1
+            while k < 7, at(f + k) == Self.extendsWord[k] { k += 1 }
+            if k == 7, f + 7 == to || !Self.isJSXIdentifierPart(at(f + 7)) { return false }
+        }
+        return true
+    }
+
     /// End of a long escape whose escaped character is at `q` (`escapeForms`),
     /// or nil when none applies there (the escape is then one character).
     /// Reads forward from `q`, never at or past `to`, never past a line break.
@@ -1500,11 +1834,11 @@ public struct LexicalScanner: Sendable {
     // swiftlint:disable:next function_parameter_count function_body_length cyclomatic_complexity
     private func scanCode(_ text: NSString, _ pos: Int, _ to: Int, _ limit: Int,
                           _ state: inout LexicalScanState, _ emitter: inout Emitter, _ codeStart: inout Int,
-                          inInterpolation: Bool,
+                          inInterpolation: Bool, inJSXExpression: Bool = false,
                           matches: ([unichar], Int, Int) -> Bool,
                           prefixStart: ([[unichar]], Int, Int, Bool) -> Int?,
                           boundary: (Int) -> Bool) -> Int {
-        let markers = inInterpolation ? interpolationMarkers : codeMarkers
+        let markers = inInterpolation ? interpolationMarkers : inJSXExpression ? jsxExpressionMarkers : codeMarkers
         let hit = text.rangeOfCharacter(from: markers, options: [],
                                         range: NSRange(location: pos, length: limit - pos))
         guard hit.location != NSNotFound else { return limit }
@@ -1526,56 +1860,87 @@ public struct LexicalScanner: Sendable {
             return p + 1
         }
 
-        if let count = lineCommentLength(text, at: p, to: to, matches: matches), Self.push(.lineComment, &state) {
-            emitter.mark(p, .comment)
-            return p + count
-        }
-
-        for (index, block) in blocks.enumerated() where block.open[0] == c && matches(block.open, p, to) {
-            guard Self.push(.blockComment(form: UInt8(index), depth: 1), &state) else { break }
-            emitter.mark(p, .comment)
-            return p + block.open.count
-        }
-
-        // A raw-text element's start tag (T17.8a), only outside every construct.
-        if c == 60, !rawElements.isEmpty, !inInterpolation, state.frames.isEmpty,
-           let opener = rawTextOpener(text, at: p, to: to),
-           Self.push(.rawTextTag(element: UInt8(opener.element), phase: 0, start: p), &state) {
-            return opener.end
-        }
-
-        for (index, spec) in strings.enumerated() where spec.anchor == c {
-            guard let open = openString(spec, at: p, to: to, codeStart: codeStart, text: text,
-                                        matches: matches, prefixStart: prefixStart, boundary: boundary)
-            else { continue }
-            guard Self.push(.string(form: UInt8(index), count: open.count, delimiter: open.delimiter),
-                            &state) else { break }
-            emitter.mark(open.tokenStart, .string)
-            return open.contentStart
-        }
-
-        var window: (start: Int, end: Int, text: String)?
-        for atom in atoms where atom.first.contains(c) {
-            if window == nil { window = atomWindow(text, at: p, to: to) }
-            guard let match = matchAtom(atom, at: p, window: window!, codeStart: codeStart, text: text,
-                                        prefixStart: prefixStart) else { continue }
-            emitter.mark(match.start, .atom(atom.kind))
-            emitter.mark(match.end, .code)
-            codeStart = match.end
-            return match.end
-        }
-
-        if heredocKind != nil, c == 60, let opener = heredocOpener(text, at: p, to: to, state: state) {
-            if let terminator = opener.terminator {
-                // At the depth cap the opener stays code.
-                _ = Self.push(.heredoc(terminator: terminator, stripTabs: opener.stripTabs, inBody: false), &state)
+        // Units that start no comment, string, atom, raw-text tag or line
+        // block (brackets, closers, a JSX `<`) skip those checks (T17.8b).
+        let mayOpen = c < 128 ? openerMask[Int(c) >> 6] & (1 << UInt64(c & 63)) != 0 : openersBeyondASCII
+        if mayOpen {
+            if let count = lineCommentLength(text, at: p, to: to, matches: matches), Self.push(.lineComment, &state) {
+                emitter.mark(p, .comment)
+                return p + count
             }
-            return opener.end
+
+            for (index, block) in blocks.enumerated() where block.open[0] == c && matches(block.open, p, to) {
+                guard Self.push(.blockComment(form: UInt8(index), depth: 1), &state) else { break }
+                emitter.mark(p, .comment)
+                return p + block.open.count
+            }
+
+            // A raw-text element's start tag (T17.8a), only outside every construct.
+            if c == 60, !rawElements.isEmpty, !inInterpolation, state.frames.isEmpty,
+               let opener = rawTextOpener(text, at: p, to: to),
+               Self.push(.rawTextTag(element: UInt8(opener.element), phase: 0, start: p), &state) {
+                return opener.end
+            }
         }
 
-        if indentedKind != nil, c == 124 || c == 62, let header = blockScalarHeader(text, at: p, to: to) {
-            _ = Self.push(.indentedBlock(parentIndent: header.parentIndent, inBody: false), &state)
-            return header.end
+        // A JSX element (T17.8b) in an expression position.
+        if c == 60, jsxContext != nil, opensJSX(text, at: p, to: to),
+           Self.push(.jsxTag(depth: 0, phase: 0, closing: false, angles: 0), &state) {
+            emitter.mark(p, .atom(.tagPunctuation))
+            emitter.mark(p + 1, contextKind(state))
+            return p + 1
+        }
+
+        if mayOpen {
+            for (index, spec) in strings.enumerated() where spec.anchor == c {
+                guard let open = openString(spec, at: p, to: to, codeStart: codeStart, text: text,
+                                            matches: matches, prefixStart: prefixStart, boundary: boundary)
+                else { continue }
+                guard Self.push(.string(form: UInt8(index), count: open.count, delimiter: open.delimiter),
+                                &state) else { break }
+                emitter.mark(open.tokenStart, .string)
+                return open.contentStart
+            }
+
+            var window: (start: Int, end: Int, text: String)?
+            for atom in atoms where atom.first.contains(c) {
+                if window == nil { window = atomWindow(text, at: p, to: to) }
+                guard let match = matchAtom(atom, at: p, window: window!, codeStart: codeStart, text: text,
+                                            prefixStart: prefixStart) else { continue }
+                emitter.mark(match.start, .atom(atom.kind))
+                emitter.mark(match.end, .code)
+                codeStart = match.end
+                return match.end
+            }
+
+            if heredocKind != nil, c == 60, let opener = heredocOpener(text, at: p, to: to, state: state) {
+                if let terminator = opener.terminator {
+                    // At the depth cap the opener stays code.
+                    _ = Self.push(.heredoc(terminator: terminator, stripTabs: opener.stripTabs, inBody: false), &state)
+                }
+                return opener.end
+            }
+
+            if indentedKind != nil, c == 124 || c == 62, let header = blockScalarHeader(text, at: p, to: to) {
+                _ = Self.push(.indentedBlock(parentIndent: header.parentIndent, inBody: false), &state)
+                return header.end
+            }
+        }
+
+        if inJSXExpression, c == 123 || c == 125, case .jsxExpression(let braces)? = state.frames.last {
+            if c == 125 {                                                   // }
+                if braces == 0 {
+                    state.frames.removeLast()
+                    emitter.mark(p, .interpolationDelimiter)
+                    emitter.mark(p + 1, contextKind(state))
+                    codeStart = p + 1
+                    return p + 1
+                }
+                state.frames[state.frames.count - 1] = .jsxExpression(braces: braces - 1)
+            } else if c == 123, braces < UInt32.max {                       // {
+                state.frames[state.frames.count - 1] = .jsxExpression(braces: braces + 1)
+            }
+            return p + 1
         }
 
         if inInterpolation, case .interpolation(let form, let k, let depth)? = state.frames.last {
@@ -1613,7 +1978,8 @@ public struct LexicalScanner: Sendable {
             case .string(let form, _, _):
                 if strings[Int(form)].multiline { return cut }
                 cut = index
-            case .blockComment, .heredoc, .indentedBlock, .fence, .rawTextTag, .rawText:
+            case .blockComment, .heredoc, .indentedBlock, .fence, .rawTextTag, .rawText, .jsxTag, .jsxText,
+                 .jsxExpression:
                 return cut
             case .interpolation, .lineComment:
                 continue

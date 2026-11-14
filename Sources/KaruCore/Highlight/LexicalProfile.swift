@@ -12,7 +12,8 @@ import Foundation
 /// block comments, then `strings` (in declaration order, so list the more
 /// specific forms first — `r#"…"#` before `"…"`), then `atoms`, then the
 /// `lineBlocks` openers (heredoc, block scalar; a fence only at a line start,
-/// before anything else on it), then the `rawTextElements` openers.
+/// before anything else on it), then the `rawTextElements` openers; a JSX
+/// opener (`jsx`) is tried after the raw-text openers, before strings.
 ///
 /// **Embedded languages** (M17 T17.8a, plan §7): `embeds` lists the child
 /// languages a host can enter — HTML `<script>` / `<style>` bodies
@@ -21,6 +22,10 @@ import Foundation
 /// the body, carrying the child's state in `LexicalScanState.embedded`; the
 /// host alone decides where the body ends. One level only: a child's own
 /// `embeds` and `rawTextElements` are ignored.
+///
+/// **JSX** (M17 T17.8b, plan §7): with `jsx`, a `<` in an expression
+/// position of code opens a JSX element, scanned with the frames
+/// `jsxTag` / `jsxText` / `jsxExpression` (see `JSXForm`).
 public struct LexicalProfile: Sendable {
     /// `/* … */`-style comment. `nests`: an inner opener increments a depth
     /// that the closer decrements (Rust, Swift).
@@ -307,6 +312,50 @@ public struct LexicalProfile: Sendable {
         }
     }
 
+    /// JSX elements in expressions (T17.8b; JavaScript, TypeScript JSX).
+    ///
+    /// In code — outside every construct, in an interpolation or in a JSX
+    /// expression — `<` directly followed by an identifier start (ASCII
+    /// letter, `_`, `$`, ≥ U+0080) or by `>` opens an element when `context`
+    /// allows it before the `<` (the regex literal's text-only decision:
+    /// `x = <a/>`, `return <a/>`, `(<a/>)`, `=> <a/>`, but `a < b`, `a<b>c`,
+    /// `f<T>(x)`). With `typeScript`, a type parameter list there stays code:
+    /// the identifier after `<` followed (after spaces or tabs, on the same
+    /// line) by `,`, `=` or the word `extends`, or `<const` + blank +
+    /// identifier (`<T,>() =>`, `<T extends X>() =>`, `<T = X>`).
+    ///
+    /// Inside a tag (`LexicalScanState.Frame.jsxTag`): the tag name (`a`,
+    /// `Foo.Bar`, `svg:rect`; with `typeScript`, type arguments right after
+    /// it: `Badge<string>`), attribute names, `"…"` / `'…'` strings (multi-
+    /// line, no escapes), `{…}` expressions (spread `{...props}` included),
+    /// `//` and `/* */` comments, then `>` or `/>`. Children
+    /// (`jsxText`) are text — no rules, no strings, no comments — up to
+    /// `{` (an expression), `</` (a closing tag) or `<` + identifier start /
+    /// `>` (a child element); any other `<` is text. Nested elements of one
+    /// tree count their depth inside one frame; each `{…}` pushes a
+    /// `jsxExpression` frame (code, counting `{` / `}`), which may hold
+    /// further elements. Closing tags are counted, not matched by name.
+    ///
+    /// Segments: `<`, `</`, `>`, `/>` `.atom(.tagPunctuation)`; a tag name
+    /// `.atom(.tagName)` when it is lowercase letters and digits starting
+    /// with a letter (each part of `ns:name` on its own, the `:` plain),
+    /// else `.atom(.type)` (a component, as VS Code's `support.class.
+    /// component`); attribute names `.atom(.attributeName)`; type argument
+    /// identifiers `.atom(.type)`; attribute strings `.string`; `{` / `}` of
+    /// expressions `.interpolationDelimiter`; everything else in a tag and
+    /// all children text `.atom(.plain)`.
+    public struct JSXForm: Sendable, Hashable {
+        /// Where `<` may open an element (an expression position).
+        public var context: AtomContext
+        /// TSX: type parameter lists stay code; tag names take type arguments.
+        public var typeScript: Bool
+
+        public init(context: AtomContext, typeScript: Bool = false) {
+            self.context = context
+            self.typeScript = typeScript
+        }
+    }
+
     public var lineComments: [String]
     /// When set, a line-comment opener counts only at the document start,
     /// right after a line break, or when the unit just before it is one of
@@ -339,6 +388,8 @@ public struct LexicalProfile: Sendable {
     public var embeds: [EmbeddedLanguage]
     /// HTML raw-text elements whose bodies are child languages or plain.
     public var rawTextElements: [RawTextElement]
+    /// JSX elements in expressions (T17.8b), or nil.
+    public var jsx: JSXForm?
 
     public init(lineComments: [String] = [],
                 lineCommentPrecededBy: String? = nil,
@@ -351,7 +402,8 @@ public struct LexicalProfile: Sendable {
                 interpolationDelimiterKind: TokenKind = .interpolationDelimiter,
                 stringKind: TokenKind = .string,
                 embeds: [EmbeddedLanguage] = [],
-                rawTextElements: [RawTextElement] = []) {
+                rawTextElements: [RawTextElement] = [],
+                jsx: JSXForm? = nil) {
         self.lineComments = lineComments
         self.lineCommentPrecededBy = lineCommentPrecededBy
         self.blockComments = blockComments
@@ -364,6 +416,7 @@ public struct LexicalProfile: Sendable {
         self.stringKind = stringKind
         self.embeds = embeds
         self.rawTextElements = rawTextElements
+        self.jsx = jsx
     }
 
     /// This profile as a child: without its own embedded languages.
@@ -389,7 +442,9 @@ public enum LexicalSegment: Sendable, Hashable {
     /// (`StringForm.doubledCloseIsEscape`). Like every escape, a token for
     /// the split guarantee.
     case escape
-    /// An `AtomForm` match, with the form's kind.
+    /// An `AtomForm` match, with the form's kind; also the pieces of a JSX
+    /// element (T17.8b, `LexicalProfile.JSXForm`): tag punctuation, names,
+    /// type arguments, and `.plain` for the rest of a tag and children text.
     case atom(TokenKind)
     /// A `LineBlockForm` body (and the parts of its opener / closer lines the
     /// form reports with it), with the form's `bodyKind`.
@@ -446,6 +501,19 @@ public struct LexicalScanState: Sendable, Hashable {
         /// Body of `RawTextElement` `element` (T17.8a): child language
         /// `language` (index into `embeds` plus one), or plain text (0).
         case rawText(element: UInt8, language: UInt8)
+        /// Inside a JSX tag (T17.8b, `LexicalProfile.JSXForm`). `depth`: the
+        /// elements of this JSX tree open around the tag (0 for the
+        /// outermost). `closing`: a `</…>` tag. `phase`: 0 before the name
+        /// (after `<` / `</`, or `<` alone: `>` makes a fragment), 1 between
+        /// attributes, 2 / 3 inside a `"` / `'` string, 4 inside TSX type
+        /// arguments after the name, nested `angles` deep. Context: the tag
+        /// (`.atom(.plain)`), `.string` in phases 2 and 3.
+        case jsxTag(depth: UInt32, phase: UInt8, closing: Bool, angles: UInt8)
+        /// JSX children text of the innermost of `depth` ≥ 1 open elements.
+        case jsxText(depth: UInt32)
+        /// Code of a JSX `{…}` expression in a tag or children; `braces`
+        /// counts unclosed `{`. Its `}` returns to the frame below.
+        case jsxExpression(braces: UInt32)
     }
 
     /// The child's state inside an embedded body (T17.8a): `language` is the

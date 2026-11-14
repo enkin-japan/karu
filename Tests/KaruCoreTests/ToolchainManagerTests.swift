@@ -313,7 +313,12 @@ struct RunPreferencesToolchainTests {
         // Cancel from the JS row.
         js.actionButton.performClick(nil)
         #expect(await waitFor { manager.state(for: "node").activity == nil })
-        #expect(js.statusLabel.stringValue.hasSuffix(L10n.t(.runToolchainNotInstalled, RunMessages.megabytes(fixture.entry.downloadSize))))
+        // The rows refresh asynchronously after the state change; wait for it.
+        let notInstalled = L10n.t(.runToolchainNotInstalled, RunMessages.megabytes(fixture.entry.downloadSize))
+        #expect(await waitFor {
+            js.statusLabel.stringValue.hasSuffix(notInstalled) && js.actionButton.title == L10n.t(.runToolchainInstall)
+        })
+        #expect(js.statusLabel.stringValue.hasSuffix(notInstalled))
         #expect(js.actionButton.title == L10n.t(.runToolchainInstall))
 
         // Install again, close the window mid-download, reopen: progress shows.

@@ -5,7 +5,7 @@ import Testing
 
 // M17 T17.8a — highlight pass timings on ~10 MB documents with embedded
 // languages (debug build, main-thread wall clock), next to 10 MB JavaScript
-// and Python for comparison. Opt-in:
+// and Python for comparison; T17.8b adds ~10 MB TSX and JSX. Opt-in:
 //
 //     KARU_T178_BENCH=1 swift test --filter EmbeddedBenchmark
 //
@@ -140,6 +140,22 @@ struct EmbeddedBenchmarkTests {
         report += measure("10 MB Python", text: Self.largePython(), language: "python")
         print(report)
         let out = Self.root.appendingPathComponent(".build/t178-bench.txt")
+        try? report.write(to: out, atomically: true, encoding: .utf8)
+    }
+
+    /// T17.8b: ~10 MB of repeated `component.tsx` / `component.jsx`. The
+    /// language comes from the registry (`typescript` before `.tsx` was
+    /// registered), so the same test runs on the previous scanner for A/B.
+    @Test func tenMegabyteJSXDocuments() throws {
+        var report = "## JSX highlight pass (debug, 800×600)\n"
+        let tsx = LanguageRegistry.identifier(forExtension: "tsx") ?? "typescript"
+        report += measure("10 MB TSX (\(tsx))", text: Self.repeated(try Self.fixture("highlight/embedded/component.tsx")),
+                          language: tsx)
+        report += measure("10 MB JSX", text: Self.repeated(try Self.fixture("highlight/embedded/component.jsx")),
+                          language: "javascript")
+        report += measure("10 MB JavaScript", text: try Self.largeJavaScript(), language: "javascript")
+        print(report)
+        let out = Self.root.appendingPathComponent(".build/t178b-bench.txt")
         try? report.write(to: out, atomically: true, encoding: .utf8)
     }
 }

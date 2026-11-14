@@ -80,7 +80,7 @@ private struct SafePointOracle {
         if previous == 13 && current == 10 { return false }
         let code: Bool
         switch state.frames.last {
-        case nil, .interpolation?, .heredoc(_, _, false)?: code = true
+        case nil, .interpolation?, .heredoc(_, _, false)?, .jsxExpression?: code = true
         default: code = false
         }
         return !(code && lookback.contains(previous))
@@ -216,6 +216,15 @@ private let fragments: [String: [String]] = [
                          "\n```bash\n", "\n```markdown\n", "\n```\n", "\n~~~\n", "\r\n", "\n", " ", "`", "${",
                          "}", "/*", "*/", "//", "#", "\"", "'", "\"\"\"", "'''", "<<EOF\n", "\nEOF\n", "<!--",
                          "-->", "abc", "😀", "\\", "f'", "{"],
+    // T17.8b: JSX elements (tags, names, attributes, strings, expressions,
+    // fragments, comments in tags) and, for TSX, generic arrows and type
+    // arguments.
+    "jsx": ["<", "</", ">", "/>", "<>", "</>", "{", "}", "x = ", "return ", "(", ")", "=>", "a", "Foo.Bar", "svg:r",
+            "data-x", "=", "\"", "'", "\"a>b{\"", "`", "${", "//", "/*", "*/", "\n", "\r\n", " ", "😀", "<div ",
+            "{...p}", "a < b", "/re/", "?", ":", "&&"],
+    "tsx": ["<", "</", ">", "/>", "<>", "{", "}", "x = ", "(", ")", "=>", "T", "Foo", "div", "<T,>", "<T ",
+            "extends ", "const ", ",", "=", "<string>", "\"", "'", "`", "${", "//", "/*", "*/", "\n", "\r\n", " ",
+            "\t", "😀", "a<b>c", ": "],
     "synthetic": ["\"", "r\"", "r#\"", "\"#", "rb##\"", "\"##", "R\"d(", ")d\"", "R\"(", ")\"", "#\"", "\\(", "\\#(",
                   ")", "(", "\\", "#", "'''", "''''", "'", "'x'", "b'x'", "`", "f`", "F`", "${", "{", "{{", "}",
                   "%", "%%", "//", "/*", "*/", "(*", "*)", "\n", "\r\n", "\r", " ", "abc", "x1", "😀", "R", "b",
@@ -243,6 +252,7 @@ struct LongLineSlicingScannerTests {
         ("go", "go"), ("css", "css"), ("sql", "sql"), ("swift", "swift"), ("toml", "toml"), ("html", "html"),
         ("xml", "xml"), ("bash", "bash"), ("yaml", "yaml"), ("markdown", "markdown"),
         ("html", "htmlEmbedded"), ("markdown", "markdownEmbedded"),
+        ("javascript", "jsx"), ("typescriptreact", "tsx"), ("typescriptreact", "jsx"),
     ]
 
     @Test(arguments: languages)
@@ -312,6 +322,12 @@ struct LongLineSlicingScannerTests {
             + "<!-- <script> --><script>😀`x\r\n</script"),
         ("markdown", "```python {x}\r\ns = '''\r\n```\r\nt = \"😀\"\n~~~ts\n`a${b}\n~~~\n```json\n{\"k\": 1}\n````"
             + "\n```markdown\n```py\nx\n```\n```\n```js\nlet a = 1 /* open"),
+        // T17.8b: targets inside JSX openers, names, strings, expressions,
+        // fragments and comments in tags; TSX type parameters and arguments.
+        ("javascript", "x = <a b=\"c>{\" c='d\r\ne'{...p} f={`g${h}`}/>;<>t<b/>{/*c*/}</>\r\n"
+            + "y = <A.B\r\n // l\r\n /* m */ c>😀<i>{a < b ? <j/> : 'k'}</i></A.B> < z; r = /<a>/;"),
+        ("typescriptreact", "f = <T,>(x: T) => <X<Y<Z>, () => void> a=\"1\">t</X>; g = <T extends U>() => 1;"
+            + "\r\nh = <const T,>() => <T>t</T>; i = <T = V>() => j<K>(l); k = <svg:rect/>"),
         ("synthetic", "x = R\"d(a)\"b)d\" + R\"(z)\" + rb##\"q\"#r\"## + #\"a\\(b)c\\#(d)e\"# + \"p\\(f(1))q\"\r\n"
             + "''' a '' b '''' c ''' + ''''x'''' + b'x' + '\\u{1F600}' + F`a${b}c{d}{{e` + %a%%b%\r"
             + "/* a /* b */ c */ (* d /* e *) f😀g // end\nabc_def"),

@@ -17,7 +17,7 @@ protocol DefaultApplicationManaging {
 @MainActor
 final class DefaultApplicationSettings: DefaultApplicationManaging {
     nonisolated static let extensions = ["txt", "log", "md", "markdown", "json", "jsonl", "ndjson", "py", "pyw",
-        "js", "mjs", "cjs", "ts", "html", "htm", "css", "c", "h", "cpp", "cc", "cxx", "hpp", "hh",
+        "js", "mjs", "cjs", "jsx", "ts", "tsx", "html", "htm", "css", "c", "h", "cpp", "cc", "cxx", "hpp", "hh",
         "cs", "java", "sh", "bash", "zsh", "sql", "xml", "plist", "svg", "cfg", "ini", "yaml", "yml",
         "toml", "go", "rs", "swift"]
 

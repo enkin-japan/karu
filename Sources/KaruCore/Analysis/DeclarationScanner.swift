@@ -346,9 +346,12 @@ struct WalkerScan: Sendable {
             tokenizer = DeclTokenizer(python: true)
             pythonWalker = PythonDeclarationWalker()
         } else {
-            scanner = LexicalScanner(profile: JavaScriptLanguage.lexicalProfile)
+            // JSX (T17.8b) reaches the walker as literals and `{…}` as interpolations.
+            scanner = LexicalScanner(profile: JavaScriptLanguage.lexicalProfile(forIdentifier: languageIdentifier)
+                                         ?? JavaScriptLanguage.lexicalProfile)
             tokenizer = DeclTokenizer(python: false)
-            jsWalker = JavaScriptDeclarationWalker(typescript: languageIdentifier == "typescript")
+            jsWalker = JavaScriptDeclarationWalker(typescript: languageIdentifier == "typescript"
+                                                       || languageIdentifier == "typescriptreact")
         }
     }
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// JavaScript / Node definition.
+/// JavaScript / Node definition (`.js`, `.mjs`, `.cjs`, `.jsx`).
 ///
 /// Comments and strings come from `lexicalProfile` (M17 T17.2, shared with
 /// TypeScript): `//` line comments, non-nesting `/* … */` block comments that
@@ -24,6 +24,20 @@ import Foundation
 /// reads `/ 2 /` as a regex); `}` counts as a block end, so `}` followed by
 /// `/re/` is a regex (VS Code reads division there); `<` is left out so a JSX
 /// closing tag `</p>` is never a regex.
+///
+/// **JSX** (M17 T17.8b, plan §7) is always on, as in VS Code's JavaScript
+/// grammar: in the same expression positions as a regex literal (the same
+/// `regexContext`), `<` followed by an identifier start or `>` opens an
+/// element, scanned by the profile (`LexicalProfile.JSXForm`): tag
+/// punctuation, intrinsic tag names (`div`), component names (`Footer`,
+/// `Foo.Bar`, coloured as types like VS Code's `support.class.component`),
+/// attribute names, attribute strings and the `{` `}` of expressions
+/// (coloured as interpolation delimiters, VS Code's
+/// `punctuation.section.embedded`) each get their category; children text is
+/// plain (no rules); `{…}` is JavaScript again. Remaining approximations:
+/// closing tags are counted, not matched by name; a `<` after a word that is
+/// not an expression keyword (`export default <App/>`) is a comparison;
+/// entities (`&amp;`) in text are not coloured.
 ///
 /// **Categories by position** (T17.7, as VS Code's grammar scopes them):
 /// control-flow keywords (`keyword.control`: `import`, `return`, `if`, …)
@@ -93,9 +107,31 @@ public enum JavaScriptLanguage {
                 "case", "do", "else", "yield", "await"]
     )
 
-    /// Comments, strings, template literals and regex literals, shared with
-    /// TypeScript.
-    public static let lexicalProfile = LexicalProfile(
+    /// JSX in expression positions (the regex literal's context).
+    static let jsxForm = LexicalProfile.JSXForm(context: regexContext)
+
+    /// Comments, strings, template literals, regex literals and JSX.
+    public static let lexicalProfile: LexicalProfile = {
+        var profile = baseProfile
+        profile.jsx = jsxForm
+        return profile
+    }()
+
+    /// The JavaScript-family profile of `identifier` — `javascript` (JSX),
+    /// `typescript` (no JSX) or `typescriptreact` (TSX) — or nil. The scanner
+    /// of the declaration walker and of completion's context checkpoints.
+    public static func lexicalProfile(forIdentifier identifier: String) -> LexicalProfile? {
+        switch identifier {
+        case "javascript": return lexicalProfile
+        case "typescript": return TypeScriptLanguage.lexicalProfile
+        case "typescriptreact": return TypeScriptReactLanguage.lexicalProfile
+        default: return nil
+        }
+    }
+
+    /// Comments, strings, template literals and regex literals, without JSX
+    /// (TypeScript's profile; JavaScript and TSX add `jsx`).
+    static let baseProfile = LexicalProfile(
         lineComments: ["//"],
         blockComments: [.init(open: "/*", close: "*/")],
         strings: [
@@ -169,7 +205,7 @@ public enum JavaScriptLanguage {
         buildCount += 1
         return LanguageDefinition(
             identifier: "javascript",
-            fileExtensions: ["js", "mjs", "cjs"],
+            fileExtensions: ["js", "mjs", "cjs", "jsx"],
             rules: rules(controls: controlKeywords, keywords: otherKeywords, typeWords: [],
                          builtinTypes: builtinTypes, builtinFunctions: builtinFunctions),
             keywords: keywords,

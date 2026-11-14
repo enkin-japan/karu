@@ -51,7 +51,8 @@ private func fixture(_ relative: String) throws -> String {
 private func language(of path: String) -> String? {
     if path.hasSuffix(".py") { return "python" }
     if path.hasSuffix(".js") || path.hasSuffix(".jsx") { return "javascript" }
-    if path.hasSuffix(".ts") || path.hasSuffix(".tsx") { return "typescript" }
+    if path.hasSuffix(".ts") { return "typescript" }
+    if path.hasSuffix(".tsx") { return "typescriptreact" }
     let brace: [String: String] = [".swift": "swift", ".go": "go", ".rs": "rust", ".java": "java", ".cs": "csharp",
                                    ".c": "c", ".cpp": "cpp"]
     for (suffix, language) in brace where path.hasSuffix(suffix) { return language }
@@ -86,7 +87,8 @@ private func visible(_ marked: Marked, _ language: String, at n: Int) -> [String
 /// The non-code segments of `text` under the walker language's profile.
 private func nonCodeRanges(_ text: String, _ language: String) -> [NSRange] {
     let profile = BraceLanguage(identifier: language)?.lexicalProfile
-        ?? (language == "python" ? PythonLanguage.analysisProfile : JavaScriptLanguage.lexicalProfile)
+        ?? (language == "python" ? PythonLanguage.analysisProfile
+                : JavaScriptLanguage.lexicalProfile(forIdentifier: language)!)
     let scanner = LexicalScanner(profile: profile)
     var state = LexicalScanState()
     var out: [NSRange] = []

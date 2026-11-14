@@ -26,7 +26,7 @@ public enum CommentToggle {
         switch languageIdentifier.lowercased() {
         case "python", "bash", "sh", "shell", "yaml", "toml":
             return Tokens(line: "#", block: nil)
-        case "javascript", "typescript", "c", "cpp", "csharp", "java", "swift", "go", "rust":
+        case "javascript", "typescript", "typescriptreact", "c", "cpp", "csharp", "java", "swift", "go", "rust":
             return Tokens(line: "//", block: nil)
         case "sql":
             return Tokens(line: "--", block: nil)

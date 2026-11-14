@@ -266,7 +266,7 @@ public struct WordIndex: Sendable {
                 DeclarationPattern(pattern: #"\bdef\s+\w+\s*\(([^)]*)\)"#, kind: .variable,
                                    listItemPattern: #"(?:^|,)\s*\*{0,2}\s*([A-Za-z_]\w*)"#),
             ]
-        case "javascript", "typescript":
+        case "javascript", "typescript", "typescriptreact":
             return [
                 DeclarationPattern(pattern: #"\bfunction\s+(\w+)"#, kind: .function),
                 DeclarationPattern(pattern: #"\bclass\s+(\w+)"#, kind: .type),

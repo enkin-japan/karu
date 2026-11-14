@@ -97,10 +97,25 @@ private func tokenInteriors(_ ns: NSString, _ profile: LexicalProfile,
     }
     for (range, kind) in segments {
         switch kind {
+        case .atom(.plain): continue          // T17.8b: JSX text and tag filler
         case .atom, .escape: break
         default: continue
         }
         for k in 1..<max(1, range.length) { out.insert(range.location + k) }
+    }
+    // T17.8b: the text a TSX `<`'s type-parameter check reads (`<T ,`,
+    // `<T extends `, `<const T`), and the two-unit JSX tokens.
+    if let jsx = profile.jsx {
+        var patterns = [#"</|<>|/>"#]
+        if jsx.typeScript {
+            patterns.append(#"<(?:const[ \t]+[A-Za-z_$]|[A-Za-z_$][\w$]*[ \t]*(?:extends[^\w$]|[,=])?)"#)
+        }
+        for pattern in patterns {
+            let re = try! NSRegularExpression(pattern: pattern)
+            for match in re.matches(in: ns as String, range: NSRange(location: 0, length: ns.length)) {
+                for k in 1..<max(1, match.range.length) { out.insert(match.range.location + k) }
+            }
+        }
     }
     // T17.8a: raw-text start and end tag tokens (`<script` / `</script`
     // with their delimiter), any case.
@@ -242,6 +257,8 @@ struct LexicalConsistencyTests {
         ("css.css", "css"), ("sql.sql", "sql"), ("swift.swift", "swift"), ("toml.toml", "toml"),
         ("html.html", "html"), ("xml.xml", "xml"), ("bash.sh", "bash"), ("yaml.yaml", "yaml"),
         ("markdown.md", "markdown"), ("embedded/fences.md", "markdown"), ("embedded/page.html", "html"),
+        // T17.8b: JSX and TSX.
+        ("embedded/component.jsx", "javascript"), ("embedded/component.tsx", "typescriptreact"),
     ]
 
     @Test(arguments: pilots)
@@ -257,7 +274,8 @@ struct LexicalConsistencyTests {
         scanner.segments(ns, from: 0, to: ns.length, state: &oneState, languages: { one.append(($0, $1, $2)) })
         one = merged(one)
         #expect(one.contains { $0.1 == .comment } || pilot.file == "embedded/fences.md")
-        #expect(!pilot.file.hasPrefix("embedded/") || one.contains { $0.2 != 0 })
+        #expect(!pilot.file.hasPrefix("embedded/") || one.contains { $0.2 != 0 }
+                    || one.contains { $0.1 == .atom(.tagPunctuation) })
         #expect(scanner.profile.strings.isEmpty || one.contains { $0.1 == .string })
         #expect(scanner.profile.lineBlocks.isEmpty || one.contains { if case .block = $0.1 { true } else { false } })
 

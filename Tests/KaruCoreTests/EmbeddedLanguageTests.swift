@@ -382,7 +382,7 @@ struct EmbeddedMarkdownTests {
     static let aliases: [(word: String, identifier: String)] = [
         ("python", "python"), ("py", "python"), ("python3", "python"), ("js", "javascript"),
         ("javascript", "javascript"), ("jsx", "javascript"), ("mjs", "javascript"), ("cjs", "javascript"),
-        ("ts", "typescript"), ("typescript", "typescript"), ("tsx", "typescript"), ("bash", "bash"), ("sh", "bash"),
+        ("ts", "typescript"), ("typescript", "typescript"), ("tsx", "typescriptreact"), ("bash", "bash"), ("sh", "bash"),
         ("shell", "bash"), ("zsh", "bash"), ("json", "json"), ("jsonc", "json"), ("jsonl", "jsonl"),
         ("yaml", "yaml"), ("yml", "yaml"), ("toml", "toml"), ("html", "html"), ("htm", "html"), ("xml", "xml"),
         ("plist", "xml"), ("svg", "xml"), ("css", "css"), ("c", "c"), ("h", "c"), ("cpp", "cpp"), ("c++", "cpp"),

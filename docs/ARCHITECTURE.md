@@ -124,13 +124,13 @@ scripts/
   bundle-macos.sh       SPM 产物 → Karu.app 打包（红线文件，仅主会话可改）
 ```
 
-支持语言（20 种）：Markdown, JSON, JSONL, Python, HTML, CSS, JavaScript/Node, TypeScript,
-C, C++, C#, Java, Bash/Shell, SQL, XML/plist, YAML, TOML, Go, Rust, Swift。
-其中 JSONL→JSON、plist→XML、Node→JS、TS≈JS 超集，实际独立定义约 16 份。
+支持语言（21 种）：Markdown, JSON, JSONL, Python, HTML, CSS, JavaScript/Node（含 `.jsx`）, TypeScript,
+TypeScript JSX（`.tsx`，M17 T17.8b）, C, C++, C#, Java, Bash/Shell, SQL, XML/plist, YAML, TOML, Go, Rust, Swift。
+其中 JSONL→JSON、plist→XML、Node→JS、TS≈JS 超集、TSX = TS 规则 + JSX，实际独立定义约 16 份。
 
 ## 5. 功能边界（已决策，不再摇摆）
 
-**做**：GUI；纯文本粘贴去格式；正则搜索替换；20 语言高亮；代码折叠；关键字/文档词/轻量符号补全，以及作用域感知补全、进程内类型推断（Python、JS/TS 深层，其余语言读显式声明）、导入解析和项目文件夹跨文件索引（2026-11-13 纳入，见 M17 方案）；
+**做**：GUI；纯文本粘贴去格式；正则搜索替换；21 语言高亮；代码折叠；关键字/文档词/轻量符号补全，以及作用域感知补全、进程内类型推断（Python、JS/TS 深层，其余语言读显式声明）、导入解析和项目文件夹跨文件索引（2026-11-13 纳入，见 M17 方案）；
 JSON/JSONL/XML/plist 一键排版；行号；缩进彩虹；Tab 缩进 + 换行自动缩进；每语言缩进宽度可配置；
 单文件代码执行与按需安装的工具链管理（§6，2026-11-12 纳入）；标题栏可选语言列表自定义。
 

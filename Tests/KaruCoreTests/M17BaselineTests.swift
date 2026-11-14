@@ -20,9 +20,8 @@ import Testing
 //   - .build/m17-baseline/probes.txt (machine-dependent timings; not committed)
 //
 // Language choice for the highlight dump: by file extension through
-// `LanguageRegistry` (the app's own path), except extensions the registry does
-// not know — `.jsx` → identifier `javascript`, `.tsx` → `typescript` — where
-// the identifier is pinned explicitly (the app would fall back to sniffing).
+// `LanguageRegistry` (the app's own path); since T17.8b that includes `.jsx`
+// (`javascript`) and `.tsx` (`typescriptreact`).
 
 // MARK: - Paths
 
@@ -357,7 +356,7 @@ struct M17BaselineTests {
         let languages = Set(files.compactMap { try? highlightLanguage(for: $0.url) })
         #expect(languages == ["bash", "c", "cpp", "csharp", "css", "go", "html", "java", "javascript",
                               "json", "jsonl", "markdown", "python", "rust", "sql", "swift", "toml",
-                              "typescript", "xml", "yaml"])
+                              "typescript", "typescriptreact", "xml", "yaml"])
         for file in files {
             let lines = try readText(file.url).components(separatedBy: "\n").count
             #expect(lines <= 201, "\(file.relative) has \(lines) lines")
@@ -385,15 +384,10 @@ struct M17BaselineTests {
     /// Identifier the dump uses for `url` (see the header comment).
     private func highlightLanguage(for url: URL) throws -> String {
         let ext = url.pathExtension.lowercased()
-        switch ext {
-        case "jsx": return "javascript"
-        case "tsx": return "typescript"
-        default:
-            guard let def = LanguageRegistry.definition(forExtension: ext) else {
-                throw CocoaError(.fileReadUnsupportedScheme, userInfo: [NSFilePathErrorKey: url.path])
-            }
-            return def.identifier
+        guard let def = LanguageRegistry.definition(forExtension: ext) else {
+            throw CocoaError(.fileReadUnsupportedScheme, userInfo: [NSFilePathErrorKey: url.path])
         }
+        return def.identifier
     }
 
     @Test func dumpHighlightColours() throws {

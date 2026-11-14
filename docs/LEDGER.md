@@ -50,7 +50,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ✅ 自动化通过；作用域 top1 24/24，误弹 0 |
 | T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | 🔶 自动化通过；真实窗口与真实输入法实测待做 |
 | T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ✅ 自动化通过；一致率深色 94.9%、浅色 91.6% |
-| T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | 🔶 T17.8a（HTML/Markdown 子语言）完成；T17.8b JSX/TSX、T17.8c 光标处子语言待做 |
+| T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | 🔶 T17.8a（HTML/Markdown 子语言）、T17.8b（JSX/TSX）完成；T17.8c 光标处子语言待做 |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ⬜ |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ⬜ |
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ⬜ |
@@ -538,6 +538,56 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - 检查点每条从 24 B 增加到 32 B（`LexicalScanState` 多了一个引用），对所有使用通用扫描器的语言都成立，10 MB 文档多 0.6–1.3 KB。
     - 带盒子的子状态约 112 B。实测 10 MB HTML 的 80 个检查点里 0 个带盒子；10 MB Markdown 的 80 个里有 23 个，合计约 2.6 KB。
     - 子扫描器和子定义只在进入时构建。mem-benchmark 的单项对照留到 T17.15。
+
+- T17.8b JSX/TSX（main 定接口，implementer 实现，main 审查 diff 并补两处，2026-11-15）：
+  - **做法**：JSX 用 JS 档案里的帧实现（`LexicalProfile.JSXForm`）。
+    - 判定条件：`<` 位于表达式位置（判定与正则字面量相同），后面紧跟标识符或 `>`，就打开元素。
+    - 帧有三种：`jsxTag`（标签内）、`jsxText`（子元素文本）、`jsxExpression`（`{…}`）。同一棵树的嵌套元素只在一个帧里计层数，实测 300 层嵌套栈里也只有 1 帧。
+    - 闭合标签按层数配对，不核对名字。
+  - **语言**：
+    - `.jsx` 归入 `javascript`，JS 始终开 JSX，与 VS Code 一致。
+    - `.ts` 不开 JSX，`<T>x` 仍是类型断言。
+    - 新增标识符 `typescriptreact`（`.tsx`），语言菜单名为「TypeScript JSX」，各界面语言相同。
+      - TSX 里，表达式位置的 `<T,`、`<T =`、`<T extends`、`<const T` 当作类型参数表；单独写 `<T>(x) => x` 仍是元素，与 TypeScript 的解析一致。
+      - `typescriptreact` 不能运行（Node 不剥离 JSX）。
+    - 嗅探器：判为 TS 的文本里同时出现 JSX 元素和闭合标签时，判为 `typescriptreact`。
+    - Markdown 的 `tsx` 围栏走新子语言；`ts` 围栏不开 JSX。
+  - **着色**：
+    - 标签名：符合 VS Code 的 `[a-z][a-z0-9]*` 的用标签色，组件名（大写开头、含 `.` 或 `-`）用类型色。
+    - 属性名用属性色，属性字符串用字符串色（浅色主题也是 `#A31515`）。
+    - `{` `}` 用插值边界色。子元素文本不着色，规则不在里面运行。
+  - **遍历器与补全**：
+    - 遍历器把标签、属性和文本当作字面量，`{…}` 当作插值，不再从 JSX 文本里产生绑定，T17.4a 记下的缺口已修复。
+    - 补全：标签和 `{…}` 内按代码处理；属性字符串和子元素文本按字符串处理，不自动弹出。
+  - **文件关联（main）**：`bundle-macos.sh` 的 `CFBundleTypeExtensions` 和 `DefaultApplicationSettings.extensions` 加入 `jsx`、`tsx`。
+  - **扫描器通用提速**（implementer 提出，main 审查后认可）：
+    - `openerMask`：一个单位如果不是任何注释、字符串、原子、行块或原始文本元素开启符的首字符，就跳过这些检查。它是原有 `codeMarkers` 的子集，跳过的检查本来就要求首字符相同，所以行为不变。
+    - 标签内的快速路径。
+    - 其余 21 个样本的 dump 与 HEAD 逐字节相同。10 MB JS 首次跳转 128 → 109 ms。
+  - **一致率**（深色 / 浅色，HEAD → 本次，main 复核深色）：
+    - component.jsx：79.3 → **99.9** / 68.0 → 95.2。
+    - component.tsx：84.3 → **92.1** / 75.4 → 88.1。
+    - 总体：深色 96.5 → **97.2**，浅色 93.1 → **94.0**。其余样本不变。
+    - tsx 剩余的 73 个单位：
+      - 49 个是 VS Code 把夹具第 34 行文本里的 `< b` 误读成标签，之后几行都跟着错。去掉这一处是 97.4%。
+      - 19 个是类型引用（`ReactNode`、`JSX.Element`）。
+      - 5 个是 `import type` 的 `type` 和对象键后的 `:`。
+    - 浅色的额外差异：VS Code 把 JSX 标点和文本涂成带透明度的黑色 `#000000ff`，比较脚本不把它当中性色。
+  - **已知近似**（夹具里都是 0 个单位）：
+    - TSX 里写在 `:` 或 `=` 后、不带 `,` 和 `extends` 的泛型函数类型（`let f: <T>(x: T) => T`），会打开元素。
+    - `export default <App/>` 被当作比较。
+    - 子元素文本里的实体不着色。
+  - **测试**：
+    - 新增 `JSXTests`（23 个，5 个套件）：扫描、注册与菜单、按行首和随机安全切点切分（含 220 层合成嵌套，LF/CRLF）、冷热检查点续扫、200 KB 以上单行 JSX/TSX、声明与作用域。
+    - 扩展了 `LexicalConsistencyTests` 和 `LongLineSlicingTests`。
+    - 改的旧断言：语言数 21 → 22；`tsx` 别名；`DeclarationScopeTests` 的 `.tsx` 改走 `typescriptreact`；`M17BaselineTests` 改为通过 registry 取语言。
+    - **main 加固**：`ToolchainManagerTests.installingCancelInstallAndUninstallFromTheRows` 在负载约 5 时失败。取消之后行的刷新是异步的，现在先等标签和按钮更新，再断言，断言内容不变。
+    - 全量 **1274 tests / 98 suites** 通过（main 复跑）；visual-smoke VISUAL OK、FOLD GEOMETRY OK；补全基线与 HEAD 重新生成的版本逐字节相同。
+  - **性能**（debug，与 HEAD 交替跑，负载约 3）：
+    - 10 MB TSX：首次跳转 196 → 240 ms；附近重绘中位数 / p95 从 4.8 / 6.0 变为 4.7 / 5.9 ms。
+    - 10 MB JSX：首次跳转 208 → 221 ms；附近重绘 p95 从 6.5 变为 5.9 ms。
+    - 声明扫描：10 MB JS 和 TSX 持平或略快，最长一片约 4.5 / 5.3 ms。
+    - 检查点格式和 Frame 大小都不变。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

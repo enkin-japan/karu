@@ -554,7 +554,7 @@ public struct DeclarationScan: Sendable, Equatable {
     /// Languages read by the token-based walkers (T17.4a; the seven brace
     /// languages since T17.4b): every language with declaration patterns.
     static func usesWalker(_ languageIdentifier: String) -> Bool {
-        languageIdentifier == "python" || languageIdentifier == "javascript" || languageIdentifier == "typescript"
+        languageIdentifier == "python" || JavaScriptLanguage.lexicalProfile(forIdentifier: languageIdentifier) != nil
             || BraceLanguage(identifier: languageIdentifier) != nil
     }
 

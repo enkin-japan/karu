@@ -128,12 +128,15 @@ public struct CandidateEngine {
 
     /// The lexical scanner whose states `DocumentAnalysis.contextCheckpoints`
     /// hold for `languageIdentifier`: the declaration walker's (Python's
-    /// analysis profile, JavaScript's for JS / TS) or the language's own.
+    /// analysis profile, the JavaScript family's per identifier — JSX in
+    /// JavaScript and TypeScript JSX, not in TypeScript) or the language's own.
     public static func contextScanner(for languageIdentifier: String,
                                       definition: LanguageDefinition?) -> LexicalScanner? {
+        if let profile = JavaScriptLanguage.lexicalProfile(forIdentifier: languageIdentifier) {
+            return LexicalScanner(profile: profile)
+        }
         switch languageIdentifier {
         case "python": return LexicalScanner(profile: PythonLanguage.analysisProfile)
-        case "javascript", "typescript": return LexicalScanner(profile: JavaScriptLanguage.lexicalProfile)
         default:
             if let brace = BraceLanguage(identifier: languageIdentifier) {
                 return LexicalScanner(profile: brace.lexicalProfile)

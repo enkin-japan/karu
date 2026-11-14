@@ -795,7 +795,8 @@ public struct LanguageDefinition {
 /// fully released — satisfying the "disabled ⇒ ≈ 0 resident" rule (§2.5). A
 /// rebuild costs only a handful of tiny `NSRegularExpression`s. Batch 1
 /// (T3.2) registers Markdown, JSON(L), Python, JS/Node, TypeScript, HTML,
-/// CSS. Batch 2 (T3.3) adds C, C++, C#, Java, Bash, SQL, XML/plist.
+/// CSS. Batch 2 (T3.3) adds C, C++, C#, Java, Bash, SQL, XML/plist. M17
+/// T17.8b adds `.jsx` (JavaScript) and `.tsx` (TypeScript JSX).
 public enum LanguageRegistry {
     /// Extension (lowercased) → language identifier. Referencing this map does
     /// not build any definition; the identifier then selects the factory in
@@ -812,7 +813,9 @@ public enum LanguageRegistry {
         "js": "javascript",
         "mjs": "javascript",
         "cjs": "javascript",
+        "jsx": "javascript",
         "ts": "typescript",
+        "tsx": "typescriptreact",
         "html": "html",
         "htm": "html",
         "css": "css",
@@ -880,6 +883,7 @@ public enum LanguageRegistry {
         "python": PythonLanguage.make,
         "javascript": JavaScriptLanguage.make,
         "typescript": TypeScriptLanguage.make,
+        "typescriptreact": TypeScriptReactLanguage.make,
         "html": HTMLLanguage.make,
         "css": CSSLanguage.make,
         "c": CLanguage.make,

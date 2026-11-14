@@ -9,8 +9,9 @@ import Foundation
 /// and that `IndentSettings` keys on. The empty identifier is Plain Text — no
 /// highlighting, no formatter.
 public enum SupportedLanguage {
-    /// Ordered `(title, identifier)` pairs. Mirrors the 15 supported languages
-    /// (ARCHITECTURE.md §4) plus a Plain Text entry.
+    /// Ordered `(title, identifier)` pairs. Mirrors the supported languages
+    /// (ARCHITECTURE.md §4; TypeScript JSX since M17 T17.8b) plus a Plain Text
+    /// entry. Titles are product names, the same in every UI language.
     public static let all: [(title: String, identifier: String)] = [
         ("Plain Text", ""),
         ("JSON", "json"),
@@ -19,6 +20,7 @@ public enum SupportedLanguage {
         ("Python", "python"),
         ("JavaScript", "javascript"),
         ("TypeScript", "typescript"),
+        ("TypeScript JSX", "typescriptreact"),
         ("HTML", "html"),
         ("CSS", "css"),
         ("C", "c"),
