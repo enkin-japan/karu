@@ -120,7 +120,12 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func javascriptTemplateStringAndBlockComment() {
     let js = JavaScriptLanguage.make()
     let pairs = spans(js, "const x = `tmpl ${y}`; /* c */ z = 1;")
-    #expect(kind(of: "`tmpl ${y}`", in: pairs) == .string)
+    // M17 T17.2: the `${…}` interpolation is code between two punctuation
+    // delimiters, no longer part of one string token.
+    #expect(kind(of: "`tmpl ", in: pairs) == .string)
+    #expect(pairs.filter { $0.kind == .punctuation }.map(\.text) == ["${", "}"])
+    #expect(kind(of: "`", in: pairs) == .string)
+    #expect(pairs.contains { $0.text.contains("y") } == false)   // plain identifier in code
     #expect(kind(of: "/* c */", in: pairs) == .comment)
 }
 

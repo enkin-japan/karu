@@ -3,7 +3,7 @@ import Foundation
 /// Semantic token categories a language definition can assign to a span of
 /// text. Colours live in `HighlightTheme`, keeping the definitions themselves
 /// free of any AppKit dependency (so they stay pure and unit-testable).
-public enum TokenKind: Equatable {
+public enum TokenKind: Hashable, Sendable {
     case keyword
     /// A standard-library / built-in identifier (`print`, `console`, `printf`,
     /// …). Coloured like a function name, but classified separately so it wins
@@ -47,18 +47,18 @@ public struct LanguageRule {
 
 /// Declarative, AppKit-independent description of a language for the highlighter.
 ///
-/// v1 tokenizing is **line-based**: `tokenize(line:)` is a pure function over a
-/// single line, which keeps colouring viewport-cheap and trivially testable.
-/// The trade-off is that constructs spanning multiple lines (block comments,
-/// multi-line strings) are only approximated per line. JSON — the first
-/// language — has no such constructs, so the approximation is exact for it.
+/// Two tokenizing paths:
+/// - **Unprofiled** (`lexicalProfile == nil`): `tokenize(line:)` is a pure
+///   function over a single line. Constructs spanning lines (block comments,
+///   multi-line strings) are only approximated per line. JSON / JSONL have no
+///   such constructs, so the approximation is exact for them.
+/// - **Profiled** (M17 T17.2): a `LexicalProfile` describes comments and
+///   strings, and the generic `LexicalScanner` carries their state across
+///   lines (`tokens(in:range:state:)`). The regex `rules` then apply only to
+///   the code segments the scanner reports, and rules of kind `.string` /
+///   `.comment` are skipped there — the profile is authoritative for those.
 ///
-/// The one escape hatch is `multilineStringDelimiters`: a language that lists
-/// its multi-line string delimiters gets the engine to carry a *transient*
-/// open/closed state across lines while painting (see
-/// `HighlightEngine.tokens(inLine:language:openDelimiter:)`), so the body of a
-/// Python `"""…"""` block is coloured as one string instead of being
-/// re-tokenized as code. Languages that leave it empty are unaffected.
+/// Python keeps its own `PythonTokenizer` (string prefixes, f-string fields).
 public struct LanguageDefinition {
     /// Stable language id (e.g. `"json"`), also used for indent-width lookup.
     public let identifier: String
@@ -84,25 +84,26 @@ public struct LanguageDefinition {
     /// `console`). Languages with no fixed built-in set leave this empty.
     public let builtins: [String]
 
-    /// Delimiters that open **and** close a string spanning multiple lines
-    /// (Python's `"""` / `'''`). A delimiter only ever closes a string opened by
-    /// the *same* delimiter, so `'''` inside a `"""` block is plain content.
-    /// Empty for every language whose strings never cross a line break — those
-    /// skip the engine's cross-line pass entirely.
-    public let multilineStringDelimiters: [String]
+    /// Cross-line lexical structure for the generic scanner, or nil for a
+    /// line-based (unprofiled) language.
+    public let lexicalProfile: LexicalProfile?
+
+    /// The scanner compiled from `lexicalProfile` (built once per definition).
+    public let lexicalScanner: LexicalScanner?
 
     public init(identifier: String,
                 fileExtensions: [String],
                 rules: [LanguageRule],
                 keywords: [String] = [],
                 builtins: [String] = [],
-                multilineStringDelimiters: [String] = []) {
+                lexicalProfile: LexicalProfile? = nil) {
         self.identifier = identifier
         self.fileExtensions = fileExtensions
         self.rules = rules
         self.keywords = keywords
         self.builtins = builtins
-        self.multilineStringDelimiters = multilineStringDelimiters
+        self.lexicalProfile = lexicalProfile
+        self.lexicalScanner = lexicalProfile.map(LexicalScanner.init(profile:))
     }
 
     /// Tokenizes a single line into a list of `(range, kind)` spans.
@@ -111,20 +112,101 @@ public struct LanguageDefinition {
     /// semantics), so the caller can add the line's absolute offset to map them
     /// onto the text view. Positions that match no rule are left untokenized
     /// (they keep the default text colour); this is a pure function with no
-    /// AppKit dependency.
+    /// AppKit dependency. A profiled language tokenizes the line with a fresh
+    /// lexical state (`tokens(in:range:state:)`), i.e. as if it began outside
+    /// every comment and string.
     public func tokenize(line: String) -> [(range: NSRange, kind: TokenKind)] {
         if identifier == "python" {
             var state = PythonTokenizer.State()
             return PythonTokenizer.scan(line, language: self, state: &state)
         }
         let ns = line as NSString
+        if lexicalScanner != nil {
+            var state = LexicalScanState()
+            return tokens(in: ns, range: NSRange(location: 0, length: ns.length), state: &state)
+        }
         var tokens: [(range: NSRange, kind: TokenKind)] = []
-        var location = 0
+        applyRules(in: line, from: 0, to: ns.length, offset: 0, skipStringsAndComments: false) {
+            tokens.append($0)
+        }
+        return tokens
+    }
 
-        while location < ns.length {
+    /// Tokens of `text[range]` for a profiled language, carrying the lexical
+    /// `state` (the state at `range.location` on entry, at its end on return).
+    ///
+    /// Ranges are absolute, ascending and non-overlapping. String and comment
+    /// segments become one `.string` / `.comment` token each (a multi-line
+    /// string is one token), interpolation delimiters `.punctuation`, atoms
+    /// their form's kind; inside code segments the regex `rules` run line by
+    /// line exactly as in `tokenize(line:)` (anchored, transparent bounds, `^`
+    /// only at a real line start), limited to the segment and skipping rules
+    /// of kind `.string` / `.comment`.
+    ///
+    /// For an unprofiled language this is the plain rule loop over each line
+    /// overlapping `range`, restricted to `range`; `state` is untouched.
+    public func tokens(in text: NSString, range: NSRange,
+                       state: inout LexicalScanState) -> [(range: NSRange, kind: TokenKind)] {
+        let start = min(max(range.location, 0), text.length)
+        let end = min(max(NSMaxRange(range), start), text.length)
+        var out: [(range: NSRange, kind: TokenKind)] = []
+        guard end > start else { return out }
+
+        // One line at a time is substringed for the rules, cached across the
+        // code segments that share it.
+        var lineRange = NSRange(location: NSNotFound, length: 0)
+        var line = ""
+        func withLine(containing location: Int) -> (NSRange, String) {
+            if !NSLocationInRange(location, lineRange) {
+                lineRange = text.lineRange(for: NSRange(location: location, length: 0))
+                line = text.substring(with: lineRange)
+            }
+            return (lineRange, line)
+        }
+        func ruleTokens(_ segment: NSRange) {
+            var loc = segment.location
+            let limit = NSMaxRange(segment)
+            while loc < limit {
+                let (lr, ls) = withLine(containing: loc)
+                let upTo = min(limit, NSMaxRange(lr))
+                applyRules(in: ls, from: loc - lr.location, to: upTo - lr.location, offset: lr.location,
+                           skipStringsAndComments: lexicalScanner != nil) { token in
+                    out.append(token)
+                }
+                loc = upTo
+            }
+        }
+
+        guard let scanner = lexicalScanner else {
+            ruleTokens(NSRange(location: start, length: end - start))
+            return out
+        }
+        var segments: [(NSRange, LexicalSegment)] = []
+        scanner.segments(text, from: start, to: end, state: &state) { segments.append(($0, $1)) }
+        for (segment, kind) in segments {
+            switch kind {
+            case .code: ruleTokens(segment)
+            case .string: out.append((segment, .string))
+            case .comment: out.append((segment, .comment))
+            case .interpolationDelimiter: out.append((segment, .punctuation))
+            case .atom(let atomKind): out.append((segment, atomKind))
+            }
+        }
+        return out
+    }
+
+    /// The rule loop: at each position of `line[from..<to]` the first rule
+    /// that matches there wins; unmatched positions advance by one unit.
+    /// Emits ranges shifted by `offset`.
+    private func applyRules(in line: String, from: Int, to: Int, offset: Int,
+                            skipStringsAndComments: Bool,
+                            _ append: ((range: NSRange, kind: TokenKind)) -> Void) {
+        var location = from
+        while location < to {
             var matched = false
-            let searchRange = NSRange(location: location, length: ns.length - location)
+            let searchRange = NSRange(location: location, length: to - location)
             for rule in rules {
+                if skipStringsAndComments, rule.kind == .string || rule.kind == .comment { continue }
                 // `.anchored` forces the match to begin exactly at `location`,
                 // giving us "first rule that matches here wins" priority.
                 // `.withTransparentBounds` lets `\b` / lookbehind see the text
@@ -138,14 +220,14 @@ public struct LanguageDefinition {
                           options: [.anchored, .withTransparentBounds, .withoutAnchoringBounds],
                           range: searchRange),
                       match.range.length > 0 else { continue }
-                tokens.append((range: match.range, kind: rule.kind))
+                append((range: NSRange(location: match.range.location + offset, length: match.range.length),
+                        kind: rule.kind))
                 location += match.range.length
                 matched = true
                 break
             }
             if !matched { location += 1 }
         }
-        return tokens
     }
 }
 

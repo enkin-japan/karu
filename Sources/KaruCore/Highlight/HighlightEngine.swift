@@ -79,9 +79,14 @@ private extension NSColor {
 ///   cost returns to ≈ 0. It rebuilds from the analysis's language when
 ///   re-enabled.
 /// - **Shared analysis** (M17 T17.1): the language, the declared-symbol table
-///   and the Python checkpoints come from the window's `DocumentAnalysis`; the
+///   and the lexical checkpoints come from the window's `DocumentAnalysis`; the
 ///   engine no longer scans declarations itself. Constructed without one (unit
 ///   tests, probes) it owns a private analysis and forwards its edits to it.
+/// - **Cross-line state** (M17 T17.2): profiled languages resume the generic
+///   scanner and Python its `PythonTokenizer` from the nearest checkpoint at or
+///   before the band (`bandTokens`); nothing is scanned from offset 0 per pass.
+/// - **Off-screen cleanup** (T17.2): colour is held only in the last painted
+///   band (`colouredRange`); each pass clears what lies outside its new band.
 @MainActor
 public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnalysisConsumer {
     private weak var textView: NSTextView?
@@ -123,6 +128,14 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// language change, on a module toggle, and when all colour is cleared.
     /// Internal (not private) so unit tests can assert the invalidation.
     var paintedRange: NSRange?
+
+    /// The span in which this engine may currently hold foreground colour
+    /// (plan §6 item 1). Each pass clears what lies outside its new band, so
+    /// scrolling a large file never accumulates colour runs off screen. Kept
+    /// across edits by mapping it through them (`heldRange`), so it may be
+    /// larger than the band actually painted, never smaller. `nil` when no
+    /// colour is held. Internal so tests can read it.
+    var colouredRange: NSRange?
 
     /// KVO token for the application's effective appearance. A light/dark switch
     /// invalidates the painted band and repaints the viewport so the temporary
@@ -338,6 +351,11 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         // band, so it can no longer be trusted to short-circuit a scroll. The
         // repaint follows the analysis's debounced rescan (`.declarations`).
         paintedRange = nil
+        // Track where colour is still held through the shift (cleared by the
+        // next pass outside its band).
+        if let held = colouredRange {
+            colouredRange = Self.heldRange(held, afterEditing: editedRange, delta: delta)
+        }
     }
 
     // MARK: - Scheduling
@@ -354,6 +372,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// safe and leaves the find bar's background highlights untouched.
     private func removeAllForegroundColour() {
         paintedRange = nil
+        colouredRange = nil
         guard let layoutManager = textView?.layoutManager,
               let length = (textView?.string as NSString?)?.length else { return }
         layoutManager.removeTemporaryAttribute(.foregroundColor,
@@ -383,138 +402,6 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             (outer.location + outer.length) >= (inner.location + inner.length)
     }
 
-    // MARK: - Cross-line multi-line strings (T14.7)
-
-    /// The earliest occurrence of any of `delimiters` in `ns` within
-    /// `[location, limit)`, as a literal (non-regex) search. Returns the hit's
-    /// range together with which delimiter matched, or `nil` when none occurs.
-    private nonisolated static func firstDelimiter(_ delimiters: [String],
-                                                   in ns: NSString,
-                                                   from location: Int,
-                                                   limit: Int) -> (range: NSRange, delimiter: String)? {
-        guard location < limit else { return nil }
-        let search = NSRange(location: location, length: limit - location)
-        var best: (range: NSRange, delimiter: String)?
-        for delimiter in delimiters {
-            let r = ns.range(of: delimiter, options: .literal, range: search)
-            guard r.location != NSNotFound else { continue }
-            if best == nil || r.location < best!.range.location { best = (r, delimiter) }
-        }
-        return best
-    }
-
-    /// Which multi-line string delimiter is still open at character `offset`,
-    /// or `nil` when the offset is outside any multi-line string.
-    ///
-    /// Scans the document from its start with a literal search loop — a
-    /// **transient** pass that builds nothing and is not cached
-    /// (ARCHITECTURE.md §3.4). It runs only when the painted band actually
-    /// changes (a pure scroll short-circuits on `paintedRange` before reaching
-    /// it), and a literal search over even a 10 MB document is a few
-    /// milliseconds.
-    ///
-    /// v1 approximation, deliberate: the scan does not parse comments or
-    /// single-line strings, so a `# """` or `x = '"""'` flips the state as if it
-    /// opened a block. This matches the line-based trade-offs `PythonLanguage`
-    /// already documents.
-    nonisolated static func openMultilineDelimiter(in ns: NSString,
-                                                   at offset: Int,
-                                                   delimiters: [String]) -> String? {
-        guard !delimiters.isEmpty else { return nil }
-        let limit = min(max(offset, 0), ns.length)
-        var pos = 0
-        var open: String?
-        while pos < limit {
-            // Inside a string only the *same* delimiter closes it; outside, any
-            // of them opens one.
-            guard let hit = firstDelimiter(open.map { [$0] } ?? delimiters,
-                                           in: ns, from: pos, limit: limit) else { break }
-            pos = hit.range.location + hit.range.length
-            open = (open == nil) ? hit.delimiter : nil
-        }
-        return open
-    }
-
-    /// Walks the multi-line string state across one line.
-    ///
-    /// `open` is the delimiter that is open when the line *starts*. Returns the
-    /// span (from the line start) that belongs to the string carried in from the
-    /// previous line — up to and including the closing delimiter, or the whole
-    /// line when it does not close here — plus the delimiter still open when the
-    /// line *ends*. A line entered outside a string yields no span: the
-    /// language's own rules already colour a block that opens on it.
-    nonisolated static func multilineStringSpan(inLine line: NSString,
-                                                open: String?,
-                                                delimiters: [String]) -> (span: NSRange?, open: String?) {
-        guard !delimiters.isEmpty, line.length > 0 else { return (nil, open) }
-        // Work in the line's content, excluding its terminator, so the span
-        // matches what `tokenize(line:)` can produce (its `.*` never crosses a
-        // newline) and CR / CRLF / LF all behave alike.
-        var contentsEnd = 0
-        line.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: 0, length: 0))
-        guard contentsEnd > 0 else { return (nil, open) }
-
-        var open = open
-        var span: NSRange?
-        var pos = 0
-        if let entering = open {
-            guard let hit = firstDelimiter([entering], in: line, from: 0, limit: contentsEnd) else {
-                // No close on this line: the whole line is string body.
-                return (NSRange(location: 0, length: contentsEnd), entering)
-            }
-            pos = hit.range.location + hit.range.length
-            span = NSRange(location: 0, length: pos)
-            open = nil
-        }
-        // Whatever remains of the line only advances the state (the rules colour
-        // it): delimiters alternate open / close from here on.
-        while pos < contentsEnd {
-            guard let hit = firstDelimiter(open.map { [$0] } ?? delimiters,
-                                           in: line, from: pos, limit: contentsEnd) else { break }
-            pos = hit.range.location + hit.range.length
-            open = (open == nil) ? hit.delimiter : nil
-        }
-        return (span, open)
-    }
-
-    /// Tokenizes one line with the cross-line multi-line string state applied,
-    /// returning the tokens to paint and the state at the line's end.
-    ///
-    /// For a language with no `multilineStringDelimiters` this is exactly
-    /// `language.tokenize(line:)` — the whole cross-line path short-circuits.
-    /// Otherwise a line that continues a string from above gets a synthesized
-    /// `.string` token covering the carried-in span, and only the text *after*
-    /// that span is handed to the rules (tokenizing the whole line would let a
-    /// rule swallow the tail — `b""" + f(2)` reads as one open string to the
-    /// line-based rules — and would colour the body as code, which is the bug).
-    /// The synthesized token also participates in the symbol pass's gap logic,
-    /// which is what keeps class / function names inside a docstring uncoloured.
-    nonisolated static func tokens(inLine line: String,
-                                   language: LanguageDefinition,
-                                   openDelimiter: String?) -> (tokens: [(range: NSRange, kind: TokenKind)],
-                                                               openDelimiter: String?) {
-        let delimiters = language.multilineStringDelimiters
-        guard !delimiters.isEmpty else { return (language.tokenize(line: line), nil) }
-
-        let ns = line as NSString
-        let (span, open) = multilineStringSpan(inLine: ns, open: openDelimiter, delimiters: delimiters)
-        guard let span else { return (language.tokenize(line: line), open) }
-
-        var tokens = [(range: span, kind: TokenKind.string)]
-        let tailStart = span.location + span.length
-        if tailStart < ns.length {
-            // The tail starts right after a closing delimiter, so tokenizing it
-            // standalone sees the same word boundaries it would in place; shift
-            // the ranges back into line coordinates. Ascending order (which the
-            // symbol pass relies on) is preserved by construction.
-            tokens += language.tokenize(line: ns.substring(from: tailStart)).map {
-                (range: NSRange(location: tailStart + $0.range.location, length: $0.range.length),
-                 kind: $0.kind)
-            }
-        }
-        return (tokens, open)
-    }
-
     /// Maps `rect` to a whole-line, document-clamped character range via the
     /// layout manager's glyph geometry.
     private func lineClampedCharRange(for rect: NSRect,
@@ -528,8 +415,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
 
     /// Tokenizes and colours the visible lines *plus an overscan margin*. Skips
     /// entirely when the viewport still sits inside the already-painted band
-    /// (a pure scroll tick then does zero work). Clears the previous foreground
-    /// colour in the painted span first, then repaints.
+    /// (a pure scroll tick then does zero work). Clears the foreground colour
+    /// still held outside the new band (off-screen cleanup, plan §6 item 1)
+    /// and inside it, then repaints the band.
     private func highlightVisibleRange() {
         guard moduleEnabled,
               let language,
@@ -568,55 +456,35 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
                                               layoutManager: layoutManager, container: container)
         guard paintChars.length > 0 else { return }
 
-        let start = paintChars.location
-        let end = paintChars.location + paintChars.length
+        // Off-screen cleanup: the colour held outside the new band is cleared
+        // right away, in this same pass. The pass never runs inside
+        // `didProcessEditing` (edits only invalidate; repaints follow the
+        // analysis's rescan or a deferred viewport tick), the cleared span is
+        // at least the overscan away from the viewport, and its cost is bounded
+        // by the previous band — so deferring would only add a pending state
+        // and a window where two bands are held.
+        if let held = colouredRange {
+            for piece in Self.ranges(held, minus: paintChars, clampedTo: ns.length) {
+                layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: piece)
+            }
+        }
         layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: paintChars)
+        colouredRange = paintChars
 
-        // Cross-line multi-line strings (Python `"""` / `'''`): the band may
-        // begin inside a string opened far above it, so resolve the state at
-        // `start` once and then carry it down the lines. Languages that declare
-        // no delimiters short-circuit to `nil` without scanning anything. Typing
-        // a delimiter invalidates `paintedRange` like any other edit, so the
-        // state is re-resolved and the lines below repaint.
-        var openDelimiter = language.identifier == "python" ? nil : Self.openMultilineDelimiter(
-            in: ns, at: start, delimiters: language.multilineStringDelimiters)
-
-        var pythonState = language.identifier == "python"
-            ? pythonLexicalState(at: start, in: ns, language: language)
-            : PythonTokenizer.State()
-        var loc = start
-        while loc < end {
-            let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
-            let lineString = ns.substring(with: lineRange)
-            let tokens: [(range: NSRange, kind: TokenKind)]
-            if language.identifier == "python" {
-                tokens = PythonTokenizer.scan(lineString, language: language, state: &pythonState)
-            } else {
-                let pass = Self.tokens(inLine: lineString, language: language, openDelimiter: openDelimiter)
-                tokens = pass.tokens
-                openDelimiter = pass.openDelimiter
-            }
-            for token in tokens {
-                guard let color = theme.color(for: token.kind) else { continue }
-                let absolute = NSRange(location: lineRange.location + token.range.location,
-                                       length: token.range.length)
-                layoutManager.addTemporaryAttribute(.foregroundColor,
-                                                    value: color,
-                                                    forCharacterRange: absolute)
-            }
-            // In-document symbol colouring runs *after* the language rules and
-            // only in the spans they left uncovered, so string / comment /
-            // keyword colours always win over symbol colours.
-            if let symbolTable, !symbolTable.isEmpty {
-                colourSymbols(inLine: lineString,
-                              lineLocation: lineRange.location,
-                              ruleTokens: tokens,
-                              table: symbolTable,
-                              layoutManager: layoutManager)
-            }
-            let next = lineRange.location + lineRange.length
-            if next <= loc { break }
-            loc = next
+        // Lexical state at the band start comes from the analysis's sparse
+        // checkpoints (Python and profiled languages); tokens are transient.
+        let tokens = Self.bandTokens(in: ns, range: paintChars, language: language,
+                                     checkpoints: &analysis.checkpoints)
+        for token in tokens {
+            guard let color = theme.color(for: token.kind) else { continue }
+            layoutManager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: token.range)
+        }
+        // In-document symbol colouring runs *after* the language tokens and
+        // only in the spans they left uncovered, so string / comment / keyword
+        // colours always win over symbol colours.
+        if let symbolTable, !symbolTable.isEmpty {
+            colourSymbols(in: ns, range: paintChars, tokens: tokens, table: symbolTable,
+                          layoutManager: layoutManager)
         }
 
         // Record the band we actually painted so subsequent scroll ticks that
@@ -628,19 +496,94 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         }
     }
 
-    /// The Python lexical state at `start` (a line start). Resumes from the
-    /// analysis's nearest checkpoint at or before `start` (or offset 0), walks
+    // MARK: - Band tokens (pure)
+
+    /// The tokens of `range` (whole lines) with absolute, ascending ranges.
+    ///
+    /// - Profiled languages: the generic scanner's state at `range.location`
+    ///   (resumed from `checkpoints`), then `LanguageDefinition.tokens`.
+    /// - Python: `PythonTokenizer` line by line from its resumed state.
+    /// - Everything else: `tokenize(line:)` line by line, no state.
+    ///
+    /// Pure apart from recording checkpoints into `checkpoints`, so tests can
+    /// run the exact pass the engine paints with.
+    nonisolated static func bandTokens(in ns: NSString, range: NSRange, language: LanguageDefinition,
+                                       checkpoints: inout CheckpointStore) -> [(range: NSRange, kind: TokenKind)] {
+        let start = range.location
+        let end = NSMaxRange(range)
+        if language.lexicalScanner != nil {
+            var state = lexicalScanState(at: start, in: ns, language: language, checkpoints: &checkpoints)
+            return language.tokens(in: ns, range: range, state: &state)
+        }
+        let isPython = language.identifier == "python"
+        var pythonState = isPython
+            ? pythonLexicalState(at: start, in: ns, language: language, checkpoints: &checkpoints)
+            : PythonTokenizer.State()
+        var tokens: [(range: NSRange, kind: TokenKind)] = []
+        var loc = start
+        while loc < end {
+            let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
+            let lineString = ns.substring(with: lineRange)
+            let lineTokens = isPython
+                ? PythonTokenizer.scan(lineString, language: language, state: &pythonState)
+                : language.tokenize(line: lineString)
+            for token in lineTokens {
+                tokens.append((NSRange(location: lineRange.location + token.range.location,
+                                       length: token.range.length), token.kind))
+            }
+            let next = NSMaxRange(lineRange)
+            if next <= loc { break }
+            loc = next
+        }
+        return tokens
+    }
+
+    /// The generic scanner's state at `start` (a line start) for a profiled
+    /// language. See `resumeLexicalState`.
+    nonisolated static func lexicalScanState(at start: Int, in ns: NSString, language: LanguageDefinition,
+                                             checkpoints: inout CheckpointStore) -> LexicalScanState {
+        guard let scanner = language.lexicalScanner else { return LexicalScanState() }
+        return resumeLexicalState(at: start, in: ns, languageIdentifier: language.identifier,
+                                  initial: LexicalScanState(), checkpoints: &checkpoints,
+                                  unwrap: { if case .generic(let s) = $0 { return s } else { return nil } },
+                                  wrap: { .generic($0) },
+                                  advance: { from, to, state in
+                                      scanner.advance(ns, from: from, to: to, state: &state)
+                                  })
+    }
+
+    /// The Python lexical state at `start` (a line start).
+    nonisolated static func pythonLexicalState(at start: Int, in ns: NSString, language: LanguageDefinition,
+                                               checkpoints: inout CheckpointStore) -> PythonTokenizer.State {
+        resumeLexicalState(at: start, in: ns, languageIdentifier: language.identifier,
+                           initial: PythonTokenizer.State(), checkpoints: &checkpoints,
+                           unwrap: { if case .python(let s) = $0 { return s } else { return nil } },
+                           wrap: { .python($0) },
+                           advance: { from, to, state in
+                               state = PythonTokenizer.state(in: ns, before: to, language: language,
+                                                             from: from, initial: state)
+                           })
+    }
+
+    /// Resumes from the nearest checkpoint at or before `start` whose state
+    /// is of this tokenizer's kind (else from offset 0 with `initial`), walks
     /// forward in line-aligned chunks of about `CheckpointStore.spacing`,
-    /// recording a checkpoint at each chunk boundary, then advances to `start`.
-    private func pythonLexicalState(at start: Int, in ns: NSString,
-                                    language: LanguageDefinition) -> PythonTokenizer.State {
+    /// recording a checkpoint at each chunk boundary, then advances to
+    /// `start`. Logs `lexical.advance` (units scanned) when PerfLog is on.
+    // swiftlint:disable:next function_parameter_count
+    nonisolated static func resumeLexicalState<State>(at start: Int, in ns: NSString, languageIdentifier: String,
+                                                      initial: State, checkpoints: inout CheckpointStore,
+                                                      unwrap: (LexicalState) -> State?,
+                                                      wrap: (State) -> LexicalState,
+                                                      advance: (Int, Int, inout State) -> Void) -> State {
+        let perfStart = PerfLog.isEnabled ? PerfLog.now() : 0
         var offset = 0
-        var state = PythonTokenizer.State()
-        if let checkpoint = analysis.checkpoints.nearest(atOrBefore: start),
-           case .python(let saved) = checkpoint.state {
+        var state = initial
+        if let checkpoint = checkpoints.nearest(atOrBefore: start), let saved = unwrap(checkpoint.state) {
             offset = checkpoint.offset
             state = saved
         }
+        let resumedAt = offset
         let spacing = CheckpointStore.spacing
         while start - offset > spacing {
             // The line start at or before `offset + spacing`; when one line is
@@ -650,38 +593,75 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
                 next = NSMaxRange(ns.lineRange(for: NSRange(location: offset, length: 0)))
             }
             guard next > offset, next < start else { break }
-            state = PythonTokenizer.state(in: ns, before: next, language: language,
-                                          from: offset, initial: state)
-            analysis.checkpoints.record(offset: next, state: .python(state))
+            advance(offset, next, &state)
+            checkpoints.record(offset: next, state: wrap(state))
             offset = next
         }
-        return PythonTokenizer.state(in: ns, before: start, language: language,
-                                     from: offset, initial: state)
+        if start > offset { advance(offset, start, &state) }
+        if PerfLog.isEnabled {
+            PerfLog.record("lexical.advance", since: perfStart,
+                           ["lang": languageIdentifier, "units": start - resumedAt,
+                            "resumedAt": resumedAt, "checkpoints": checkpoints.entries.count])
+        }
+        return state
     }
 
-    /// Colours the declared-symbol identifiers on one line, but only in the
-    /// character gaps left uncovered by the language's own rule tokens — so a
+    /// `outer` minus `inner`, as up to two ranges clamped to `[0, length)`.
+    /// Pure, so the cleanup arithmetic is unit-testable.
+    nonisolated static func ranges(_ outer: NSRange, minus inner: NSRange, clampedTo length: Int) -> [NSRange] {
+        let outerStart = min(max(outer.location, 0), length)
+        let outerEnd = min(max(NSMaxRange(outer), outerStart), length)
+        let innerStart = min(max(inner.location, outerStart), outerEnd)
+        let innerEnd = min(max(NSMaxRange(inner), innerStart), outerEnd)
+        var out: [NSRange] = []
+        if innerStart > outerStart { out.append(NSRange(location: outerStart, length: innerStart - outerStart)) }
+        if outerEnd > innerEnd { out.append(NSRange(location: innerEnd, length: outerEnd - innerEnd)) }
+        return out
+    }
+
+    /// Where foreground colour may still be held after an edit that replaced
+    /// `editedRange.length - delta` units at `editedRange.location` with
+    /// `editedRange.length` units: `held` mapped through the edit, widened to
+    /// the edited text when the two touch (inserted text can inherit an
+    /// adjacent run). Errs on the side of a larger span.
+    nonisolated static func heldRange(_ held: NSRange, afterEditing editedRange: NSRange, delta: Int) -> NSRange {
+        let editStart = editedRange.location
+        let oldEditEnd = editStart + editedRange.length - delta
+        func map(_ position: Int, low: Bool) -> Int {
+            if position < editStart || (low && position == editStart) { return position }
+            if position >= oldEditEnd { return position + delta }
+            // Inside the replaced text: widen to the edited span.
+            return low ? editStart : NSMaxRange(editedRange)
+        }
+        var start = map(held.location, low: true)
+        var end = max(start, map(NSMaxRange(held), low: false))
+        if editStart <= end && NSMaxRange(editedRange) >= start {
+            start = min(start, editStart)
+            end = max(end, NSMaxRange(editedRange))
+        }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// Colours the declared-symbol identifiers of `range`, but only in the
+    /// character gaps left uncovered by `tokens` (absolute, ascending) — so a
     /// name inside a string / comment / keyword keeps that colour. Each gap is
     /// scanned for `[A-Za-z_]\w*` identifiers, coloured by their category:
     /// functions → `.symbolFunction`, types → `.type` (reused), variables →
     /// `.symbolVariable`.
-    private func colourSymbols(inLine line: String,
-                               lineLocation: Int,
-                               ruleTokens: [(range: NSRange, kind: TokenKind)],
+    private func colourSymbols(in ns: NSString, range: NSRange,
+                               tokens: [(range: NSRange, kind: TokenKind)],
                                table: WordIndex.SymbolTable,
                                layoutManager: NSLayoutManager) {
-        let ns = line as NSString
-        let length = ns.length
-        guard length > 0 else { return }
+        guard range.length > 0 else { return }
+        let band = ns.substring(with: range)
+        let bandNS = band as NSString
+        let base = range.location
 
-        // Rule tokens are non-overlapping and produced in ascending order by
-        // `tokenize(line:)`; scan the complement (the gaps between them).
-        var pos = 0
         func scanGap(_ gap: NSRange) {
             guard gap.length > 0 else { return }
-            Self.identifierRegex.enumerateMatches(in: line, range: gap) { match, _, _ in
+            Self.identifierRegex.enumerateMatches(in: band, range: gap) { match, _, _ in
                 guard let r = match?.range else { return }
-                let word = ns.substring(with: r)
+                let word = bandNS.substring(with: r)
                 let color: NSColor?
                 if table.functions.contains(word) {
                     color = theme.color(for: .symbolFunction)
@@ -695,19 +675,21 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
                 guard let color else { return }
                 layoutManager.addTemporaryAttribute(
                     .foregroundColor, value: color,
-                    forCharacterRange: NSRange(location: lineLocation + r.location,
-                                               length: r.length))
+                    forCharacterRange: NSRange(location: base + r.location, length: r.length))
             }
         }
 
-        for token in ruleTokens {
-            if token.range.location > pos {
-                scanGap(NSRange(location: pos, length: token.range.location - pos))
+        var pos = 0
+        for token in tokens {
+            let tokenStart = token.range.location - base
+            if tokenStart > pos {
+                scanGap(NSRange(location: pos, length: min(tokenStart, range.length) - pos))
             }
-            pos = max(pos, token.range.location + token.range.length)
+            pos = max(pos, NSMaxRange(token.range) - base)
+            if pos >= range.length { break }
         }
-        if pos < length {
-            scanGap(NSRange(location: pos, length: length - pos))
+        if pos < range.length {
+            scanGap(NSRange(location: pos, length: range.length - pos))
         }
     }
 }

@@ -43,7 +43,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 |---|---|---|---|---|
 | T17.0 | 基线：VS Code 隔离安装与固定版本；对照样本库；计时埋点；现版颜色、候选名次、内存与时延；VS Code 语言服务内存；Esc/⌥⎋、离屏属性、长行、TCC 实测；mem-benchmark 1000 行推断样本 | — | main + implementer（夹具、基线套件、PerfLog），main 审查 | ✅ 自动化通过；项目文件夹重启授权留 T17.12 |
 | T17.1 | 分析骨架 `DocumentAnalysis`：版本、稀疏检查点、分片调度与取消、共用声明扫描、`applyLanguage` 统一失效、两个新模块开关 | T17.0 | implementer，main 审查 | ✅ 自动化通过 |
-| T17.2 | 通用词法扫描器：档案、两种模式、检查点接入，取代从 0 起扫；Python 迁移结论 | T17.1 | main 定接口 + implementer | ⬜ |
+| T17.2 | 通用词法扫描器：档案、两种模式、检查点接入，取代从 0 起扫；Python 迁移结论 | T17.1 | main 定接口 + implementer | ✅ 自动化通过；Python 保留原 tokenizer |
 | T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | ⬜ |
 | T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | ⬜ |
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ⬜ |
@@ -134,6 +134,52 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **验证**：全量 992 tests / 43 suites 通过（新增 21）；visual-smoke VISUAL OK、FOLD GEOMETRY OK；基线重生成后 karu 着色 TSV 逐字节一致，
     候选列表全部一致（`forbiddenHits` 列 3→0 来自 T17.0 的 `docWordOnly` 改判，非 T17.1 引起）。
   - 方案 §3 的导航口径已改为「优先复用快照，高亮与补全都关时才临时扫描」。
+
+- T17.2（main 定接口，写入方案 §4「接口（T17.2 定稿）」；implementer 实现，main 审查 diff）：
+  - **新增**：`Highlight/LexicalProfile.swift`、`Highlight/LexicalScanner.swift`。
+    - 档案的定界方式有四种：固定、N 连引号、`#` 计数、C++ raw。
+    - 扫描器支持插值嵌套与括号深度，以及原子 token。
+    - 帧栈上限 64；状态存入检查点 `LexicalState.generic`。
+    - 两种模式（`advance`、`segments`）都可以在任意 `[from, to)` 上运行，切点不落在 token 内部时，分段扫描与一次扫描结果相同。
+    - 有档案的语言，正则规则只在代码片段里生效，并跳过 string / comment 类规则。
+  - **删除**：`multilineStringDelimiters`、`openMultilineDelimiter`、`multilineStringSpan` 等从偏移 0 起扫的路径（实际只剩测试在用）。
+  - **引擎**：
+    - 着色走「最近检查点 → `advance` → 色带 token」。Python 共用同一个泛化恢复函数，着色逻辑不变。
+    - 新增 PerfLog 事件 `lexical.advance`。
+  - **试点**：JavaScript 与 TypeScript 共用一份档案；Rust 有嵌套注释、`r#"…"#`、可跨行字符串，字符字面量与生命周期作为原子 token。
+    其余语言在 T17.3 接入。
+  - **Python 结论：保留 PythonTokenizer**。
+    - 实验档案设为生产路径后有 12 处测试失败。除一处外，都是替换字段内部的特有分类：
+      字段内标识符为 `.symbolVariable`，格式说明 `:…` 着字符串色，`!r` 为标点。
+    - 要通过这些测试，必须在通用扫描器里加 Python 专用逻辑，按 §4 的规则不迁移。
+    - 跨行结构判定与 PythonTokenizer 逐行一致。实验与差距记录在 `PythonProfileExperimentTests.swift`。
+  - **离屏属性清理**（方案 §6 第 1 条）：
+    - 记录当前持有颜色的范围，每次绘制立即清除新色带之外的部分；编辑时把持有范围映射过编辑，宁多清不少。
+    - 10 MB Python 从头滚到尾，前景 run 由 **719,306 降到 490**，覆盖率由 50.6% 降到 0.04%。
+  - **与 VS Code Dark Modern 的着色一致率**：JS **12.4% → 93.9%**、TS 36.8% → 49.5%、Rust 61.2% → 73.7%，全部样本 39.0% → 57.2%，Python 不变。
+    其余差异：JS 正则字面量留 T17.3 钩子；转义序列与插值边界的颜色、类型色 `#4EC9B2` 的笔误留 T17.7。
+  - **时延**（debug、800×600，同机对照 HEAD）：
+    - 10 MB JS 首次跳到末尾：32 ms → 128 ms。HEAD 没有跨行状态，颜色本来就是错的。
+    - 10 MB JS 附近重绘中位数：39 ms → 2.4 ms，注释正文不再跑正则。
+    - Python 首跳约 640 ms、附近重绘约 10 ms，与 HEAD 持平。
+    - 纯函数层冷算到末尾：JS 128 ms、Rust 425 ms（原子 token 约占一半）。
+    - 检查点推进目前一次同步走完、没有分片；按第 11 节分开报告「最长主线程占用」时要处理（T17.15 读数）。
+    - 每次绘制仍通过 `textView.string` 复制全文，10 MB 时约多 120 ms，属既有做法，未改。
+  - **改动的旧测试期望**：`javascriptTemplateStringAndBlockComment` 中 `${`、`}` 改为标点，`y` 改为代码（插值按代码处理）。
+    T14.7 的跨行定界测试改写为通用扫描器的等价测试；四个 Python 文档字符串的断言未改。
+  - **验证**：
+    - 全量 **1018 tests / 47 suites** 通过（新增 26），visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+    - 新测试覆盖合成档案单测、随机切点不变性，以及 js / ts / rs / py 的四路一致性：顺读、跳入、上游编辑后与全新扫描一致、撤销复原。
+      测试还断言编辑确实改变了色带、用未失效的旧检查点会算错。另有真实文本视图的引擎级测试和离屏清理测试。
+  - **注意**：`KARU_M17_BASELINE=1` 套件每次都会改写 `Tests/Fixtures/M17/baseline/` 下的 karu TSV 与候选文件，跑完要 `git checkout` 还原，
+    除非是有意重建基线。
+  - **超长行分片**（方案 §6 第 2 条）未做。扫描器已支持在任意区间上运行，在 T17.3 接入更多语言之前单独安排。
+  - **内存**（release、`KARU_DIAGNOSTIC_DIRECTORY` 隔离，同机交替运行；HEAD 在临时 worktree 中构建）：
+    - HEAD 两轮均为 26 / 35 / 63 MB，参考轮 29 / 29。
+    - 候选三轮均为 25 / 35 / 63 MB，参考轮 29 / 29。
+    - 持平，无新增常驻：只多一个 `colouredRange`，扫描器随语言定义一起释放。
+    - 本次环境整体比 T17.1 时低（36 / 56 / 65），HEAD 同样偏低，判定为环境差异。
+    - 第一次对照时把 HEAD 二进制单独拷出，缺资源包，无法采样，已作废。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

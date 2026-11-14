@@ -1,13 +1,14 @@
 import Foundation
 
-/// Rust definition (v1, line-based).
+/// Rust definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - `//` line comments (including `///` doc comments) are exact; `/* … */`
-///   block comments are approximated per line with no cross-line state.
-/// - Raw strings (`r"…"`, `r#"…"#`) are coloured only in their single-line form.
-/// - Lifetimes (`'a`) are coloured like properties; a character literal
-///   (`'x'`) is detected first so it is not mistaken for a lifetime.
+/// Comments and strings come from `lexicalProfile` (M17 T17.2): `//` line
+/// comments (including `///` / `//!` doc comments), nesting `/* … */` block
+/// comments, `"…"` strings that may span lines (with `\` escapes, and `b` /
+/// `c` prefixes), raw strings `r"…"` / `r#"…"#` (any number of hashes, `b` /
+/// `c` prefixes, no escapes). Character literals (`'x'`, `'\''`, `b'x'`) and
+/// lifetimes (`'a`) are atoms, so a `'"'` never opens a string.
+/// - Lifetimes are coloured like properties; character literals like strings.
 /// - Macro invocations (`println!`, `vec!`) are coloured like functions via the
 ///   `word!` rule.
 public enum RustLanguage {
@@ -30,6 +31,27 @@ public enum RustLanguage {
         "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
     ]
 
+    /// Comments, strings, raw strings, character literals and lifetimes.
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["//"],
+        blockComments: [.init(open: "/*", close: "*/", nests: true)],
+        strings: [
+            // Raw (byte / C) strings: `r"…"`, `r#"…"#`, `br##"…"##`, `cr"…"`.
+            .init(prefixes: ["b", "c"], delimiter: .hashed(lead: "r", hash: "#", quote: "\"",
+                                                            hashesApplyToEscapes: false),
+                  multiline: true, escape: nil),
+            // Ordinary (byte / C) strings; they may span lines.
+            .init(prefixes: ["b", "c"], delimiter: .fixed(open: "\"", close: "\""), multiline: true),
+        ],
+        atoms: [
+            // Character / byte literal, before the lifetime so `'x'` wins.
+            .init(pattern: #"'(?:[^'\\\r\n]|\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f_]{1,6}\}|[^\r\n]))'"#,
+                  firstCharacters: "'", kind: .string, prefixes: ["b"]),
+            // Lifetime / label.
+            .init(pattern: #"'[A-Za-z_][A-Za-z0-9_]*"#, firstCharacters: "'", kind: .property),
+        ]
+    )
+
     /// Builds a `\b(word1|word2|…)\b` rule producing `kind`.
     static func wordRule(_ words: [String], kind: TokenKind) -> LanguageRule {
         LanguageRule(pattern: "\\b(?:\(words.joined(separator: "|")))\\b", kind: kind)
@@ -41,19 +63,6 @@ public enum RustLanguage {
             identifier: "rust",
             fileExtensions: ["rs"],
             rules: [
-                // Line comment (covers `//` and `///`).
-                LanguageRule(pattern: #"//.*"#, kind: .comment),
-                // Block comment: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"/\*.*?\*/"#, kind: .comment),
-                LanguageRule(pattern: #"/\*.*"#, kind: .comment),
-                // Raw strings (single-line form), then normal strings.
-                LanguageRule(pattern: ##"r#"(?:[^"]|"(?!#))*"#"##, kind: .string),
-                LanguageRule(pattern: #"r"[^"]*""#, kind: .string),
-                LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
-                // Character literal before lifetime, so `'x'` is not a lifetime.
-                LanguageRule(pattern: #"'(?:[^'\\]|\\.)'"#, kind: .string),
-                // Lifetime annotation.
-                LanguageRule(pattern: #"'[A-Za-z_]\w*"#, kind: .property),
                 // Macro invocation (`println!`, `vec!`), coloured like a function.
                 LanguageRule(pattern: #"\b[A-Za-z_]\w*!"#, kind: .builtin),
                 // Numbers with `_` separators and optional type suffix.
@@ -65,7 +74,8 @@ public enum RustLanguage {
                 wordRule(types, kind: .type),
             ],
             keywords: keywords,
-            builtins: types
+            builtins: types,
+            lexicalProfile: lexicalProfile
         )
     }
 }

@@ -23,22 +23,27 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     pairs.first { $0.text == text }?.kind
 }
 
-/// Walks `source` line by line exactly as `highlightVisibleRange` does —
-/// carrying the multi-line string state across lines — and returns the
-/// `(text, kind)` spans of each line.
+/// Tokenizes the whole of `source` exactly as `highlightVisibleRange` paints
+/// a band (`HighlightEngine.bandTokens`: Python's carried state, a profiled
+/// language's scanner state, or plain per-line rules) and returns the
+/// `(text, kind)` spans of each line, clipped to the line's content (without
+/// its terminator).
 private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(text: String, kind: TokenKind)]] {
     let ns = source as NSString
+    var store = CheckpointStore()
+    let tokens = HighlightEngine.bandTokens(in: ns, range: NSRange(location: 0, length: ns.length),
+                                            language: def, checkpoints: &store)
     var lines: [[(text: String, kind: TokenKind)]] = []
-    var open: String?
     var loc = 0
     while loc < ns.length {
-        let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
-        let line = ns.substring(with: lineRange)
-        let lineNS = line as NSString
-        let (tokens, next) = HighlightEngine.tokens(inLine: line, language: def, openDelimiter: open)
-        open = next
-        lines.append(tokens.map { (lineNS.substring(with: $0.range), $0.kind) })
-        loc = lineRange.location + lineRange.length
+        var lineEnd = 0, contentsEnd = 0
+        ns.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: loc, length: 0))
+        let content = NSRange(location: loc, length: contentsEnd - loc)
+        lines.append(tokens.compactMap { token in
+            let clipped = NSIntersectionRange(token.range, content)
+            return clipped.length > 0 ? (ns.substring(with: clipped), token.kind) : nil
+        })
+        loc = lineEnd
     }
     return lines
 }
@@ -413,35 +418,70 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
     #expect(lines[1].contains { $0.kind == .string } == false)
 }
 
-@Test func openDelimiterScanResolvesStateAtAnyOffset() {
-    let delimiters = PythonLanguage.make().multilineStringDelimiters
+@Test func lexicalStateResolvesAtAnyOffset() {
+    // Python (PythonTokenizer state, resumed from checkpoints).
+    let py = PythonLanguage.make()
     let source = "a = \"\"\"\nbody 1\n\"\"\"\nz = 1\nb = '''\ntail\n"
     let ns = source as NSString
-    func state(atLineStartingWith prefix: String) -> String? {
-        HighlightEngine.openMultilineDelimiter(in: ns,
-                                               at: ns.range(of: prefix).location,
-                                               delimiters: delimiters)
+    func pythonOpen(atLineStartingWith prefix: String) -> Bool {
+        var store = CheckpointStore()
+        return !HighlightEngine.pythonLexicalState(at: ns.range(of: prefix).location, in: ns, language: py,
+                                                   checkpoints: &store).frames.isEmpty
     }
+    #expect(pythonOpen(atLineStartingWith: "a = ") == false)
+    #expect(pythonOpen(atLineStartingWith: "body 1"))        // inside the block
+    #expect(pythonOpen(atLineStartingWith: "z = 1") == false) // closed again
+    #expect(pythonOpen(atLineStartingWith: "tail"))           // inside the unterminated block
 
-    #expect(HighlightEngine.openMultilineDelimiter(in: ns, at: 0, delimiters: delimiters) == nil)
-    #expect(state(atLineStartingWith: "body 1") == "\"\"\"")   // inside the block
-    #expect(state(atLineStartingWith: "z = 1") == nil)        // closed again
-    #expect(state(atLineStartingWith: "tail") == "'''")       // inside the unterminated block
-    // Document end of an unterminated block: still open.
-    #expect(HighlightEngine.openMultilineDelimiter(in: ns, at: ns.length, delimiters: delimiters) == "'''")
-    // No delimiters declared → never any state, whatever the text says.
-    #expect(HighlightEngine.openMultilineDelimiter(in: ns, at: ns.length, delimiters: []) == nil)
+    // A profiled language (generic scanner state).
+    let js = JavaScriptLanguage.make()
+    let jsSource = "a = `\nbody ${x\n} y`\n/* c\nd */\nz = 1\n"
+    let jsNS = jsSource as NSString
+    func jsState(atLineStartingWith prefix: String) -> LexicalScanState {
+        var store = CheckpointStore()
+        return HighlightEngine.lexicalScanState(at: jsNS.range(of: prefix).location, in: jsNS, language: js,
+                                                checkpoints: &store)
+    }
+    #expect(jsState(atLineStartingWith: "a = ").isEmpty)
+    #expect(jsState(atLineStartingWith: "body").frames == [.string(form: 2, count: 0, delimiter: nil)])
+    #expect(jsState(atLineStartingWith: "} y").frames.count == 2)   // template + interpolation
+    #expect(jsState(atLineStartingWith: "d */").frames == [.blockComment(form: 0, depth: 1)])
+    #expect(jsState(atLineStartingWith: "z = 1").isEmpty)
 }
 
-@Test func languagesWithoutMultilineDelimitersAreUnaffected() {
-    for def in [JSONLanguage.make(), JavaScriptLanguage.make(), MarkdownLanguage.make()] {
-        #expect(def.multilineStringDelimiters.isEmpty)
-        // The cross-line path short-circuits: same tokens, no state carried.
-        let line = "let s = \"\"\"x\"\"\";"
-        let (tokens, open) = HighlightEngine.tokens(inLine: line, language: def, openDelimiter: nil)
-        #expect(open == nil)
-        #expect(tokens.map(\.range) == def.tokenize(line: line).map(\.range))
+@Test func unprofiledLanguagesKeepPerLineTokens() {
+    for def in [JSONLanguage.make(), MarkdownLanguage.make(), CLanguage.make()] {
+        #expect(def.lexicalProfile == nil && def.lexicalScanner == nil)
+        // No state is carried: each line tokenizes exactly as on its own.
+        let source = "let s = \"\"\"x\n/* a\nb */ \"\"\";\n"
+        let lines = documentSpans(def, source)
+        for (index, line) in source.components(separatedBy: "\n").dropLast().enumerated() {
+            let ns = line as NSString
+            let expected = def.tokenize(line: line).map { (ns.substring(with: $0.range), $0.kind) }
+            #expect(lines[index].map(\.text) == expected.map(\.0))
+            #expect(lines[index].map(\.kind) == expected.map(\.1))
+        }
     }
+}
+
+/// JS (profiled): a block comment's body lines are comment, a template's body
+/// lines are string, and the code inside `${…}` is tokenized as code.
+@Test func javascriptCrossLineCommentAndTemplate() {
+    let js = JavaScriptLanguage.make()
+    let lines = documentSpans(js, "/* head\n if (x) return 42;\n*/ let a = 1;\nconst t = `x\n ${count + 2} if\nend`; return 3\n")
+    #expect(lines[1].count == 1)
+    #expect(lines[1].first?.kind == .comment)
+    #expect(lines[1].first?.text == " if (x) return 42;")
+    #expect(kind(of: "let", in: lines[2]) == .keyword)
+    #expect(kind(of: "1", in: lines[2]) == .number)
+    #expect(lines[4].first?.text == " ")
+    #expect(lines[4].first?.kind == .string)
+    #expect(kind(of: "${", in: lines[4]) == .punctuation)
+    #expect(kind(of: "2", in: lines[4]) == .number)
+    #expect(kind(of: " if", in: lines[4]) == .string)      // template text, not a keyword
+    #expect(kind(of: "end`", in: lines[5]) == .string)
+    #expect(kind(of: "return", in: lines[5]) == .keyword)
+    #expect(kind(of: "3", in: lines[5]) == .number)
 }
 
 /// End-to-end through the engine: painting a docstring must leave the body's

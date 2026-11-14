@@ -132,6 +132,15 @@
 - 钩子也无法在时延目标内通过样本：才退回该语言专用的 tokenizer。
 - 每一次妥协都记入台账，写明语言、结构、原因和样本。
 
+**接口（T17.2 定稿，main）**：
+- `LexicalProfile`（纯值、`Sendable`）：行注释前缀；块注释（起止符、可否嵌套）；字符串形式（可选前缀、定界方式、是否跨行、转义字符、双写结束符即转义、插值列表）；原子 token（单行正则，如 Rust 字符字面量与生命周期，防止 `'"'` 被当成字符串开头）。
+- 定界方式四种：固定起止符；同一引号连写 N 个并以同样长度结束（C# 原样字符串）；前导符加 N 个 `#`（Rust `r#"…"#`、Swift `#"…"#`，Swift 的转义和插值也带同样数量的 `#`）；C++ `R"d(…)d"`。
+- 状态 `LexicalScanState`：帧栈（块注释及嵌套深度、字符串及解析出的结束符、插值及括号深度），上限 64 层，可比较、可存入检查点（`LexicalState.generic`）。帧是枚举，T17.3 的钩子增加新帧种类时检查点格式不变。
+- `LexicalScanner` 对 `NSString` 的任意 `[from, to)` 工作，不要求按行切分，为第 6 节的超长行分片留出接口：`advance` 只推进状态；`segments` 输出代码、字符串、注释、插值边界四类片段。
+- `LanguageDefinition` 增加可选的 `lexicalProfile`。有档案的语言，正则规则只在代码片段里生效，并跳过 `.string`、`.comment` 类规则，字符串和注释以档案为准；没有档案的语言（JSON、JSONL，以及 T17.3 前尚未接入的语言）保持逐行规则。
+- 删除 `multilineStringDelimiters` 与 `openMultilineDelimiter` 这条从偏移 0 起扫的路径。高亮按「最近检查点 → `advance` → 视口 `segments`」取得状态。
+- 试点：T17.2 接入 JavaScript、TypeScript、Rust 来验证档案，其余语言在 T17.3 接入。
+
 ## 5. 候选怎么选、怎么排
 
 ### 5.1 请求与触发

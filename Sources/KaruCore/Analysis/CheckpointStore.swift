@@ -1,9 +1,11 @@
 import Foundation
 
 /// Lexical state carried across lines, as stored in a checkpoint. One case per
-/// tokenizer that keeps cross-line state (T17.2 adds the generic scanner's).
+/// tokenizer that keeps cross-line state.
 public enum LexicalState: Sendable, Equatable {
     case python(PythonTokenizer.State)
+    /// The generic scanner's state for a profiled language (M17 T17.2).
+    case generic(LexicalScanState)
 }
 
 /// Sparse lexical checkpoints for one document (M17 T17.1, plan §3 "词法检查点").

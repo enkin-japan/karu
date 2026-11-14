@@ -1,19 +1,19 @@
 import Foundation
 
-/// JavaScript / Node definition (v1, line-based).
+/// JavaScript / Node definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - `//` line comments are exact; `/* … */` block comments are approximated:
-///   a block that opens and closes on one line is coloured, and an opening line
-///   colours to end-of-line, but interior and closing lines of a multi-line
-///   block comment are not tracked (no cross-line state).
-/// - Template literals are treated per line the same way; `${…}`
-///   interpolations are not tokenized separately, and a template spanning
-///   multiple lines is only coloured on its opening line.
-/// - **Regex literals are intentionally not highlighted.** Distinguishing `/`
-///   as the start of a regex from a division operator needs real lexer state
-///   (it depends on the preceding token); getting it wrong miscolours ordinary
-///   arithmetic, so v1 leaves `/…/` as plain text.
+/// Comments and strings come from `lexicalProfile` (M17 T17.2, shared with
+/// TypeScript): `//` line comments, non-nesting `/* … */` block comments that
+/// span lines, `'…'` / `"…"` single-line strings with `\` escapes (escape +
+/// newline continues the line), and multi-line template literals whose
+/// `${…}` interpolations are scanned as code (nested templates and object
+/// literals inside included). The regex rules cover numbers, keywords and
+/// built-ins inside code segments only.
+///
+/// **Regex literals are intentionally not highlighted yet.** Distinguishing
+/// `/` as the start of a regex from a division operator depends on the
+/// preceding token; that is a T17.3 scanner hook, so `/…/` stays plain text
+/// (a quote inside a regex literal can therefore still open a string).
 public enum JavaScriptLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -42,19 +42,22 @@ public enum JavaScriptLanguage {
         "globalThis", "structuredClone", "queueMicrotask",
     ]
 
-    /// Comment, string and number rules shared with TypeScript.
+    /// Comments, strings and template literals, shared with TypeScript.
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["//"],
+        blockComments: [.init(open: "/*", close: "*/")],
+        strings: [
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+            .init(delimiter: .fixed(open: "'", close: "'"), multiline: false),
+            .init(delimiter: .fixed(open: "`", close: "`"), multiline: true,
+                  interpolations: [.init(open: "${", close: "}")]),
+        ]
+    )
+
+    /// Number rule shared with TypeScript (comments and strings are the
+    /// profile's).
     static func baseRules() -> [LanguageRule] {
         [
-            // Line comment.
-            LanguageRule(pattern: #"//.*"#, kind: .comment),
-            // Block comment: complete-on-line, then open-to-end-of-line.
-            LanguageRule(pattern: #"/\*.*?\*/"#, kind: .comment),
-            LanguageRule(pattern: #"/\*.*"#, kind: .comment),
-            // Strings: double, single, and template (per-line approximation).
-            LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
-            LanguageRule(pattern: #"'(?:[^'\\]|\\.)*'"#, kind: .string),
-            LanguageRule(pattern: #"`(?:[^`\\]|\\.)*`"#, kind: .string),
-            LanguageRule(pattern: #"`(?:[^`\\]|\\.)*"#, kind: .string),
             // Numbers: hex / octal / binary / decimal / float, with optional
             // BigInt `n` suffix. Lookbehind avoids matching digits mid-identifier.
             LanguageRule(
@@ -76,13 +79,14 @@ public enum JavaScriptLanguage {
             fileExtensions: ["js", "mjs", "cjs"],
             rules: baseRules() + [
                 wordRule(keywords, kind: .keyword),
-                // Built-in globals after keywords (disjoint sets); strings and
-                // comments are consumed in `baseRules()`, so a built-in word
-                // inside one is never reached here.
+                // Built-in globals after keywords (disjoint sets); rules only
+                // run in code segments, so a built-in word inside a string or
+                // comment is never reached here.
                 wordRule(builtins, kind: .builtin),
             ],
             keywords: keywords,
-            builtins: builtins
+            builtins: builtins,
+            lexicalProfile: lexicalProfile
         )
     }
 }

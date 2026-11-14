@@ -1,16 +1,17 @@
 import Foundation
 
-/// TypeScript definition (v1, line-based).
+/// TypeScript definition.
 ///
-/// Built on top of `JavaScriptLanguage`: it reuses JS's comment / string /
-/// number rules and full keyword set, adding the TypeScript-only keywords and
+/// Built on top of `JavaScriptLanguage`: it reuses JS's lexical profile,
+/// number rule and full keyword set, adding the TypeScript-only keywords and
 /// the built-in primitive type names. Primitive types (`string`, `number`,
 /// `boolean`, …) are classified as `.type`; declaration/modifier words
 /// (`interface`, `readonly`, `public`, …) as `.keyword`.
 ///
-/// Trade-offs: inherits every JS line-approximation (block comments, template
-/// literals, no regex literals). Only the `.ts` extension is registered — JSX
-/// (`.tsx`) is out of scope for v1, so its angle-bracket syntax is not handled.
+/// Shares JavaScript's `lexicalProfile` (cross-line block comments, template
+/// literals with `${…}`; regex literals not yet highlighted). Only the `.ts`
+/// extension is registered — JSX (`.tsx`) is out of scope for v1, so its
+/// angle-bracket syntax is not handled.
 public enum TypeScriptLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -48,11 +49,12 @@ public enum TypeScriptLanguage {
                 JavaScriptLanguage.wordRule(typeNames, kind: .type),
                 JavaScriptLanguage.wordRule(keywords, kind: .keyword),
                 // Built-in globals / utility types last (disjoint from the
-                // above); strings and comments are consumed earlier.
+                // above); rules only run in code segments.
                 JavaScriptLanguage.wordRule(builtins, kind: .builtin),
             ],
             keywords: keywords + typeNames,
-            builtins: builtins
+            builtins: builtins,
+            lexicalProfile: JavaScriptLanguage.lexicalProfile
         )
     }
 }

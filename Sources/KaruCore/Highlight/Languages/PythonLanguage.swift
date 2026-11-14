@@ -68,8 +68,7 @@ public enum PythonLanguage {
                 ),
             ],
             keywords: keywords,
-            builtins: builtins,
-            multilineStringDelimiters: ["\"\"\"", "'''"]
+            builtins: builtins
         )
     }
 }
