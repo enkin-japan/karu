@@ -52,7 +52,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ✅ 自动化通过；一致率深色 94.9%、浅色 91.6% |
 | T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ✅ T17.8a 子语言、T17.8b JSX/TSX、T17.8c 光标处子语言；一致率深色 97.3%、浅色 94.2% |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ✅ 选手写解析器（内存约 1/10、时延约 1/5，容错 58/58 对 57/58） |
-| T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ⬜ |
+| T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ⬜ |
 | T17.12 | 项目文件夹设置与 SQLite 索引、后台全量/增量、清除与占用显示 | T17.4 | implementer | ⬜ |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ⬜ |
@@ -666,6 +666,45 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - Python `match` 模式、TS 解构的左侧模式、仅类型的导入导出、`.js`/`.jsx` 与嵌入片段都还没测。
     - 要接入 `EditJournal`、版本号和分片调度；10 MB 文件需要分片或后台执行。按 §8.3，大文件只保留模块级摘要。
     - 工作量粗估：语法补全约 1 周，容错 1–2 周，接入和测试约 1 周。
+
+- T17.10 内置类型表（main 定接口并改打包，implementer 实现，main 审查 diff 并改查找路径，2026-11-15）：
+  - **来源**（固定版本，每次生成都校验）：
+    - typeshed commit `983d92a71d4345d4272f2d022745efc434990674`（2026-11-14）。浅拉这个 commit 后，每次都核对 HEAD、工作区是否干净，并跑 `git fsck`。
+    - npm `typescript@6.0.3`，校验 sha512 integrity 和 shasum。7.0.2 是 Go 原生编译器，没有 JS 编译器 API，所以用 6.0.3。
+    - 源码缓存在 `/Volumes/enkin/project-support/KaruM17-TypeSources/`。
+  - **生成**：
+    - `scripts/m17/gen-type-tables.sh`：缺源码时下载并校验，再生成表；加 `--check` 时和仓库里的版本逐字节比对。
+    - Python 侧 `gen_python_types.py` 用 `ast` 读存根，按 3.13 和 darwin 求值，遵守 `VERSIONS`；遇到不认识的条件直接报错。
+    - TS 侧 `gen-ts-types.mjs` 用编译器 API 做语法解析，从 `lib.esnext` 沿引用收齐 87 个 ES 文件和 3 个 DOM 文件，跨文件合并声明。
+    - 两侧共用 `ktt_writer.py` 写二进制。
+    - 确定性：连跑两次、换哈希种子，输出都逐字节一致（main 复核了 `--check`）。
+  - **格式 `.ktt`**：小端，16 B 文件头加区段目录。每个区段有排序索引（每项 12 B）、字符串表和 LEB128 条目区。打开文件只读文件头，每个条目可以单独解码。Python 只有一个区段；TS 分 ES 和 DOM 两个独立区段。
+  - **加载**：
+    - `Sources/KaruCore/Inference/`：`TypeTableFile`（mmap，所有长度都做边界检查）、`TypeTableModel`、`TypeTableStore`（`Sendable`，首次查询才映射文件，LRU 默认上限 4 MB，可 `release()`）、`TypeExpr`（Python 和 TS 类型语法的小型 AST 加解析器）。
+    - `pythonResolve` 跟随再导出、星号导入和子模块，最多 8 跳。`tsSymbol` 先查 ES，查不到才查 DOM。
+  - **main 的修改**：
+    - 查找顺序改为：App 包、`KARU_TYPE_TABLES`、按可执行文件位置推出的仓库路径（未打包的 `.build/*/KaruApp`，visual-smoke 和 mem-benchmark 用它），最后是只在 debug 构建里出现的 `#filePath`。这样 release 二进制里不含开发机路径。
+    - 顺带修了一个旧问题：`KARU_SCROLLTEST` 探针把 `/Volumes/enkin/...` 绝对路径编进了已发布的 App，现在改为相对工作目录，单独提交。
+    - 修改后 release 二进制中的开发机路径为 0。
+  - **打包（main）**：`bundle-macos.sh` 把 `assets/typetables/*.ktt` 和 `SOURCES.txt` 复制到 `Contents/Resources/TypeTables/`。表文件是 Apache-2.0 来源的衍生数据，所以 `docs/THIRD-PARTY-NOTICES.md` 也随包分发到 `Contents/Resources/`，T17.7 留下的「声明是否进包」就此定为进包。实跑打包脚本，签名校验通过，App 包 9.6 MB。
+  - **数量与体积**：
+    - `python-stdlib.ktt` 748 KB：574 个模块、2,757 个类、13,998 个成员。
+    - `typescript-lib.ktt` 518 KB：ES 368 个符号、DOM 2,124 个符号。
+    - 重载上限 24，只有 `tkinter.Wm.wm_attributes` 被截。
+  - **校验**：表里全部类型文本都能被 `TypeExpr` 解析（Python 47,228 条、TS 23,249 条，0 失败），由 Swift 测试覆盖全表。
+  - **时延与内存**（debug，冷首次查询）：
+    - 首次查询 p50：builtins 0.82 ms、typing 0.33 ms、os 0.34 ms、Array 0.07 ms、HTMLElement 0.05 ms。
+    - 常用 Python 组合（builtins、typing、os、pathlib、collections、re、json）：LRU 估算 518 KB，footprint 增加约 0.8 MB。
+    - 常用 TS 组合：约 0.2 MB。
+    - 两者都远低于第 11 节第 ② 项的预算。
+  - **许可证**：`docs/THIRD-PARTY-NOTICES.md` 新增两节：typeshed（LICENSE 原文，含 Apache-2.0 和 MIT 部分）；TypeScript 6.0.3（Apache-2.0 声明、修改说明、包内 `ThirdPartyNoticeText.txt` 全文，含 W3C/WHATWG DOM）。
+  - **测试**：
+    - 新增 `TypeTableTests`（21 个，5 个套件），覆盖：Python 与 TS 的指定用例；3.13 新增的 API 存在，已移除的不在，darwin 专有的存在；只查 ES 符号时不碰 DOM 区段；全表 `TypeExpr` 解析。
+    - 新增可选基准 `TypeTableBenchmarkTests`（`KARU_T1710_BENCH=1`）。
+    - 全量 **1323 tests / 109 suites** 通过（main 复跑）；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **已知限制**：
+    - `lib.es2025.iterator` 模块里只在本文件可见的辅助类型不进表，推断时按未知处理。
+    - Python 枚举类只看直接基类判断。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

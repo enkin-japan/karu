@@ -14,6 +14,16 @@ cp .build/release/KaruApp "$APP_DIR/Contents/MacOS/Karu"
 cp assets/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 # 终端辅助工具（T8.5）：用户可从 bundle 内 symlink 到 PATH 使用
 install -m 0755 scripts/karu "$APP_DIR/Contents/Resources/karu"
+# 内置类型表（M17 T17.10）：typeshed / TypeScript lib 生成的只读表，运行时 mmap、按需解码。
+# 只复制 .ktt 与来源说明；许可证见 docs/THIRD-PARTY-NOTICES.md。
+if ! ls assets/typetables/*.ktt >/dev/null 2>&1; then
+    echo "ERROR: assets/typetables/*.ktt missing (run scripts/m17/gen-type-tables.sh)" >&2
+    exit 1
+fi
+mkdir -p "$APP_DIR/Contents/Resources/TypeTables"
+install -m 0644 assets/typetables/*.ktt assets/typetables/SOURCES.txt "$APP_DIR/Contents/Resources/TypeTables/"
+# 第三方声明（VS Code 配色 MIT、typeshed / TypeScript lib Apache-2.0）随包分发。
+install -m 0644 docs/THIRD-PARTY-NOTICES.md "$APP_DIR/Contents/Resources/THIRD-PARTY-NOTICES.md"
 
 # Sparkle 一键更新框架（M11）：SPM binary artifact → Contents/Frameworks。
 # 可执行文件带 @executable_path/../Frameworks rpath（见 Package.swift）。

@@ -115,6 +115,7 @@ Sources/
     Highlight/          HighlightEngine（viewport 调度）、LanguageDefinition 协议、Languages/ 各语言定义
     Search/             正则搜索替换栏（NSRegularExpression）
     Completion/         关键字表、文档分词索引、补全弹窗
+    Inference/          内置类型表（TypeTableStore，mmap 懒加载）与 TypeExpr 类型表达式解析（M17 T17.10 起）
     Format/             JSON/JSONL/XML/plist pretty-printer
     Settings/           偏好（每语言缩进宽度等，UserDefaults）+ 偏好窗口
     TextModel/          LineIndex（换行偏移索引）等共享数据结构
@@ -123,6 +124,20 @@ Tests/
 scripts/
   bundle-macos.sh       SPM 产物 → Karu.app 打包（红线文件，仅主会话可改）
 ```
+
+**内置类型表（M17 T17.10）**：`scripts/m17/gen-type-tables.sh` 从固定版本的 typeshed
+（`stdlib/`，按 Python 3.13 / darwin 求值）和 `typescript` npm 包（lib.es5…esnext、lib.dom*）
+生成 `assets/typetables/python-stdlib.ktt` 与 `typescript-lib.ktt`（来源与哈希见同目录 `SOURCES.txt`，
+许可证见 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)），打包时复制到 `Contents/Resources/TypeTables/`。
+- 格式 `.ktt`（小端，区域 4 字节对齐）：16 字节文件头（`KTT1`、版本、语言、区段数）+ 每区段 32 字节目录；
+  每个区段自带按名字 UTF-8 字节排序的索引（名字串号、条目偏移、长度）、字符串表和条目区。
+  条目是 LEB128 变长整数序列，字符串用串号引用，每个条目可单独解码。Python 一个区段（按模块），
+  TS 分 ES、DOM 两个区段（按全局符号，命名空间成员用限定名），只查 ES 符号不会读到 DOM 区段。
+  详细字段见 `Inference/TypeTableFile.swift` 文件头与 `scripts/m17/ktt_writer.py`。
+- 加载：`TypeTableStore` 初始化不做任何事；首次查询某语言时只读 mmap 该文件、校验文件头，
+  每次查询只解码一个模块或符号，结果进按估算字节封顶的 LRU（默认 4 MB，计入 §11 ②），
+  `release()` 清空并解除映射。查找顺序：App 包 `TypeTables/`、`KARU_TYPE_TABLES`、仓库 `assets/typetables/`。
+- 类型统一存为规范化文本，`TypeExpr.parse(_:syntax:)` 按 Python 或 TS 语法解析；测试保证表中每条类型文本都能解析。
 
 支持语言（21 种）：Markdown, JSON, JSONL, Python, HTML, CSS, JavaScript/Node（含 `.jsx`）, TypeScript,
 TypeScript JSX（`.tsx`，M17 T17.8b）, C, C++, C#, Java, Bash/Shell, SQL, XML/plist, YAML, TOML, Go, Rust, Swift。

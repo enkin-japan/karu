@@ -341,6 +341,30 @@
 - 维护：手写路线不新增依赖，包体约 +0.3 MB；tree-sitter 包体约 +3.5 MB，且新增 C 依赖，语法升级时无法审阅 diff。手写路线的代价是代码量约 4,700 行，到产品质量还要 3–4 周（语法补全、容错打磨、接入调度），T17.11 承担这部分工作。
 - 两个原型都在 `/Volumes/enkin/project-support/KaruM17-ParserProto/`，没有提交。手写原型作为 T17.11 的起点，tree-sitter 原型只作为对照数据保留。
 
+**T17.10 接口（main，2026-11-15）**：
+- **来源**（只用官方仓库，固定版本并校验哈希）：
+  - Python：typeshed（`python/typeshed`），固定到某个 commit，取 `stdlib/` 全部存根。`sys.version_info` 按 3.13 求值，`sys.platform` 按 `darwin` 求值。
+  - TS：`typescript` npm 包，固定版本并校验 integrity，取 `lib.es*.d.ts`（到 ESNext）和 `lib.dom*.d.ts`。
+  - 源码缓存在仓库外的 `/Volumes/enkin/project-support/KaruM17-TypeSources/`，不进仓库。
+- **生成**：
+  - `scripts/m17/gen-type-tables.sh` 负责下载、校验，再调用生成器。Python 生成器用标准库 `ast` 读 `.pyi`；TS 生成器用 Node 跑 TypeScript 编译器 API，开发机现有 Node 即可，产品不依赖 Node。
+  - 输出提交到 `assets/typetables/`。同样的输入两次生成的结果逐字节相同。
+- **格式**：每种语言一个二进制文件，用 mmap 读取，只读、可跨线程共享。
+  - 文件头加排序索引：Python 按模块名，TS 按全局符号名。DOM 符号放在单独的区段，只在查询到 DOM 符号时才触碰。
+  - 条目内容：
+    - 类：名字、基类、类型参数、成员。
+    - 成员：名字、种类（方法、类方法、静态方法、属性、字段）、签名、类型。
+    - 签名：参数名、参数种类、注解、是否有默认值，以及返回类型；重载全部保留，但有上限。
+    - 模块级函数、变量、`__all__`，以及再导出（`from x import y as y`、`import x as x`）。
+    - TS 另有：interface（含 extends、调用签名、构造签名、索引签名）、`declare var`、类型别名、命名空间成员（用限定名）。
+  - 类型表达式规范化为文本，放进共享字符串表。
+  - 同时提供一个小型 `TypeExpr` 解析器，支持 Python 和 TS 两种类型语法。生成时每条类型文本都必须能被它解析，T17.11 直接复用。
+- **加载**：
+  - `TypeTableStore`（`Sendable`）在第一次查询时 mmap 文件，解码结果缓存在有字节上限的 LRU 里，计入第 11 节第 ② 项。关闭补全模块时释放。
+  - 表文件的查找顺序：App 包的 `Contents/Resources/TypeTables/`、环境变量 `KARU_TYPE_TABLES`、开发时按源码路径推出的仓库 `assets/typetables/`。
+  - main 负责改 `bundle-macos.sh`，把表文件复制进 App 包。
+- **许可证**：typeshed 和 TypeScript 的声明文件都是 Apache-2.0；DOM 声明另有 W3C/WHATWG 来源说明。全文和版本写进 `docs/THIRD-PARTY-NOTICES.md`。
+
 ### 8.3 内存与时延门槛
 
 - **1000 行以内的文件**：推断（语法树、模块摘要、函数体推断缓存，以及该文件用到的导入摘要）带来的配对增量 ≤10 MB。用变量和类型都足够多样的样本实测，不用重复名字的夹具。
