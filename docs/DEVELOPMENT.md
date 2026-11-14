@@ -87,6 +87,11 @@
   内置类型表（T17.10）：`bash scripts/m17/gen-type-tables.sh` 重新生成（源码缓存在仓库外
   `/Volumes/enkin/project-support/KaruM17-TypeSources/`，可用 `KARU_TYPE_SOURCES` 改），`--check` 重新生成到临时目录并与
   `assets/typetables/` 逐字节比对；冷查询与解码内存用 `KARU_T1710_BENCH=1 swift test --filter TypeTableBenchmark`（单独运行）。
+  类型推断（T17.11b，`Inference/`）：按键到成员候选的冷/热时延、推断部分与配对内存用
+  `KARU_TYPE_TABLES=$PWD/assets/typetables KARU_T1711B_BENCH=1 swift test -c release -Xswiftc -enable-testing --filter TypeInferenceBenchmark`
+  （单独运行；release 测试进程找不到仓库路径，须设 `KARU_TYPE_TABLES`），报告写到 `.build/m17-baseline/t1711b-bench-<config>.txt`；
+  带签名摘要的成员弹窗截图：`KARU_T1711B_SHOTS=<目录> swift test --filter TypeInferenceScreenshots`。
+  `PerfLog` 事件 `completion.inference`（`docLen`、`members`，-1 为未知类型）。
 - 项目文件夹索引（M17 T17.12，`Workspace/`）：库在 `~/Library/Application Support/dev.enkin.TinyEditor/Index/<hash>.sqlite`
   （裸二进制无 bundle ID 时为 `…/Application Support/Karu/Index/`），文件名是标准化路径的 FNV-1a 64 位十六进制，
   `meta` 表记录对应文件夹。只读查看：`sqlite3 "file:<库>?mode=ro" "select value from meta where key='folder'"`、

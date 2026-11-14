@@ -56,8 +56,8 @@ struct CompletionRowContent: Equatable {
     let matchedRanges: [NSRange]
     let category: CompletionCategory
     let label: String
-    /// Seam: members and functions append an inferred type or signature
-    /// summary here (T17.11+); nothing fills it yet.
+    /// An inferred member's signature summary or type (T17.11b), shown
+    /// after the label; nil for other candidates.
     var detail: String?
 
     init(candidate: Candidate, language: AppLanguage?) {
@@ -65,14 +65,14 @@ struct CompletionRowContent: Equatable {
         matchedRanges = CompletionRowContent.clamped(candidate.matchedRanges, length: (candidate.name as NSString).length)
         category = CompletionCategory.of(candidate)
         label = category.label(language: language)
-        detail = nil
+        detail = candidate.detail
     }
 
     /// The right-hand text: the label, then the detail when there is one.
     var trailingText: String { detail.map { label + "  " + $0 } ?? label }
 
-    /// VoiceOver: name, category (and detail).
-    var accessibilityLabel: String { name + ", " + trailingText }
+    /// VoiceOver: name, category, detail.
+    var accessibilityLabel: String { [name, label, detail].compactMap { $0 }.joined(separator: ", ") }
 
     static func clamped(_ ranges: [NSRange], length: Int) -> [NSRange] {
         ranges.compactMap { range in
@@ -172,7 +172,7 @@ final class CompletionCellView: NSTableCellView {
         }
         nameField.lineBreakMode = .byTruncatingMiddle
         labelField.font = CompletionListMetrics.labelFont
-        labelField.lineBreakMode = .byClipping
+        labelField.lineBreakMode = .byTruncatingTail
         labelField.alignment = .right
         textField = nameField
         setAccessibilityElement(true)
@@ -217,7 +217,16 @@ final class CompletionCellView: NSTableCellView {
     private func layoutFields() {
         let bounds = self.bounds
         let inset = CompletionListMetrics.textInset
-        let labelText = content.map { _ in CompletionListMetrics.labelWidth(labelField.stringValue) } ?? 0
+        var labelText = content.map { _ in CompletionListMetrics.labelWidth(labelField.stringValue) } ?? 0
+        if let content, content.detail != nil {
+            // The name keeps its width; a summary that does not fit is cut
+            // at its end (the category label itself always shows).
+            let available = bounds.width - CompletionListMetrics.leadingPadding - CompletionListMetrics.trailingPadding
+                - CompletionListMetrics.gap
+            let name = CompletionListMetrics.nameWidth(content.name)
+            let labelOnly = CompletionListMetrics.labelWidth(content.label)
+            labelText = max(min(labelOnly, available), min(labelText, available - name))
+        }
         let labelHeight = labelField.intrinsicContentSize.height
         let nameHeight = nameField.intrinsicContentSize.height
         // Text extents: the label's text ends `trailingPadding` before the

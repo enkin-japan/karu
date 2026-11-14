@@ -53,7 +53,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ✅ T17.8a 子语言、T17.8b JSX/TSX、T17.8c 光标处子语言；一致率深色 97.3%、浅色 94.2% |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ✅ 选手写解析器（内存约 1/10、时延约 1/5，容错 58/58 对 57/58） |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
-| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | 🔶 11a 解析器产品化完成；11b–d 待做 |
+| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | 🔶 11a 解析器、11b Python 推断完成（成员门槛：禁用 0、前十召回 100%）；11c JS/TS、11d 静态语言待做 |
 | T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 +5–6 MB 超 5 MB 目标（分配器保留页，T17.15 处理）；TCC 与三语布局待真机 |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ⬜ |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ⬜ |
@@ -786,6 +786,52 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - 「文稿」里的项目文件夹，重启后是否要再次授权。添加时会保存书签（能做安全作用域书签时就做，否则存普通书签），启动时用 `startAccessingSecurityScopedResource` 解析。
     - 三语下设置界面的布局。
     - 真实的打开面板，以及索引时状态是否实时刷新。
+
+- T17.11b 推断核心与 Python（main 定接口，implementer 实现，main 审查并复跑门槛，2026-11-15）：
+  - **代码**（`Sources/KaruCore/Inference/`）：
+    - `InferredType`：语言无关的类型模型。文档内的类按限定名标识，跨编辑仍有效；联合取交集；摘要截在 48 个单位以内，保留返回类型。
+    - `InferenceCache`：同时限字节和条数的 LRU，以及步数加时间的预算。
+    - `PythonTypeTables`：表侧缓存，有字节上限。
+    - `PythonModuleView`：带名字索引，按编辑日志增量维护，用惰性求值加递归保护。
+    - `PythonEvaluator`：流分析，处理绑定、分支合并、提前返回、收窄、容器元素证据、残缺代码、返回值推断（含跨版本缓存）。
+    - `PythonExpressions`：重载选择、TypeVar 求解、C3 MRO 与泛型代换、迭代 / with / await 协议、装饰器。
+    - `PythonDocModels`：文档内函数和类的模型。
+    - `TypeInferenceService`：每个窗口一个入口，一个快照版本对应一个会话，同一个点号后继续键入时复用成员。预算覆盖整个请求，超出就返回未知，在同一个点号后不再重试。
+  - **接入**：
+    - `Candidate.detail` 一路带到弹窗行，显示在类别标签后面；VoiceOver 读「名字, 类别, 摘要」。
+    - 有可信类型时不混入文档词。
+    - completion、typeInference 任一关闭，或切换语言，都会释放推断状态和共享表；`isRuntimeStateReleased` 计入推断状态。
+    - 新增 PerfLog `completion.inference`。没有新增文案。
+  - **精确度规则**（已写入方案 §8.1）：
+    - 只列属于接收者类型的成员。顺序：自身声明、继承的、`_x`、dunder。
+    - 联合类型取各非 None 成员类型共有的成员；`Optional[X]` 未收窄时列 X 的成员。
+    - 以下情况一律按未知处理，走用法证据：联合里含未知、未约束的 TypeVar、未知装饰器、相对导入或项目模块（等 T17.13）、超出预算。
+  - **门槛**（20 条 Python 成员样本，HEAD → 本次，main 复跑）：
+    - 调参集：top1 3/8 → **8/8**，前十召回 9/19 → **19/19**。
+    - holdout：top1 2/5 → **5/5**，前十召回 0/3 → **3/3**。
+    - 禁用名命中 **0**。
+    - 唯一没过的是 holdout py-mem-20 的 top3：`reconfigure` 是 TextIOWrapper 自身的成员，按「自身声明在前」排进前三，挤掉了继承来的 `read`。没有用 holdout 调参。
+    - 与 HEAD 重新生成的版本相比，只有 17 行 py-mem 不同；其余补全样本和全部着色导出逐字节相同。
+  - **时延**（release，负载 2–4）：
+    - sample_1000.py：热 `.` 端到端 p50 / p95 为 8.1 / 10.5 ms，其中推断 0.21 / 0.23 ms；冷启动 14.9 ms。
+    - 10 MB Python（摘要模式）：热 `.` 端到端 24.3 / 26.2 ms，其中推断 11.4 / 11.7 ms（含语法更新约 5 ms）。
+    - 两种文件的端到端都在 50 ms 以内。
+    - debug 下，10 MB 文件的增量摘要更新约 88 ms，超出预算，所以返回未知，Release 不受影响。
+  - **内存**：
+    - sample_1000.py 在 24 个位置推断：配对增量 malloc 3.5 MB、footprint 3.6–3.7 MB，满足 ≤10 MB。其中推断自己持有 0.41 MB，其余约 3 MB 推测来自带摘要的弹窗行和文字测量，没有精确归因。
+    - 10 MB 文件：语法摘要 0.89 MB，语句 LRU ≤2 MB，返回值缓存和名字索引 0.31 MB（上限 0.5 MB），类型表 LRU 0.37 MB（上限 4 MB）。
+    - mem-benchmark 配对 A/B（release，各 3 轮）：HEAD 与本次完全一致，都是 26 / 35 / 79 MB。正式场景不会触发补全。
+  - **新发现**：mem-benchmark 的 10 MB Python 场景，HEAD 也是 **79 MB**，而 v0.12.0 发布时是 63 MB，即 M17 已有提交让它涨了约 16 MB（上限 99 MB，目标 50–60 MB）。main 另派一个只读的二分任务，找出是哪次提交引起的。
+  - **测试**：
+    - 新增 `TypeInferenceTests`（58 个，9 个套件），另有可选的截图（`KARU_T1711B_SHOTS`）和基准（`KARU_T1711B_BENCH`）。
+    - 全量 **1428 tests / 130 suites** 通过（main 复跑）；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **界面**：main 看过深色中文截图，宽度在范围内，摘要显示正常。小瑕疵：类别标签跟着摘要长度浮动，不成一列，留到 T17.15 打磨。
+  - **已知限制**：
+    - 重载选择是启发式的。
+    - 不从调用点反推未注解的参数；lambda 返回值和生成器的 yield 类型推不出。
+    - 函数式 `namedtuple` / `NewType` / `TypedDict` 推不出。
+    - `super()` 只是近似。
+    - 在同一个点号后复用成员时，看不到这期间在后面新增的类成员。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

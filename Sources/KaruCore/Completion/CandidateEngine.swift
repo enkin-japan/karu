@@ -26,8 +26,11 @@ public struct CompletionRequest {
     /// The analysis scanner of the language (`CandidateEngine.contextScanner`);
     /// nil: no lexical structure (plain text).
     public var scanner: LexicalScanner?
-    /// Seam for T17.11: members of the receiver's inferred (trusted) type.
-    /// When non-nil, usage evidence is never mixed in (plan §5.4).
+    /// Members of the receiver's inferred (trusted) type (T17.11b,
+    /// `TypeInferenceService`), each with its ranking depth in `scopeDepth`
+    /// and its summary in `detail`. When non-nil, usage evidence is never
+    /// mixed in (plan §5.4); when non-empty, document words are left out
+    /// too (plan §13: nothing that does not belong to the type).
     public var inferredMembers: [Candidate]?
 
     public init(text: NSString, caret: Int, languageIdentifier: String) {
@@ -223,6 +226,7 @@ public struct CandidateEngine {
         let scopeDepth: Int?
         let location: Int?
         let fuzzy: Bool
+        var detail: String? = nil
     }
 
     /// The previous request's matched set (plan §5.3.6).
@@ -364,6 +368,7 @@ public struct CandidateEngine {
             var candidate = Candidate(name: item.name, kind: item.kind, source: item.source,
                                       matchTier: match.tier, matchedRanges: match.ranges,
                                       scopeDepth: item.scopeDepth, location: item.location)
+            candidate.detail = item.detail
             if var existing = byName[item.name] {
                 Self.merge(&existing, candidate)
                 byName[item.name] = existing
@@ -390,8 +395,9 @@ public struct CandidateEngine {
             }
         }
         // Words of the scanned window (typed since the last index build).
+        let typedMembers = context.memberAccess != nil && !(request.inferredMembers?.isEmpty ?? true)
         let wantsWords = !(context.memberAccess != nil && prefixLength == 0)
-            && !(codeLike && request.manual && prefixLength == 0)
+            && !(codeLike && request.manual && prefixLength == 0) && !typedMembers
         if wantsWords {
             for (name, _) in window.words where byName[name] == nil && name.utf16.count >= 2 {
                 if let match = matcher.match(name, allowFuzzy: false) {
@@ -467,7 +473,8 @@ public struct CandidateEngine {
             if let inferred = request.inferredMembers {
                 for candidate in inferred {
                     out.items.append(SourceItem(name: candidate.name, kind: candidate.kind, source: .inferredType,
-                                                scopeDepth: nil, location: candidate.location, fuzzy: true))
+                                                scopeDepth: candidate.scopeDepth, location: candidate.location,
+                                                fuzzy: true, detail: candidate.detail))
                 }
                 out.evidence = out.evidence || !inferred.isEmpty
             }
@@ -500,7 +507,10 @@ public struct CandidateEngine {
                 }
                 out.evidence = out.evidence || !usage.isEmpty
             }
-            if prefixLength > 0 { gatherWords(request, matcher: matcher, into: &out) }
+            // A trusted type lists only its own members (plan §13).
+            if prefixLength > 0, request.inferredMembers?.isEmpty ?? true {
+                gatherWords(request, matcher: matcher, into: &out)
+            }
             return
         }
 
@@ -620,6 +630,9 @@ public struct CandidateEngine {
             existing.kind = other.kind
             existing.scopeDepth = other.scopeDepth
             existing.location = other.location ?? existing.location
+            existing.detail = other.detail ?? existing.detail
+        } else if existing.detail == nil {
+            existing.detail = other.detail
         }
         if other.matchTier < existing.matchTier {
             existing.matchTier = other.matchTier

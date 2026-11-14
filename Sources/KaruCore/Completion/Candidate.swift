@@ -47,12 +47,12 @@ public enum CandidateKind: String, Sendable, CaseIterable {
 }
 
 /// Where a candidate comes from, in ranking order (plan §5.3 step 3). The
-/// reserved sources are seams for T17.11 (inferred types), T17.12–13
-/// (imports) and T17.14 (workspace index); nothing produces them yet.
+/// reserved sources are seams for T17.12–13 (imports) and T17.14 (workspace
+/// index); nothing produces them yet.
 public enum CandidateSource: UInt8, Sendable, CaseIterable, Comparable {
     /// A binding visible in the current scope chain (current function first).
     case scope
-    /// Reserved: a member of the receiver's inferred type (T17.11).
+    /// A member of the receiver's inferred type (T17.11).
     case inferredType
     /// A member of the enclosing class (`self.` / `this.`).
     case selfMember
@@ -142,6 +142,9 @@ public struct Candidate: Sendable, Equatable {
     public var nearbyDistance: Int?
     /// Position in the recent-accept list (0 = most recent).
     public var recentRank: Int?
+    /// Signature summary or type of an inferred member (T17.11, plan §5.5),
+    /// shown after the category label.
+    public var detail: String?
 
     public var identity: CandidateIdentity { CandidateIdentity(name: name, group: kind.group) }
 

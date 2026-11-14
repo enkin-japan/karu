@@ -109,6 +109,9 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     /// Releasable runtime state: the candidate engine's caches.
     private var engine = CandidateEngine()
+    /// Releasable runtime state: type inference for member access (T17.11b),
+    /// created on the first Python member request while `typeInference` is on.
+    private var typeInference: TypeInferenceService?
     /// Recently accepted candidates (this window only, ≤ 32).
     private var recent = RecentAccepts()
 
@@ -153,7 +156,17 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     /// True when no runtime index state is held — guaranteed after the module is
     /// switched off (the acceptance-criteria "released" state).
-    public var isRuntimeStateReleased: Bool { wordIndex == nil && !engine.holdsState && recent.entries.isEmpty }
+    public var isRuntimeStateReleased: Bool {
+        wordIndex == nil && !engine.holdsState && recent.entries.isEmpty && isInferenceStateReleased
+    }
+
+    /// True when no type-inference state is held (T17.11b): after the
+    /// completion or the type-inference module is switched off, a language
+    /// change, or before the first member request.
+    var isInferenceStateReleased: Bool { typeInference == nil }
+
+    /// The window's type inference (tests, benchmarks).
+    var typeInferenceForTesting: TypeInferenceService? { typeInference }
 
     /// Whether the `completion` module is enabled.
     public var isModuleEnabled: Bool { moduleEnabled }
@@ -287,6 +300,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             let dollar = wordIndex?.allowsDollar
             applyLanguageKeywords()
             engine.reset()
+            typeInference = nil
             // `$` is a word character in JS / TS only: re-tokenize when that flips.
             if moduleEnabled, let dollar, dollar != IdentifierText.allowsDollar(languageIdentifier) {
                 scheduleWordIndexBuild(after: 0)
@@ -295,6 +309,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             engine.dropIndex(unlessVersion: analysis.publishedDeclarations?.snapshot.version)
         case .released:
             engine.reset()
+            releaseInference()
         }
     }
 
@@ -373,6 +388,10 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     // MARK: - Module gating
 
     @objc private func moduleSettingsChanged(_ note: Notification) {
+        if (note.object as? String) == FeatureModule.typeInference.rawValue {
+            if !moduleSettings.isEnabled(.typeInference) { releaseInference() }
+            return
+        }
         guard (note.object as? String) == FeatureModule.completion.rawValue else { return }
         let nowEnabled = moduleSettings.isEnabled(.completion)
         guard nowEnabled != moduleEnabled else { return }
@@ -392,7 +411,16 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         wordsJournal.reset()
         engine.reset()
         recent.removeAll()
+        releaseInference()
         dismiss()
+    }
+
+    /// Drops this window's inference state and the shared type-table caches
+    /// (the module is off for every window).
+    private func releaseInference() {
+        typeInference?.release()
+        typeInference = nil
+        PythonTypeTables.shared.release()
     }
 
     // MARK: - TextStorageObserving
@@ -407,6 +435,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
                                                   changeInLength: delta, textStorage: textStorage)
         }
         editCount &+= 1
+        typeInference?.noteEdit(editedRange: editedRange, changeInLength: delta)
         if panel != nil { scheduleStaleCheck() }
         guard moduleEnabled, wordIndex != nil else { return }
         wordsJournal.record(editedRange: editedRange, changeInLength: delta)
@@ -552,7 +581,29 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         request.wordsJournal = wordsJournal
         request.recent = recent
         request.scanner = contextScanner
+        request.inferredMembers = inferredMembers(text: text, caret: selection.location)
         return request
+    }
+
+    /// Members of the receiver's inferred type when the caret types a
+    /// member name after `.` in Python (T17.11b); nil otherwise (unknown
+    /// type, another language, type inference off).
+    private func inferredMembers(text: NSString, caret: Int) -> [Candidate]? {
+        guard languageIdentifier == "python", moduleSettings.isEnabled(.typeInference), caret <= text.length,
+              let start = IdentifierText.runStart(before: caret, in: text, dollar: false), start > 0,
+              text.character(at: start - 1) == 46 else { return nil }
+        let dot = start - 1
+        if dot > 0, text.character(at: dot - 1) == 46 { return nil }
+        let service = typeInference ?? TypeInferenceService(tables: .shared)
+        typeInference = service
+        let begin = PerfLog.isEnabled ? PerfLog.now() : 0
+        let members = service.memberCandidates(analysis: analysis, text: text, dot: dot)
+        if PerfLog.isEnabled {
+            PerfLog.record("completion.inference", since: begin,
+                           ["docLen": text.length, "members": members?.count ?? -1,
+                            "reused": service.statistics.reused])
+        }
+        return members
     }
 
     /// Recomputes the candidates at the caret, then shows / refilters /
