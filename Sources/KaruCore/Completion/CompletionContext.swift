@@ -28,6 +28,8 @@ public struct CompletionContext: Sendable, Equatable {
         public let receiverRange: NSRange?
         /// The receiver is the language's `self` / `this` (or Python `cls`).
         public let isSelfOrThis: Bool
+        /// `.`; `->` (C, C++) or `::` (Rust, C++) since T17.11d.
+        public internal(set) var accessOperator = "."
     }
 
     public let languageIdentifier: String
@@ -79,6 +81,31 @@ public struct CompletionContext: Sendable, Equatable {
                                  memberAccess: member)
     }
 
+    /// The same context as an ordinary (non-member) completion.
+    func withoutMemberAccess() -> CompletionContext {
+        CompletionContext(languageIdentifier: languageIdentifier, caret: caret, position: position, prefix: prefix,
+                          prefixRange: prefixRange, replacementRange: replacementRange, identifier: identifier,
+                          memberAccess: nil)
+    }
+
+    /// A two-unit access operator right before `start`: `->` in C / C++,
+    /// `::` in Rust / C++ (T17.11d); its location and length. A `.` is
+    /// handled by `memberAccess(before:…)` directly.
+    static func accessOperator(before start: Int, in text: NSString,
+                               languageIdentifier: String) -> (location: Int, length: Int)? {
+        guard start >= 2, start <= text.length else { return nil }
+        let a = text.character(at: start - 2)
+        let b = text.character(at: start - 1)
+        if a == 45, b == 62, languageIdentifier == "c" || languageIdentifier == "cpp" {           // ->
+            return (start - 2, 2)
+        }
+        if a == 58, b == 58, languageIdentifier == "rust" || languageIdentifier == "cpp" {        // ::
+            if start >= 3, text.character(at: start - 3) == 58 { return nil }
+            return (start - 2, 2)
+        }
+        return nil
+    }
+
     /// Receiver words per language.
     static func selfNames(_ languageIdentifier: String) -> Set<String> {
         switch languageIdentifier {
@@ -96,8 +123,21 @@ public struct CompletionContext: Sendable, Equatable {
     /// decimal point): the member access and its receiver chain.
     static func memberAccess(before start: Int, in text: NSString, languageIdentifier: String,
                              dollar: Bool) -> MemberAccess? {
-        guard start > 0, text.character(at: start - 1) == 46 else { return nil }   // .
-        let dot = start - 1
+        guard start > 0 else { return nil }
+        if text.character(at: start - 1) != 46 {                                    // .
+            // `->` / `::` (T17.11d): the receiver is read like a `.` one.
+            guard let op = accessOperator(before: start, in: text, languageIdentifier: languageIdentifier),
+                  var access = memberAccess(endingAt: op.location, in: text, languageIdentifier: languageIdentifier,
+                                            dollar: dollar) else { return nil }
+            access.accessOperator = text.substring(with: NSRange(location: op.location, length: op.length))
+            return access
+        }
+        return memberAccess(endingAt: start - 1, in: text, languageIdentifier: languageIdentifier, dollar: dollar)
+    }
+
+    /// The receiver chain ending at the access operator at `dot`.
+    private static func memberAccess(endingAt dot: Int, in text: NSString, languageIdentifier: String,
+                                     dollar: Bool) -> MemberAccess? {
         guard dot > 0 else { return MemberAccess(receiver: nil, receiverRange: nil, isSelfOrThis: false) }
         let before = text.character(at: dot - 1)
         if before == 46 { return nil }                                              // .. / ... spread, range

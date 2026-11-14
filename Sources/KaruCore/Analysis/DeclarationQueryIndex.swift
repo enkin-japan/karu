@@ -300,6 +300,18 @@ public struct DeclarationQueryIndex: Sendable {
         return nil
     }
 
+    /// The name index of the module binding spelled exactly `name` (T17.11d).
+    func moduleNameIndex(named name: String, group: Int32 = -1) -> Int? {
+        let lowered = CaseFold.folded(name)
+        let module = entries(group)
+        for i in moduleRange(loweredPrefix: lowered, group: group) {
+            let candidate = scan.names[Int(module[i].name)]
+            guard CaseFold.folded(candidate) == lowered else { break }
+            if candidate == name { return Int(module[i].name) }
+        }
+        return nil
+    }
+
     /// The top-level group of a chain (outermost first): -1 for the module,
     /// else the name index of the embedded region's language (T17.8c).
     func topLevelGroup(of chain: [PositionedScope]) -> Int32 {
@@ -514,7 +526,68 @@ public struct DeclarationQueryIndex: Sendable {
         return out
     }
 
-    private func collectMembers(of classScope: PositionedScope, into out: inout [Member], seen: inout Set<String>) {
+    // MARK: - Named class scopes (T17.11d)
+
+    /// The name index of the class scopes named `name` (brace languages:
+    /// type bodies, Swift extensions, Rust `impl`s, C++ / C# namespaces),
+    /// if any: through the module bindings when the name is one, else by
+    /// comparing the distinct class scope names (nested types).
+    func classNameIndex(named name: String, group: Int32 = -1) -> Int? {
+        func hasScopes(_ index: Int) -> Bool {
+            var lo = 0
+            var hi = namedClasses.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if Int(namedClasses[mid].name) < index { lo = mid + 1 } else { hi = mid }
+            }
+            return lo < namedClasses.count && Int(namedClasses[lo].name) == index
+        }
+        if let index = moduleNameIndex(named: name, group: group), hasScopes(index) { return index }
+        let length = name.utf16.count
+        var previous: Int32 = -1
+        for entry in namedClasses where entry.name != previous {
+            previous = entry.name
+            let candidate = scan.names[Int(entry.name)]
+            if candidate.utf16.count == length, candidate == name { return Int(entry.name) }
+        }
+        return nil
+    }
+
+    /// The class scopes named `nameIndex` in `group` (`-1`: the document's
+    /// own top level), in document order.
+    func classScopes(nameIndex: Int, group: Int32 = -1) -> [PositionedScope] {
+        var lo = 0
+        var hi = namedClasses.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if Int(namedClasses[mid].name) < nameIndex { lo = mid + 1 } else { hi = mid }
+        }
+        var out: [PositionedScope] = []
+        while lo < namedClasses.count, Int(namedClasses[lo].name) == nameIndex {
+            let entry = namedClasses[lo]
+            lo += 1
+            guard entry.group == group else { continue }
+            let record = DeclarationScan.ScopeRecord(index: Int(entry.index), start: Int(entry.start),
+                                                     end: Int(entry.end), kind: .class, name: nameIndex)
+            out.append(PositionedScope(record: record, byte: Int(entry.byte), base: Int(entry.base)))
+        }
+        return out
+    }
+
+    /// The members declared directly in one class scope's body (not its
+    /// same-named siblings), in document order — every declaration, so a
+    /// method sharing a field's name (Rust, Java) is kept.
+    func members(ofClassScope scope: PositionedScope) -> [Member] {
+        var seen = Set<String>()
+        var out: [Member] = []
+        collectMembers(of: scope, into: &out, seen: &seen, directOnly: true)
+        return out
+    }
+
+    /// `directOnly`: only declarations whose innermost scope is the class
+    /// body (no instance attributes assigned in its methods), not deduplicated.
+    private func collectMembers(of classScope: PositionedScope, into out: inout [Member], seen: inout Set<String>,
+                                directOnly: Bool = false) {
         let documentLength = scan.documentLength
         let target = classScope.record
         let until = target.end >= documentLength ? Int.max : target.end
@@ -558,7 +631,7 @@ public struct DeclarationQueryIndex: Sendable {
                 case .parameter, .import, .global, .nonlocal: isMember = false
                 default: isMember = true
                 }
-            } else if kind == .property {
+            } else if kind == .property, !directOnly {
                 // An instance attribute: a member of the nearest class above it.
                 isMember = stack.last(where: { $0.kind == .class })?.index == target.index
             } else {
@@ -566,7 +639,9 @@ public struct DeclarationQueryIndex: Sendable {
             }
             guard isMember else { continue }
             let name = scan.names[nameKind >> 4]
-            if seen.insert(name).inserted { out.append(Member(name: name, kind: kind, location: location)) }
+            if directOnly || seen.insert(name).inserted {
+                out.append(Member(name: name, kind: kind, location: location))
+            }
         }
     }
 }

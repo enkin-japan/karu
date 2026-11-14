@@ -282,6 +282,18 @@ public struct DeclarationScan: Sendable, Equatable {
         }
     }
 
+    /// Calls `body(location, nameIndex)` for every declaration of `kind`, in
+    /// document order, without materialising names (T17.11d: Go methods).
+    func forEachDeclaration(ofKind kind: DeclarationKind, _ body: (Int, Int) -> Void) {
+        var reader = Reader(encodedLocations)
+        var location = 0
+        while !reader.atEnd {
+            location += reader.varint()
+            let nameKind = reader.varint()
+            if Self.decode(code: nameKind & 15).0 == kind { body(location, nameKind >> 4) }
+        }
+    }
+
     struct ScopeRecord {
         var index: Int
         var start: Int

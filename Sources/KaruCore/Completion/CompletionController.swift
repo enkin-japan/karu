@@ -501,7 +501,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             guard let chars = event.charactersIgnoringModifiers,
                   let first = chars.first,
                   first.isLetter || first == "_" || first == "."
-                    || (first == "$" && IdentifierText.allowsDollar(caretLanguageIdentifier())) else { return }
+                    || (first == "$" && IdentifierText.allowsDollar(caretLanguageIdentifier()))
+                    || ((first == ">" || first == ":") && completesAfterAccessOperator()) else { return }
             updatePopup(manual: false)
         }
         if PerfLog.isEnabled { logRequest(event, lazyIndex: lazyIndex) }
@@ -583,32 +584,58 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         request.wordsJournal = wordsJournal
         request.recent = recent
         request.scanner = contextScanner
-        request.inferredMembers = inferredMembers(text: text, caret: selection.location)
+        request.inferredMembers = inferredMembers(text: text, caret: selection.location, request: request)
         return request
     }
 
     /// Members of the receiver's inferred type when the caret types a
     /// member name after `.` in Python (T17.11b), JavaScript, TypeScript or
-    /// TSX (T17.11c, JSX `{expr.}` included); nil otherwise (unknown type,
-    /// another language — embedded script too —, type inference off).
-    private func inferredMembers(text: NSString, caret: Int) -> [Candidate]? {
-        guard SyntaxDialect(languageIdentifier: languageIdentifier) != nil, moduleSettings.isEnabled(.typeInference),
-              caret <= text.length,
+    /// TSX (T17.11c, JSX `{expr.}` included), or after `.` / `->` / `::` in
+    /// Swift, Go, Rust, Java, C#, C and C++ (T17.11d, explicit declarations
+    /// only); nil otherwise (unknown type, another language — embedded
+    /// script too —, type inference off).
+    private func inferredMembers(text: NSString, caret: Int, request: CompletionRequest) -> [Candidate]? {
+        let brace = BraceLanguage(identifier: languageIdentifier)
+        guard SyntaxDialect(languageIdentifier: languageIdentifier) != nil || brace != nil,
+              moduleSettings.isEnabled(.typeInference), caret <= text.length,
               let start = IdentifierText.runStart(before: caret, in: text,
-                                                  dollar: IdentifierText.allowsDollar(languageIdentifier)), start > 0,
-              text.character(at: start - 1) == 46 else { return nil }
-        let dot = start - 1
-        if dot > 0, text.character(at: dot - 1) == 46 { return nil }
+                                                  dollar: IdentifierText.allowsDollar(languageIdentifier)), start > 0
+        else { return nil }
+        let dot: Int
+        if text.character(at: start - 1) == 46 {
+            dot = start - 1
+            if dot > 0, text.character(at: dot - 1) == 46 { return nil }
+        } else if brace != nil,
+                  let op = CompletionContext.accessOperator(before: start, in: text,
+                                                            languageIdentifier: languageIdentifier) {
+            dot = op.location                                   // `->` / `::`
+        } else {
+            return nil
+        }
         let service = typeInference ?? TypeInferenceService(tables: .shared)
         typeInference = service
         let begin = PerfLog.isEnabled ? PerfLog.now() : 0
-        let members = service.memberCandidates(analysis: analysis, text: text, dot: dot)
+        var index: (version: UInt64, index: DeclarationQueryIndex)?
+        if brace != nil, let built = engine.queryIndex(for: request) { index = (request.snapshotVersion, built) }
+        let members = service.memberCandidates(analysis: analysis, text: text, dot: dot, queryIndex: index)
         if PerfLog.isEnabled {
             PerfLog.record("completion.inference", since: begin,
                            ["docLen": text.length, "members": members?.count ?? -1,
                             "reused": service.statistics.reused])
         }
         return members
+    }
+
+    /// The caret is right after a `->` (C, C++) or `::` (Rust, C++) just
+    /// typed: an automatic request shows the receiver's inferred members
+    /// (T17.11d); without them the engine shows nothing (an empty prefix).
+    private func completesAfterAccessOperator() -> Bool {
+        guard let textView, BraceLanguage(identifier: languageIdentifier) != nil else { return false }
+        let selection = textView.selectedRange()
+        let text: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
+        guard selection.length == 0, selection.location <= text.length else { return false }
+        return CompletionContext.accessOperator(before: selection.location, in: text,
+                                                languageIdentifier: languageIdentifier)?.length == 2
     }
 
     /// Recomputes the candidates at the caret, then shows / refilters /

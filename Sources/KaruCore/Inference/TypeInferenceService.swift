@@ -34,6 +34,14 @@ import Foundation
 ///   same dot is not retried while the caret types after it.
 /// - **Precision (plan §13).** Unknown receivers give nil; unions list only
 ///   members every non-`None` constituent has.
+/// - **Static languages (T17.11d).** Swift, Go, Rust, Java, C#, C and C++
+///   have no parser: `BraceEvaluator` reads the published declaration
+///   snapshot (through the completion engine's `DeclarationQueryIndex` when
+///   given) and the code tokens around the declarations it needs, and types
+///   receivers from explicit declarations only (plan §8.1). `dot` is the
+///   access operator's first unit (`.`, `->`, `::`). The model of the
+///   document's types (`BraceModuleView`) lives per snapshot version; its
+///   text-derived caches are dropped when the journal changes.
 @MainActor
 final class TypeInferenceService {
     static let returnCacheBytes = 512 * 1024
@@ -65,6 +73,12 @@ final class TypeInferenceService {
     private let names = PyNameIndex()
     /// The dialect `names` was built for.
     private var namesDialect: SyntaxDialect?
+    /// Static languages (T17.11d): the document model and the scanner the
+    /// analysis's context checkpoints belong to.
+    private var braceView: BraceModuleView?
+    private var braceScanner: (language: BraceLanguage, scanner: LexicalScanner)?
+    /// A query index built here when the caller passes none (tests).
+    private var ownIndex: (version: UInt64, index: DeclarationQueryIndex)?
     private(set) var statistics = Statistics()
     /// Test hook: budget for the next requests.
     var budgetMilliseconds = InferenceBudget.defaultMilliseconds
@@ -75,16 +89,29 @@ final class TypeInferenceService {
         self.scriptTables = scriptTables ?? .shared
     }
 
-    var isReleased: Bool { session == nil && last == nil && returnCache.isEmpty && names.isEmpty }
+    var isReleased: Bool {
+        session == nil && last == nil && returnCache.isEmpty && names.isEmpty && braceView == nil
+            && braceScanner == nil && ownIndex == nil
+    }
 
-    /// Bytes this window's inference holds (the shared tables are separate).
-    var retainedBytes: Int { returnCache.bytes + names.retainedBytes }
+    /// Bytes this window's inference holds (the shared tables are separate;
+    /// a query index passed in by the completion engine is the engine's).
+    var retainedBytes: Int { returnCache.bytes + names.retainedBytes + (braceView?.approximateBytes ?? 0) }
+
+    /// The static-language document model (tests, benchmarks).
+    var braceViewForTesting: BraceModuleView? { braceView }
+
+    /// Whether the static-language path built its own query index (tests).
+    var holdsOwnQueryIndex: Bool { ownIndex != nil }
 
     func release() {
         session = nil
         last = nil
         returnCache.removeAll()
         names.removeAll()
+        braceView = nil
+        braceScanner = nil
+        ownIndex = nil
     }
 
     /// A character edit (`editedRange` in the new text, as the text storage
@@ -109,8 +136,13 @@ final class TypeInferenceService {
     /// The inferred members of the receiver of the `.` at `dot` (the caret
     /// is after it, in the identifier being typed); nil when the receiver's
     /// type is unknown (or the budget ran out).
-    func memberCandidates(analysis: DocumentAnalysis, text: NSString, dot: Int) -> [Candidate]? {
+    func memberCandidates(analysis: DocumentAnalysis, text: NSString, dot: Int,
+                          queryIndex: (version: UInt64, index: DeclarationQueryIndex)? = nil) -> [Candidate]? {
         statistics.requests += 1
+        if let brace = BraceLanguage(identifier: analysis.languageIdentifier) {
+            return braceMemberCandidates(analysis: analysis, language: brace, text: text, dot: dot,
+                                         queryIndex: queryIndex)
+        }
         guard dot >= 0, dot < text.length,
               let dialect = SyntaxDialect(languageIdentifier: analysis.languageIdentifier) else { return nil }
         let lineStart = Self.lineStart(of: dot, in: text)
@@ -196,6 +228,95 @@ final class TypeInferenceService {
         if candidates != nil { statistics.inferred += 1 }
         // An aborted request is not retried while the caret stays after this
         // dot (it would block every key again): unknown until it moves.
+        last = (dot, lineStart, linePrefix, candidates)
+        return candidates
+    }
+
+    // MARK: - Static languages (T17.11d)
+
+    /// Largest document scanned synchronously when no snapshot is published.
+    static let braceSynchronousScanLimit = 256 * 1024
+
+    private func braceMemberCandidates(analysis: DocumentAnalysis, language: BraceLanguage, text: NSString, dot: Int,
+                                       queryIndex: (version: UInt64, index: DeclarationQueryIndex)?) -> [Candidate]? {
+        guard let op = BraceEvaluator.accessOperator(at: dot, in: text, language: language) else { return nil }
+        let opEnd = dot + (op == "." || op == "?." ? 1 : 2)
+        let lineStart = Self.lineStart(of: dot, in: text)
+        let linePrefix = text.substring(with: NSRange(location: lineStart, length: opEnd - lineStart))
+        if let l = last, l.dot == dot, l.lineStart == lineStart, l.linePrefix == linePrefix {
+            statistics.reused += 1
+            return l.candidates
+        }
+        let start = DispatchTime.now().uptimeNanoseconds
+        defer { statistics.lastNanoseconds = DispatchTime.now().uptimeNanoseconds &- start }
+        statistics.lastSyntaxNanoseconds = 0
+        // The published snapshot (a small document without one is scanned now).
+        let snapshot: DocumentAnalysis.DeclarationSnapshot
+        let journal: EditJournal
+        if let published = analysis.publishedDeclarations {
+            snapshot = published.snapshot
+            journal = published.journal
+        } else if text.length <= Self.braceSynchronousScanLimit {
+            snapshot = analysis.ensureDeclarations()
+            journal = EditJournal()
+        } else {
+            statistics.skippedLarge += 1
+            return nil
+        }
+        guard snapshot.scan.languageIdentifier == analysis.languageIdentifier, !journal.isUnmappable else { return nil }
+        let index: DeclarationQueryIndex
+        if let q = queryIndex, q.version == snapshot.version, q.index.scan.documentLength == snapshot.scan.documentLength {
+            index = q.index
+            ownIndex = nil
+        } else if let own = ownIndex, own.version == snapshot.version,
+                  own.index.scan.documentLength == snapshot.scan.documentLength {
+            index = own.index
+        } else {
+            index = DeclarationQueryIndex(scan: snapshot.scan)
+            ownIndex = (snapshot.version, index)
+        }
+        let scanner: LexicalScanner
+        if let cached = braceScanner, cached.language == language {
+            scanner = cached.scanner
+        } else {
+            scanner = LexicalScanner(profile: language.lexicalProfile)
+            braceScanner = (language, scanner)
+        }
+        let identifier = analysis.languageIdentifier
+        let reader = BraceTokenReader(text: text, language: language, scanner: scanner) { [weak analysis] at in
+            guard let analysis else { return (0, LexicalScanState()) }
+            return WindowScan.resume(text: text, at: at, caret: at, hostIdentifier: identifier,
+                                     scanner: scanner, checkpoints: &analysis.contextCheckpoints)
+        }
+        let view: BraceModuleView
+        if let v = braceView, v.version == snapshot.version, v.language == language,
+           v.scan.documentLength == index.scan.documentLength {
+            v.update(journal: journal, reader: reader)
+            view = v
+        } else {
+            view = BraceModuleView(language: language, version: snapshot.version, index: index, journal: journal,
+                                   reader: reader)
+            braceView = view
+            statistics.sessions += 1
+        }
+        let spent = DispatchTime.now().uptimeNanoseconds &- start
+        let budgetNanoseconds = UInt64(budgetMilliseconds * 1_000_000)
+        guard spent < budgetNanoseconds else {
+            statistics.aborted += 1
+            last = (dot, lineStart, linePrefix, nil)
+            return nil
+        }
+        view.budget = InferenceBudget(maxSteps: budgetSteps,
+                                      milliseconds: Double(budgetNanoseconds - spent) / 1_000_000)
+        let evaluator = BraceEvaluator(view: view)
+        var members = evaluator.members(atOperator: dot, operator: op)
+        if evaluator.isAborted {
+            members = nil
+            statistics.aborted += 1
+            view.dropTextDerivedCaches()
+        }
+        let candidates = members.flatMap { $0.isEmpty ? nil : InferredMemberList.candidates($0) }
+        if candidates != nil { statistics.inferred += 1 }
         last = (dot, lineStart, linePrefix, candidates)
         return candidates
     }

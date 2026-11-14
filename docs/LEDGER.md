@@ -53,7 +53,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ✅ T17.8a 子语言、T17.8b JSX/TSX、T17.8c 光标处子语言；一致率深色 97.3%、浅色 94.2% |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ✅ 选手写解析器（内存约 1/10、时延约 1/5，容错 58/58 对 57/58） |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
-| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | 🔶 11a 解析器、11b Python、11c JS/TS 推断完成（40 条成员门槛：禁用 0、前十召回 100%）；11d 静态语言待做 |
+| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ✅ 11a 解析器、11b Python、11c JS/TS、11d 静态语言；50 条成员门槛：禁用 0、前十召回 100% |
 | T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 +5–6 MB 超 5 MB 目标（分配器保留页，T17.15 处理）；TCC 与三语布局待真机 |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ⬜ |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ⬜ |
@@ -906,6 +906,45 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **遗留**：
     - 主线程长时间阻塞而内存恰好不变时，稳定判定可能误判。
     - 超大 Markdown 的窗口要从文档开头扫起，下方的箭头要等全文扫描完成后才显示。
+
+- T17.11d 静态类型语言的显式声明（main 定接口和摘要写法，implementer 实现，main 复验，2026-11-15）：
+  - **做法**：
+    - 不建语法树，读声明快照（复用补全的 `DeclarationQueryIndex`）和声明附近的代码 token（`BraceTokens`）。
+    - token 从行首读起；锚点之前有字符串或注释时，从上下文检查点精确恢复词法状态。
+    - 类型注册表、成员表、继承链都按快照版本缓存；有新编辑或超出预算时全部丢弃。
+    - 控制器的门槛对 `BraceLanguage` 放行。新增 `->`（C/C++）和 `::`（Rust/C++）触发弹窗，推不出成员时行为与以前相同。
+  - **代码**：
+    - `BraceTypes`：七种语言各自的类型解析和声明读取。
+    - `BraceModel`：类型视图；合并 extension、`impl`、partial；Go 方法；别名；成员表；带环保护的继承链；可见性；摘要。
+    - `BraceEvaluator`：接收者链和绑定查找。
+    - `TypeInferenceService` 新增静态语言入口（25 ms 预算）；`DeclarationQueryIndex` 和 `DeclarationScan` 增加按类查询的接口。
+  - **覆盖**：
+    - 每种语言支持的写法：
+      - Swift：`let x: T`、`T(…)`、`self`/`Self`、`if let` / `guard let`、`?.` / `!.`；成员来自类型体、extension、协议及协议 extension、类继承。
+      - Go：`var x T`、`T{}` / `&T{}`、`NewT()`、多返回值、接收者；成员包括字段、`T` 和 `*T` 上的方法、内嵌字段提升。
+      - Rust：`let x: T`、`T {..}`、`T::new()`、`&self`、`Box`、`&dyn Trait`；成员来自类型体、`impl`、`impl Trait for` 加 trait 的默认方法。
+      - Java / C#：`T x`、`var x = new T()`、`this`、字段；成员包括字段、属性、方法和继承来的成员，按 private / protected 规则过滤。
+      - C：`struct t x`、`T *p`（typedef）；`.` 与 `->` 严格对应指针层数。
+      - C++：`T x`、`T* p`、`const T&`、`auto`、`make_unique<T>`、`this->`、`ns::T`；成员按访问段和基类的访问级别过滤。
+    - 七种语言都支持链式访问，以及返回类型写明的方法调用。
+  - **main 的修改**：Java、C#、C、C++ 的方法摘要原来写成 `String ()` 这种 C 函数类型的样子，改为 `(参数) : R`，例如 `() const : int`，与 VS Code 的 Java 补全一致，也让每一行都先显示参数。规则已写入方案 §8.1。
+  - **门槛**（10 条静态成员样本，main 复跑）：
+    - 前十召回 **26/26**（HEAD 0/23），禁用名命中 0，holdout top1 2/2。
+    - 七种语言全部满分。
+    - 与 HEAD 相比，只有这 10 行和摘要表不同；Python/JS 成员组、非成员组、着色导出都相同。
+  - **M17 推断门槛总计**：50 条成员样本，前十召回 Python 22/22、JS/TS 41/41、静态语言 26/26，禁用名命中 0，满足第 13 节的要求（≥80%，且禁用名为 0）。
+  - **时延**（release，真实控制器）：
+    - 约 1000 行的文件：端到端 p95 6.4–7.6 ms，推断 ≤0.23 ms。
+    - 10 MB Go 文件：快照不变时 20.3 ms；每次键入都重扫声明时 65 ms。
+    - 超出 50 ms 的部分来自补全引擎为新快照重建 `DeclarationQueryIndex`，T17.5 起就有，关掉推断的对照组也是 52 ms。留给 T17.15 优化（增量重建索引）。
+  - **内存**：推断自己持有 3–13 KB；开推断比关推断多 1.6–2.6 MB footprint，推测来自带摘要的弹窗行。关闭推断后状态全部释放。
+  - **测试**：
+    - 新增 `BraceInferenceTests`（37 个，13 个套件），另有可选基准 `KARU_T1711D_BENCH`。
+    - 全量 1528 tests / 157 suites，只有已知的工具链计时测试失败；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **缺口**：
+    - 跨文件的部分留给 T17.14：其他文件里的类型和基类、import 或包限定的名字、其他文件里的 extension、`impl`、Go 方法、C++ 定义、C 头文件。
+    - 泛型代换、闭包参数、循环变量、Rust 的 match 和 `if let Some`、Java/C# 的模式变量推不出。
+    - walker 没记录的模式绑定，如果与外层字段同名，可能按字段的类型推断。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

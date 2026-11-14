@@ -191,6 +191,10 @@ public struct CandidateEngine {
         var members: [DeclarationQueryIndex.Member]??
     }
 
+    /// The query index of the request's snapshot (built once per snapshot
+    /// and shared with static-language inference, T17.11d).
+    mutating func queryIndex(for request: CompletionRequest) -> DeclarationQueryIndex? { index(for: request) }
+
     private mutating func index(for request: CompletionRequest) -> DeclarationQueryIndex? {
         guard let scan = request.snapshot, scan.languageIdentifier == request.languageIdentifier else { return nil }
         if let cached = queryIndex, cached.version == request.snapshotVersion,
@@ -311,8 +315,13 @@ public struct CandidateEngine {
             request.keywords = vocabulary.keywords
             request.builtins = vocabulary.builtins
         }
-        guard let context = CompletionContext.make(text: text, caret: caret, languageIdentifier: language,
+        guard var context = CompletionContext.make(text: text, caret: caret, languageIdentifier: language,
                                                    position: window.position) else { return nil }
+        // `->` / `::` (T17.11d) is a member access only with inferred members;
+        // otherwise the caret completes as before (scope names, two-unit prefix).
+        if let access = context.memberAccess, access.accessOperator != ".", request.inferredMembers?.isEmpty ?? true {
+            context = context.withoutMemberAccess()
+        }
         let prefix = context.prefix
         let prefixLength = prefix.utf16.count
         if prefixLength > 0, !context.prefixStartsIdentifier { return nil }
@@ -478,7 +487,11 @@ public struct CandidateEngine {
                 }
                 out.evidence = out.evidence || !inferred.isEmpty
             }
-            if member.isSelfOrThis, let index, let mappedCaret, var info = scope {
+            // Static languages (T17.11d): a trusted type lists only its own
+            // members (the class body would add static / private ones).
+            let typedBrace = BraceLanguage(identifier: context.languageIdentifier) != nil
+                && !(request.inferredMembers?.isEmpty ?? true)
+            if member.isSelfOrThis, !typedBrace, let index, let mappedCaret, var info = scope {
                 // Class members are computed once per scope-cache entry.
                 if info.members == nil {
                     info.members = .some(index.classMembers(at: mappedCaret))
