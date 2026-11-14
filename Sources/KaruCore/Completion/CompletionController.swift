@@ -109,8 +109,9 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     /// Releasable runtime state: the candidate engine's caches.
     private var engine = CandidateEngine()
-    /// Releasable runtime state: type inference for member access (T17.11b),
-    /// created on the first Python member request while `typeInference` is on.
+    /// Releasable runtime state: type inference for member access (T17.11b;
+    /// JS / TS since T17.11c), created on the first member request in a
+    /// language with a parser while `typeInference` is on.
     private var typeInference: TypeInferenceService?
     /// Recently accepted candidates (this window only, ≤ 32).
     private var recent = RecentAccepts()
@@ -421,6 +422,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         typeInference?.release()
         typeInference = nil
         PythonTypeTables.shared.release()
+        ScriptTypeTables.shared.release()
     }
 
     // MARK: - TextStorageObserving
@@ -586,11 +588,14 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     }
 
     /// Members of the receiver's inferred type when the caret types a
-    /// member name after `.` in Python (T17.11b); nil otherwise (unknown
-    /// type, another language, type inference off).
+    /// member name after `.` in Python (T17.11b), JavaScript, TypeScript or
+    /// TSX (T17.11c, JSX `{expr.}` included); nil otherwise (unknown type,
+    /// another language — embedded script too —, type inference off).
     private func inferredMembers(text: NSString, caret: Int) -> [Candidate]? {
-        guard languageIdentifier == "python", moduleSettings.isEnabled(.typeInference), caret <= text.length,
-              let start = IdentifierText.runStart(before: caret, in: text, dollar: false), start > 0,
+        guard SyntaxDialect(languageIdentifier: languageIdentifier) != nil, moduleSettings.isEnabled(.typeInference),
+              caret <= text.length,
+              let start = IdentifierText.runStart(before: caret, in: text,
+                                                  dollar: IdentifierText.allowsDollar(languageIdentifier)), start > 0,
               text.character(at: start - 1) == 46 else { return nil }
         let dot = start - 1
         if dot > 0, text.character(at: dot - 1) == 46 { return nil }

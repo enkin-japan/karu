@@ -981,8 +981,11 @@ struct JavaScriptDeclarationWalker: Sendable {
             nameToken = n
             k += 1
         }
-        // Find the body `{` at depth 0.
+        // Find the body `{` at depth 0. TS: an object type inside generics
+        // (`class R<T extends { id: string }>`, `extends Base<{ a: T }>`) is
+        // not the body, so `<` / `>` count as brackets there (T17.11c).
         var depth = 0
+        var angles = 0
         var j = k
         var brace = -1
         while j - k < 1024 {
@@ -990,10 +993,12 @@ struct JavaScriptDeclarationWalker: Sendable {
                 if !final { return 0 }
                 break
             }
-            if depth == 0, t.kind == .lbrace { brace = j; break }
+            if depth == 0, angles == 0, t.kind == .lbrace { brace = j; break }
             switch t.kind {
             case .lparen, .lbracket, .lbrace, .interpOpen: depth += 1
             case .rparen, .rbracket, .rbrace, .interpClose: depth -= 1
+            case .less where typescript && depth == 0: angles += 1
+            case .greater where typescript && depth == 0 && angles > 0: angles -= 1
             case .semicolon: j = k + 1024
             default: break
             }

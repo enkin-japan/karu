@@ -1,10 +1,10 @@
 import Foundation
 
 // M17 T17.11b — the language-neutral type model of inference (plan §8.1).
-// Pure values (no AppKit, `Sendable`): a language evaluator (Python here,
-// JS / TS in T17.11c) produces `InferredType`s from a syntax tree and the
-// built-in type tables; `InferredMember` lists feed completion
-// (`InferredMemberList.candidates`).
+// Pure values (no AppKit, `Sendable`): a language evaluator (`PythonEvaluator`,
+// `ScriptEvaluator` for JS / TS since T17.11c) produces `InferredType`s from a
+// syntax tree and the built-in type tables; `InferredMember` lists feed
+// completion (`InferredMemberList.candidates`).
 
 /// A class: from a built-in type table module or declared in the document.
 public struct ClassRef: Hashable, Sendable {
@@ -94,6 +94,66 @@ public struct CallableRef: Hashable, Sendable {
     }
 }
 
+/// A structural object type (T17.11c, JS / TS): an object literal's shape,
+/// an inline object type `{ a: T; b?: U }`, an intersection (`extends`), a
+/// JSDoc `@typedef` object. Members are listed in declaration order; an
+/// index signature's keys are never listed (plan §8.1 precision rule).
+public struct ObjectShape: Hashable, Sendable {
+    public struct Member: Hashable, Sendable {
+        public var name: String
+        public var type: InferredType
+        /// `name?: T` (listed; its type includes `undefined` on access).
+        public var isOptional: Bool
+        /// A method (`m() {}` / `m(): T`) rather than a property.
+        public var isMethod: Bool
+
+        public init(name: String, type: InferredType, isOptional: Bool = false, isMethod: Bool = false) {
+            self.name = name
+            self.type = type
+            self.isOptional = isOptional
+            self.isMethod = isMethod
+        }
+    }
+
+    public var members: [Member]
+    /// Types whose members the shape also has (`A & B`, `{ ...a }`), after
+    /// its own.
+    public var extends: [InferredType]
+    /// The value type of a string / number index signature (`Record<K, V>`).
+    public var indexValue: InferredType?
+    /// A call signature (`{ (x: T): U }`).
+    public var call: InferredSignature?
+
+    public init(members: [Member] = [], extends: [InferredType] = [], indexValue: InferredType? = nil,
+                call: InferredSignature? = nil) {
+        self.members = members
+        self.extends = extends
+        self.indexValue = indexValue
+        self.call = call
+    }
+
+    public func member(named name: String) -> Member? { members.first { $0.name == name } }
+
+    func map(_ transform: (InferredType) -> InferredType) -> ObjectShape {
+        var out = self
+        for i in out.members.indices { out.members[i].type = transform(out.members[i].type) }
+        out.extends = out.extends.map(transform)
+        out.indexValue = out.indexValue.map(transform)
+        if var sig = out.call {
+            sig.returnType = transform(sig.returnType)
+            for i in sig.parameters.indices { sig.parameters[i].type = sig.parameters[i].type.map(transform) }
+            out.call = sig
+        }
+        return out
+    }
+
+    var approximateBytes: Int {
+        48 + members.reduce(0) { $0 + 40 + $1.name.utf8.count + $1.type.approximateBytes }
+            + extends.reduce(0) { $0 + $1.approximateBytes } + (indexValue?.approximateBytes ?? 0)
+            + (call.map { $0.returnType.approximateBytes + 32 * $0.parameters.count } ?? 0)
+    }
+}
+
 /// An inferred type (plan §8.1). `unknown` never yields members: completion
 /// falls back to usage evidence (plan §5.4).
 public indirect enum InferredType: Hashable, Sendable {
@@ -121,6 +181,8 @@ public indirect enum InferredType: Hashable, Sendable {
     case typeForm(InferredType)
     /// A special typing form used as a value (`Optional`, `Literal`, `Any` …).
     case special(String)
+    /// A structural object type (JS / TS, T17.11c).
+    case shape(ObjectShape)
 
     // MARK: Unions
 
@@ -186,6 +248,9 @@ public indirect enum InferredType: Hashable, Sendable {
             return ref.isLocal || args.contains { $0.mentionsLocalClass }
         case .literal(let ref, _): return ref.isLocal
         case .anyOf(let parts): return parts.contains { $0.mentionsLocalClass }
+        case .shape(let shape):
+            return shape.members.contains { $0.type.mentionsLocalClass } || shape.extends.contains { $0.mentionsLocalClass }
+                || (shape.indexValue?.mentionsLocalClass ?? false)
         case .typeForm(let t): return t.mentionsLocalClass
         case .typeVar(_, let bound): return bound?.mentionsLocalClass ?? false
         case .callable(let c):
@@ -204,6 +269,7 @@ public indirect enum InferredType: Hashable, Sendable {
         case .classObject(let ref, let args): return .classObject(ref, args.map { $0.substituting(bindings) })
         case .anyOf(let parts): return .union(parts.map { $0.substituting(bindings) })
         case .typeForm(let t): return .typeForm(t.substituting(bindings))
+        case .shape(let shape): return .shape(shape.map { $0.substituting(bindings) })
         case .callable(var c):
             if case .signature(var sig) = c.target {
                 sig.returnType = sig.returnType.substituting(bindings)
@@ -226,6 +292,7 @@ public indirect enum InferredType: Hashable, Sendable {
         case .anyOf(let parts): return 32 + parts.reduce(0) { $0 + $1.approximateBytes }
         case .typeVar(let name, let bound): return 32 + name.utf8.count + (bound?.approximateBytes ?? 0)
         case .typeForm(let t): return 16 + t.approximateBytes
+        case .shape(let shape): return shape.approximateBytes
         case .callable(let c):
             var n = 64 + (c.receiver?.approximateBytes ?? 0)
             switch c.target {
@@ -287,6 +354,7 @@ extension InferredType {
         case .typeVar(let name, _): return name
         case .typeForm(let t): return "type[\(t.pythonDescription)]"
         case .special(let name): return name
+        case .shape: return "dict"
         }
     }
 

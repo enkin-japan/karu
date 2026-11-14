@@ -766,6 +766,27 @@ struct DeclarationScopeRobustnessTests {
                 #expect(result == oneShot, "\(item.path) budget \(budget)")
             }
         }
+        // T17.11c: an object type inside a class's generics or heritage is
+        // not the class body (it used to open the body early, record `id`
+        // as a member and depend on the slice budget).
+        let generic = """
+        class R<T extends { id: string }> {
+          rows: T[] = [];
+          add(row: T) { return row; }
+        }
+        class S extends Base<{ key: number }> implements Shape<{ tag: string }> { size = 1; }
+        const after = new R();
+        """
+        let oneShot = scan(generic, "typescript")
+        for budget in Array(1...7) + [64, 4096] {
+            let (result, _) = Self.sliced(generic, "typescript", budget: budget)
+            #expect(result == oneShot, "generic class header, budget \(budget)")
+        }
+        let names = oneShot.declarations.map { "\($0.name):\($0.kind)" }
+        #expect(!names.contains { $0.hasPrefix("id:") || $0.hasPrefix("key:") || $0.hasPrefix("tag:") }, "\(names)")
+        for expected in ["R", "S", "T", "rows", "add", "row", "size", "after"] {
+            #expect(names.contains { $0.hasPrefix(expected + ":") }, "\(expected) in \(names)")
+        }
     }
 
     @Test func varyingStepBudgetsEqualOneShot() throws {

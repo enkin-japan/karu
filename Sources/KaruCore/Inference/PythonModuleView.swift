@@ -1,10 +1,11 @@
 import Foundation
 
-// M17 T17.11b — the evaluator's view of a Python syntax snapshot: nodes of
-// one parsed unit (the whole tree, or one top-level statement parsed on
-// demand from a module summary), and module-level name lookups over either
-// form (plan §8.3: a large document keeps only the summary; statements are
-// parsed when needed).
+// M17 T17.11b — the evaluator's view of a syntax snapshot: nodes of one
+// parsed unit (the whole tree, or one top-level statement parsed on demand
+// from a module summary), and module-level name lookups over either form
+// (plan §8.3: a large document keeps only the summary; statements are parsed
+// when needed). Shared by the Python and (T17.11c) the JS / TS evaluator:
+// `PyModuleView.dialect` picks which statements bind a name.
 
 /// One parsed tree the evaluator reads (identity matters: nodes compare by
 /// unit and index).
@@ -87,6 +88,9 @@ final class PyModuleView {
 
     let storage: Storage
     let text: NSString
+    /// Which language's binding rules apply (`pythonBoundNames` /
+    /// `scriptBoundNames`).
+    let dialect: SyntaxDialect
     /// Summary mode: the standalone tree of the statement starting at an
     /// offset (`DocumentAnalysis.syntaxStatement(at:)`).
     private let parseStatement: @MainActor (Int) -> SyntaxTree?
@@ -104,10 +108,17 @@ final class PyModuleView {
     static let memoLimit = 512
     static let unitLimit = 256
 
-    init(storage: Storage, text: NSString, parseStatement: @escaping @MainActor (Int) -> SyntaxTree?) {
+    init(storage: Storage, text: NSString, dialect: SyntaxDialect = .python,
+         parseStatement: @escaping @MainActor (Int) -> SyntaxTree?) {
         self.storage = storage
         self.text = text
+        self.dialect = dialect
         self.parseStatement = parseStatement
+    }
+
+    /// Names module-level statement `i` binds, by the dialect's rules.
+    private func boundNames(_ view: NodeView, _ i: Int, _ out: inout [Int]) {
+        if dialect == .python { view.pythonBoundNames(i, &out) } else { view.scriptBoundNames(i, &out) }
     }
 
     var isSummary: Bool { if case .summary = storage { return true }; return false }
@@ -184,7 +195,7 @@ final class PyModuleView {
             var k = lo
             while k < stmts.count, Int(u.tree.nodes[stmts[k]].start) <= NSMaxRange(range) {
                 names.removeAll(keepingCapacity: true)
-                view.pythonBoundNames(stmts[k], &names)
+                boundNames(view, stmts[k], &names)
                 if names.contains(where: { matches(u.tree.nodes[$0].start, u.tree.nodes[$0].end) }) {
                     out.append(PyNode(unit: u, i: stmts[k]))
                 }
@@ -270,7 +281,7 @@ final class PyModuleView {
         var names: [Int] = []
         for stmt in u.tree.topLevelStatements {
             names.removeAll(keepingCapacity: true)
-            view.pythonBoundNames(stmt, &names)
+            boundNames(view, stmt, &names)
             for n in names {
                 out.append(u.tree.nodes[n].start)
                 out.append(u.tree.nodes[n].end)
@@ -284,6 +295,7 @@ final class PyModuleView {
     /// Modules of top-level `from m import *` statements (absolute only).
     func starImports() -> [String] {
         if let s = stars { return s }
+        guard dialect == .python else { return [] }
         var out: [String] = []
         func scan(_ stmt: PyNode) {
             guard stmt.kind == .importFrom, stmt.raw.aux == 0,

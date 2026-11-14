@@ -53,7 +53,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ✅ T17.8a 子语言、T17.8b JSX/TSX、T17.8c 光标处子语言；一致率深色 97.3%、浅色 94.2% |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ✅ 选手写解析器（内存约 1/10、时延约 1/5，容错 58/58 对 57/58） |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
-| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | 🔶 11a 解析器、11b Python 推断完成（成员门槛：禁用 0、前十召回 100%）；11c JS/TS、11d 静态语言待做 |
+| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | 🔶 11a 解析器、11b Python、11c JS/TS 推断完成（40 条成员门槛：禁用 0、前十召回 100%）；11d 静态语言待做 |
 | T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 +5–6 MB 超 5 MB 目标（分配器保留页，T17.15 处理）；TCC 与三语布局待真机 |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ⬜ |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ⬜ |
@@ -832,6 +832,44 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - 函数式 `namedtuple` / `NewType` / `TypedDict` 推不出。
     - `super()` 只是近似。
     - 在同一个点号后复用成员时，看不到这期间在后面新增的类成员。
+
+- T17.11c JS/TS 推断（main 定接口，implementer 实现，main 在干净 worktree 里单独复验，2026-11-15）：
+  - **代码**（`Sources/KaruCore/Inference/`）：
+    - `ScriptTypes`：TS 类型文本转推断类型，输出 TS 语法并压缩成摘要。
+    - `ScriptTypeTables`：lib 层，有字节上限，可释放；DOM 区段只在需要时读。
+    - `ScriptDocModels`：文档内的函数、类、接口（同名声明合并）、枚举、类型别名。
+    - `ScriptEvaluator`：流分析，处理作用域提升、解构、for…of、分支合并、提前返回、收窄、返回值推断。
+    - `ScriptExpressions`：重载选择与泛型求解、回调的上下文参数类型、`await`、继承链。
+    - `JSDoc`：解析 `@type`、`@param`、`@returns`、`@typedef`/`@property`、`@template`。
+    - `InferredType` 新增结构类型 `.shape`。
+    - 控制器去掉只认 Python 的限制，`javascript`、`typescript`、`typescriptreact` 都会推断，JSX 的 `{expr.}` 里也可以。
+  - **门槛**（20 条 JS/TS 成员样本，HEAD → 本次，main 复跑）：
+    - top1 1/6 → **6/6**，top3 0/2 → **2/2**，前十召回 9/41 → **41/41**。
+    - 调参集 31/31，holdout 10/10，禁用名命中 0，每个类别都满分。
+    - 已弃用的 lib 成员（如 `trimLeft`）排在后面，与 TS 语言服务一致。
+    - 与 HEAD 重新生成的版本相比，只有 js/ts-mem 那 20 行不同，Python 和非成员样本、全部着色导出都逐字节相同。
+  - **顺带修复**：
+    - T17.11b 遗留的崩溃：`self.n = self.n + 1` 会让推断无限递归、主线程栈溢出。`fieldType` 已加重入保护，并加了回归测试。
+    - T17.11a 记录的旧 bug：`JavaScriptDeclarationWalker` 在 TS 模式下，depth 0 的 `<` `>` 现在按括号计数，`class R<T extends { id: string }>` 不再提前打开类体，分片扫描与一次扫描结果一致。加了等价测试，去掉修复后测试会失败。
+  - **时延**（release，负载约 2.7）：
+    - 热 `.` 端到端 p95：sample_1000.ts 10.6 ms，10 MB TS 20.3 ms，10 MB JS 17.8 ms。
+    - 其中推断 p95：0.31 / 6.5 / 3.1 ms。
+    - 冷启动首个 `.` 约 15 ms。
+    - debug 下 10 MB TS 的摘要更新约 85 ms，超出预算，返回未知（与 Python 相同）。
+  - **内存**：
+    - sample_1000.ts 在 24 个位置推断：配对增量约 4.6–4.75 MB，满足 ≤10 MB。其中推断自己持有 0.16 MB，其余推测来自带摘要的弹窗行。
+    - 10 MB TS：语法摘要 0.84 MB，名字索引和返回值缓存 0.28 MB。
+  - **测试**：
+    - 新增 `ScriptInferenceTests`（41 个，10 个套件），另有可选的截图（`KARU_T1711C_SHOTS`）和基准（`KARU_T1711C_BENCH`，release 下需设 `KARU_TYPE_TABLES`）。
+    - main 在只含本任务改动的 worktree 里复跑：1470 tests / 140 suites，除工具链计时测试外全部通过；工具链测试在负载 5–8 时照旧失败，单独跑 60/60 通过。visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **范围与缺口**：
+    - HTML `<script>` 和 Markdown 围栏里的嵌入脚本不推断。
+    - `import` 一律当未知，等 T17.13。
+    - JS 的未注解参数为未知，不从调用点反推。
+    - 映射类型和条件类型只认常用的 10 种工具类型。
+    - `keyof`、`typeof x`、类型谓词收窄、文档内命名空间、`as const` 都不支持。
+    - 对象字面量属性和 `new X(cb)` 不提供上下文类型。
+    - 对象字面量方法里的 `this` 推不出。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

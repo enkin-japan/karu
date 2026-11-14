@@ -474,6 +474,14 @@ struct TypeInferencePrecisionTests {
         #expect(names("from mypkg import Thing\ndef f(x: str | Thing):\n    x.|") == nil)
     }
 
+    /// T17.11c: a field assigned from itself used to recurse without bound
+    /// (a stack overflow on the main thread).
+    @Test func selfReferentialFieldIsBounded() {
+        let src = "class A:\n    def __init__(self):\n        self.n = self.n + 1\n        self.m = self.m\nA().n.|"
+        #expect(receiver(src) == int)
+        #expect(names(src.replacingOccurrences(of: "A().n.|", with: "A().m.|")) == nil)
+    }
+
     @Test func unknownDecoratorMakesTheResultUnknown() {
         let src = "def deco(f): return f\n@deco\ndef make() -> str:\n    return ''\nmake().|"
         #expect(names(src) == nil)

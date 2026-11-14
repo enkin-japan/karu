@@ -469,8 +469,14 @@ final class DocClass {
         }
     }
 
+    /// Fields whose type is being inferred (`self.n = self.n + 1` reads
+    /// itself: unknown instead of unbounded recursion, T17.11c).
+    private var fieldsInProgress = Set<String>()
+
     /// The type of field `m` (class type parameters unsubstituted).
     func fieldType(_ m: DocMember) -> InferredType {
+        guard fieldsInProgress.insert(m.name).inserted else { return .unknown }
+        defer { fieldsInProgress.remove(m.name) }
         if m.kind == .field, !m.instanceOnly, m.annotation == nil, !m.name.hasPrefix("_"), isEnum {
             return .instance(ref, [])
         }
