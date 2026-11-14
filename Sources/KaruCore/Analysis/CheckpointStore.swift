@@ -10,20 +10,22 @@ public enum LexicalState: Sendable, Equatable {
 
 /// Sparse lexical checkpoints for one document (M17 T17.1, plan §3 "词法检查点").
 ///
-/// Roughly one entry every `spacing` UTF-16 units, each at a **line start**, so
-/// a pass that begins far into a large file resumes from the nearest
-/// checkpoint instead of rescanning from offset 0. A 10 MB document holds
-/// about 160 entries of a few dozen bytes each; tokens themselves are never
-/// cached.
+/// Roughly one entry every `spacing` UTF-16 units, each at a **line start**,
+/// or at a scanner safe point inside a line longer than `spacing` (generic
+/// scanner only; see `LexicalScanner`, long-line slicing), so a pass that
+/// begins far into a large file resumes from the nearest checkpoint instead
+/// of rescanning from offset 0. A 10 MB document holds about 160 entries of a
+/// few dozen bytes each; tokens themselves are never cached.
 ///
 /// Invalidation keeps every entry before the edited logical line (they depend
-/// only on text that did not change) and drops the rest. Pure value type: no
-/// AppKit, `Sendable`.
+/// only on text that did not change — a safe point's state depends only on
+/// its own line up to it) and drops the rest, including every entry inside
+/// the edited line. Pure value type: no AppKit, `Sendable`.
 public struct CheckpointStore: Sendable {
     /// UTF-16 units between checkpoints (≈ 64 KB).
     public static let spacing = 65_536
 
-    /// Ascending offsets, every one at a line start.
+    /// Ascending offsets, each at a line start or an in-line safe point.
     public private(set) var entries: [(offset: Int, state: LexicalState)] = []
 
     public init() {}

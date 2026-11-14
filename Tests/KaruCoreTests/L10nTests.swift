@@ -75,7 +75,14 @@ import Testing
 
 // MARK: - Stored override round-trip (serialized: touches global UserDefaults)
 
+// Main actor, synchronous tests: `L10n.set` posts to `NotificationCenter.default`,
+// where any live UI controller (e.g. a `RunPreferencesController` from a
+// concurrently running suite) reloads its strings synchronously — off the main
+// thread that crashes AppKit (the app only calls it on the main thread). Each
+// test sets and restores the language within one main-actor turn, so no other
+// main-actor test ever runs while the override is changed.
 @Suite(.serialized)
+@MainActor
 struct L10nOverrideTests {
     private func restore(_ previous: String?) {
         if let previous {
@@ -102,16 +109,17 @@ struct L10nOverrideTests {
         #expect(L10n.current == L10n.systemDefault)
     }
 
-    @Test func setBroadcastsChangeNotification() async {
+    @Test func setBroadcastsChangeNotification() {
         let previous = UserDefaults.standard.string(forKey: L10n.defaultsKey)
         defer { restore(previous) }
 
-        await confirmation("L10n change posted") { confirmed in
-            let token = NotificationCenter.default.addObserver(
-                forName: L10n.didChangeNotification, object: nil, queue: nil
-            ) { _ in confirmed() }
-            defer { NotificationCenter.default.removeObserver(token) }
-            L10n.set(.en)
-        }
+        final class Posted: @unchecked Sendable { var count = 0 }
+        let posted = Posted()
+        let token = NotificationCenter.default.addObserver(
+            forName: L10n.didChangeNotification, object: nil, queue: nil
+        ) { _ in posted.count += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+        L10n.set(.en)
+        #expect(posted.count == 1, "L10n change posted")
     }
 }

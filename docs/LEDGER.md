@@ -44,6 +44,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.0 | 基线：VS Code 隔离安装与固定版本；对照样本库；计时埋点；现版颜色、候选名次、内存与时延；VS Code 语言服务内存；Esc/⌥⎋、离屏属性、长行、TCC 实测；mem-benchmark 1000 行推断样本 | — | main + implementer（夹具、基线套件、PerfLog），main 审查 | ✅ 自动化通过；项目文件夹重启授权留 T17.12 |
 | T17.1 | 分析骨架 `DocumentAnalysis`：版本、稀疏检查点、分片调度与取消、共用声明扫描、`applyLanguage` 统一失效、两个新模块开关 | T17.0 | implementer，main 审查 | ✅ 自动化通过 |
 | T17.2 | 通用词法扫描器：档案、两种模式、检查点接入，取代从 0 起扫；Python 迁移结论 | T17.1 | main 定接口 + implementer | ✅ 自动化通过；Python 保留原 tokenizer |
+| T17.2b | 超长行分片（方案 §6 第 2 条）：扫描器安全切点、色带行内切片、行内检查点、JSON 接入档案 | T17.2 | main 定接口 + implementer | ✅ 自动化通过；未在真机打开长行实测 |
 | T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | ⬜ |
 | T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | ⬜ |
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ⬜ |
@@ -173,13 +174,44 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
       测试还断言编辑确实改变了色带、用未失效的旧检查点会算错。另有真实文本视图的引擎级测试和离屏清理测试。
   - **注意**：`KARU_M17_BASELINE=1` 套件每次都会改写 `Tests/Fixtures/M17/baseline/` 下的 karu TSV 与候选文件，跑完要 `git checkout` 还原，
     除非是有意重建基线。
-  - **超长行分片**（方案 §6 第 2 条）未做。扫描器已支持在任意区间上运行，在 T17.3 接入更多语言之前单独安排。
+  - **超长行分片**（方案 §6 第 2 条）当时未做，见下方 T17.2b。
   - **内存**（release、`KARU_DIAGNOSTIC_DIRECTORY` 隔离，同机交替运行；HEAD 在临时 worktree 中构建）：
     - HEAD 两轮均为 26 / 35 / 63 MB，参考轮 29 / 29。
     - 候选三轮均为 25 / 35 / 63 MB，参考轮 29 / 29。
     - 持平，无新增常驻：只多一个 `colouredRange`，扫描器随语言定义一起释放。
     - 本次环境整体比 T17.1 时低（36 / 56 / 65），HEAD 同样偏低，判定为环境差异。
     - 第一次对照时把 HEAD 二进制单独拷出，缺资源包，无法采样，已作废。
+
+- T17.2b 超长行分片（main 定接口，implementer 实现，main 审查 diff，2026-11-14）：
+  - **扫描器**：新增 `advance` / `segments(…stoppingAtSafePointFrom:)`，返回目标之后第一个安全切点。
+    - 安全切点：token 边界，且不在代理对、标识符、CRLF 中间；在代码里，前一个单元不能是前缀、`#`/lead、C++ `R`、原子前缀这类会被向后回看的字符。
+    - 目标之前的标记搜索只截到目标，不多搜一遍；没有切点参数时行为与速度不变。
+    - 顺带修复：`"\😀"` 这种转义后紧跟代理对时，下一次搜索从低代理开始会漏掉一个单元（Foundation 的行为），现在转义吃掉整个代理对。
+  - **色带**：新纯函数 `bandBounds`。行边界在阈值（`longLineThreshold` = 8192 单元）以内时与原来的整行吸附完全一致，否则停在行内。
+    - 有档案的语言：起点用安全切点恢复状态，前面多扫 256 单元规则上下文再裁掉；终点停在安全切点。
+    - 超过 64 KB 的长行内部也会记检查点（只限通用扫描器）。
+  - **JSON / JSONL 改用只含字符串的档案**，这样行中间开始的切片也知道自己在不在字符串里。
+    - 键改由新参数 `propertyStringFollower`（`\s*:`）判定为 `.property`。
+    - 现有夹具的着色 TSV 逐字节不变。
+    - 只有格式错误的 JSON 着色会不同：行尾 `\` 续行、未闭合字符串、相邻的 `"a""b":`。
+  - **妥协（入账）**：Python 和尚未建档案的语言，长行切片内用无状态规则着色，不追踪字符串状态；长行之后的状态仍精确恢复。
+  - **顺带**：绘制改读 `textStorage.mutableString`，不再每次复制全文（T17.2 记的 10 MB 约 120 ms）；`PythonTokenizer.state` 直接扫 NSString。
+  - **探针**（debug，5 MB 单行压缩 JSON，同会话对照 HEAD）：首次着色 4803 → **14.6 ms**，重绘 4465 → **14.9 ms**，
+    绘制的 run 数 1,612,469 → **2,286**（色带 6915 单元）。离屏 run 数 490 不变（该探针是多行 Python）。
+  - **测试**：
+    - 新增 `LongLineSlicingTests`，10 个测试、4 个 suite。
+      - 停点：JS、TS、Rust、JSON 和一个覆盖全部定界方式的合成档案，随机文本、随机目标的切分不变性；对抗样本逐位置都试一遍。
+      - 引擎：真实 NSTextView 上的 2 MB JSON 与 1 MB JS，滚到中部、末尾，色带内与整行单趟扫描逐单元一致；色带长度 ≤64K，带外不留颜色；行中间编辑、撤销。
+      - `bandBounds` 与 `wholeLineRange` 逐一对照。
+    - 变异检查：分别去掉回看条件、规则前扫、规则后扫、截断键的前向扫描，都有测试失败。
+    - 为让全套稳定，加固了几个原本就不稳的测试，断言都没改：
+      - `L10nOverrideTests` 改在主线程同步运行。原来在后台线程 `L10n.set` 会让其他 suite 遗留的界面控制器在后台线程刷新文案，测试进程崩溃。
+      - `AnalysisSchedulerTests` 等待上限 3 → 10 s，条件满足即返回。
+      - `DocumentAnalysisTests` 三处「pump 之后检查已发生」改为最多 3 s 的条件轮询。
+    - `unprofiledLanguagesKeepPerLineTokens` 中的 JSON 换成 YAML（JSON 已有档案）。
+  - **验证**：全量 **1028 tests / 51 suites** 通过（main 复跑一次，implementer 连续 5 次）；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **未做**：真实 App 打开长行文件滚动、编辑的实测，release 耗时，以及 mem-benchmark。本步没有新增常驻状态，长行里检查点密度与原来相同，留到 T17.15 一起实测。
+  - 基线目录中 JS/TS/Rust/JSX/TSX 的 TSV 仍是 T17.0「现版」读数（T17.2 起有意不刷新），重跑基线套件后照旧 `git checkout` 还原。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

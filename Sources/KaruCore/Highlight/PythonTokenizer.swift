@@ -27,13 +27,23 @@ public enum PythonTokenizer {
     static func state(in text: NSString, before end: Int, language: LanguageDefinition,
                       from start: Int = 0, initial: State = State()) -> State {
         var state = initial
-        _ = scan(text as String, language: language, state: &state, emit: false, limit: end, start: start)
+        // Straight on the NSString: bridging a mutable string (the text
+        // storage's) to `String` would copy the whole document.
+        _ = scan(text, subject: nil, language: language, state: &state, emit: false, limit: end, start: start)
         return state
     }
 
     static func scan(_ line: String, language: LanguageDefinition, state: inout State,
                      emit: Bool = true, limit: Int? = nil, start: Int = 0) -> [(range: NSRange, kind: TokenKind)] {
-        let ns = line as NSString
+        scan(line as NSString, subject: line, language: language, state: &state, emit: emit, limit: limit, start: start)
+    }
+
+    /// `subject`: the same text as a `String` for the rules; needed only when
+    /// `emit` is true.
+    // swiftlint:disable:next function_body_length cyclomatic_complexity function_parameter_count
+    private static func scan(_ ns: NSString, subject line: String?, language: LanguageDefinition,
+                             state: inout State, emit: Bool, limit: Int?,
+                             start: Int) -> [(range: NSRange, kind: TokenKind)] {
         let length = min(limit ?? ns.length, ns.length)
         var result: [(range: NSRange, kind: TokenKind)] = []
         var i = min(start, length)
@@ -135,7 +145,7 @@ public enum PythonTokenizer {
                     state.frames[last].brackets.removeLast()
                 }
             }
-            if emit {
+            if emit, let line {
                 let range = NSRange(location: i, length: length - i)
                 if let token = language.rules.lazy.compactMap({ rule -> (NSRange, TokenKind)? in
                     guard rule.kind != .string && rule.kind != .comment,

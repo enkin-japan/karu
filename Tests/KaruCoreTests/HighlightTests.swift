@@ -450,7 +450,8 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
 }
 
 @Test func unprofiledLanguagesKeepPerLineTokens() {
-    for def in [JSONLanguage.make(), MarkdownLanguage.make(), CLanguage.make()] {
+    // JSON is profiled since long-line slicing (a string-only profile).
+    for def in [YAMLLanguage.make(), MarkdownLanguage.make(), CLanguage.make()] {
         #expect(def.lexicalProfile == nil && def.lexicalScanner == nil)
         // No state is carried: each line tokenizes exactly as on its own.
         let source = "let s = \"\"\"x\n/* a\nb */ \"\"\";\n"

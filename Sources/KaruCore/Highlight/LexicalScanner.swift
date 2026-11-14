@@ -14,7 +14,7 @@ import Foundation
 /// **Ranges.** Both accept any `[from, to)`, not necessarily line-aligned. The
 /// scanner never reads at or beyond `to`; it may read *before* `from`, but
 /// only the single unit in front of a string / atom prefix (the word-boundary
-/// guard).
+/// guard) or, when stopping at a safe point, in front of `from` itself.
 ///
 /// **Split guarantee.** For a split point `b` in `[a, c)`, scanning `a..<b`
 /// then `b..<c` gives the same end state as scanning `a..<c`, and the
@@ -24,7 +24,17 @@ import Foundation
 /// string prefix, lead and hashes), a closer, an escape sequence, an
 /// interpolation delimiter, an atom match or a surrogate pair. Line starts
 /// are always safe (no token crosses a line break: escape + newline counts as
-/// one escape), which is what checkpoints and the highlighter use.
+/// one escape).
+///
+/// **Safe points** (long-line slicing, plan §6 item 2) are what the
+/// `stoppingAtSafePointFrom:` variants return: a token boundary that is also
+/// not inside a surrogate pair, an identifier run or a CRLF, and — in code —
+/// not right after a unit that a later token's backward lookback (string
+/// prefix, hashed lead / hashes, C++ `R`, atom prefix) could include. Resuming
+/// there floors those lookbacks at the safe point instead of at the single
+/// pass's earlier code start, so this last condition keeps them identical.
+/// Checkpoints and the highlighter split only at line starts and at returned
+/// safe points.
 ///
 /// **Lines.** CR, LF and CRLF terminate lines. A line comment, and a
 /// single-line string not continued by escape + newline, end at the
@@ -97,6 +107,8 @@ public struct LexicalScanner: Sendable {
     private let atoms: [Atom]
     private let codeMarkers: CharacterSet
     private let interpolationMarkers: CharacterSet
+    /// Units a backward lookback in code may include (see "Safe points").
+    private let lookbackUnits: CharacterSet
     private static let lineBreaks = CharacterSet(charactersIn: "\r\n")
 
     private static let cr: unichar = 13
@@ -107,6 +119,9 @@ public struct LexicalScanner: Sendable {
     private static let atomWindow = 512
     /// Context kept before an atom so `\b` and short lookbehinds work.
     private static let atomLookbehind = 16
+    /// How far ahead of a token boundary a safe-point search looks for the
+    /// next marker before falling back to scanning one more token.
+    private static let safePointWindow = 256
 
     public init(profile: LexicalProfile) {
         precondition(profile.blockComments.count < 256 && profile.strings.count < 256
@@ -203,6 +218,33 @@ public struct LexicalScanner: Sendable {
         var interp = code + [Self.cr, Self.lf] + Array("()[]{}".utf16)
         for spec in strings { interp += spec.interpolations.map(\.close) }
         interpolationMarkers = set(interp)
+
+        var lookback = CharacterSet()
+        func insertUnits(_ text: String, bothCases: Bool) {
+            for u in text.utf16 {
+                if let scalar = Unicode.Scalar(u) { lookback.insert(scalar) }
+                if bothCases, (65...90).contains(u) || (97...122).contains(u),
+                   let flipped = Unicode.Scalar(u ^ 0x20) {
+                    lookback.insert(flipped)
+                }
+            }
+        }
+        for form in profile.strings {
+            for prefix in form.prefixes { insertUnits(prefix, bothCases: form.prefixCaseInsensitive) }
+            switch form.delimiter {
+            case .hashed(let lead, let hash, _, _):
+                insertUnits(lead, bothCases: false)
+                insertUnits(String(hash), bothCases: false)
+            case .cppRaw:
+                insertUnits("R", bothCases: false)
+            case .fixed, .repeatedQuote:
+                break
+            }
+        }
+        for atom in profile.atoms {
+            for prefix in atom.prefixes { insertUnits(prefix, bothCases: false) }
+        }
+        lookbackUnits = lookback
     }
 
     // MARK: - Public API
@@ -221,6 +263,30 @@ public struct LexicalScanner: Sendable {
         withoutActuallyEscaping(emit) { escapable in
             var emitter = Emitter(emit: escapable)
             run(text, from: from, to: to, state: &state, emitter: &emitter)
+        }
+    }
+
+    /// Advances from `from` and stops at the first *split-safe* position p with
+    /// target <= p <= to (p == to when none). Returns p; `state` is the state at p.
+    ///
+    /// `target` is clamped to `[from, to]`. Up to `target` this does the same
+    /// work as `advance` (marker searches are only cut at `target`); past it,
+    /// at most a few tokens are scanned before a safe point is found.
+    @discardableResult
+    public func advance(_ text: NSString, from: Int, to: Int,
+                        stoppingAtSafePointFrom target: Int, state: inout LexicalScanState) -> Int {
+        var emitter = Emitter(emit: nil)
+        return run(text, from: from, to: to, stop: target, state: &state, emitter: &emitter)
+    }
+
+    /// Same, also emitting segments covering exactly [from, p).
+    @discardableResult
+    public func segments(_ text: NSString, from: Int, to: Int,
+                         stoppingAtSafePointFrom target: Int, state: inout LexicalScanState,
+                         emit: (NSRange, LexicalSegment) -> Void) -> Int {
+        withoutActuallyEscaping(emit) { escapable in
+            var emitter = Emitter(emit: escapable)
+            return run(text, from: from, to: to, stop: target, state: &state, emitter: &emitter)
         }
     }
 
@@ -287,13 +353,26 @@ public struct LexicalScanner: Sendable {
         return true
     }
 
+    /// The scan loop. With `stop` (a target), it returns at the first safe
+    /// point at or after the target (see "Safe points"); without, at `to`.
+    ///
+    /// Stopping is layered on the plain loop without a second search per
+    /// token: while `pos < target`, every marker search ends at `target` (the
+    /// non-nesting block-comment closer search a closer's length beyond, so a
+    /// closer straddling `target` is still found) while matching still uses
+    /// the real `to`; a search that finds nothing moves `pos` to `target`,
+    /// which is what the single pass would do to the state. From `target` on,
+    /// each loop top (a token boundary) first looks for a safe point before
+    /// the next possible token start.
     // swiftlint:disable:next function_body_length cyclomatic_complexity
-    private func run(_ text: NSString, from rawFrom: Int, to rawTo: Int,
-                     state: inout LexicalScanState, emitter: inout Emitter) {
+    @discardableResult
+    private func run(_ text: NSString, from rawFrom: Int, to rawTo: Int, stop: Int? = nil,
+                     state: inout LexicalScanState, emitter: inout Emitter) -> Int {
         let length = text.length
         let to = min(max(rawTo, 0), length)
         var pos = min(max(rawFrom, 0), to)
         let from = pos
+        let target = stop.map { min(max($0, from), to) }
 
         @inline(__always) func at(_ i: Int) -> unichar { text.character(at: i) }
         /// `units` occur at `p`, entirely before `limit`.
@@ -328,21 +407,82 @@ public struct LexicalScanner: Sendable {
         var codeStart = from
         emitter.mark(from, contextKind(state))
 
+        /// `i` is the second unit of a surrogate pair.
+        func isLowSurrogate(_ i: Int) -> Bool {
+            i > 0 && i < to && (0xDC00...0xDFFF).contains(at(i)) && (0xD800...0xDBFF).contains(at(i - 1))
+        }
+        /// Where a marker search that found nothing before `limit` leaves the
+        /// plain run: `limit`, or past it when it splits a surrogate pair (a
+        /// low surrogate is never a marker, and a search must not start on it).
+        func afterPlainRun(_ limit: Int) -> Int {
+            limit < to && isLowSurrogate(limit) ? limit + 1 : limit
+        }
+
+        /// `q` is split-safe in a context of this kind (`q` at a token
+        /// boundary). Reads at most `q - 1` and `q`, never at `to`.
+        func friendly(_ q: Int, code: Bool) -> Bool {
+            guard q > 0, q < to else { return true }
+            let previous = at(q - 1)
+            if (0xD800...0xDBFF).contains(previous) { return false }
+            let current = at(q)
+            if Self.isIdentifier(previous) && Self.isIdentifier(current) { return false }
+            if previous == Self.cr && current == Self.lf { return false }
+            if code, let scalar = Unicode.Scalar(previous), lookbackUnits.contains(scalar) { return false }
+            return true
+        }
+        /// At a loop top past the target: the first safe point between `pos`
+        /// and a lower bound of the next token start, or nil.
+        func safePoint() -> Int? {
+            let markers: CharacterSet
+            let code: Bool
+            switch state.frames.last {
+            case nil: markers = codeMarkers; code = true
+            case .interpolation?: markers = interpolationMarkers; code = true
+            case .lineComment?: markers = Self.lineBreaks; code = false
+            // Both delimiters' first units, also for a non-nesting comment: a
+            // closer straddling the window end must not yield a stop inside it.
+            case .blockComment(let form, _)?: markers = blocks[Int(form)].markers; code = false
+            case .string(let form, _, _)?: markers = strings[Int(form)].contentMarkers; code = false
+            }
+            let windowEnd = min(to, pos + Self.safePointWindow)
+            // A forward search starting on a low surrogate skips the next
+            // unit (Foundation); start on the pair's first unit instead.
+            let searchStart = pos > from && isLowSurrogate(pos) ? pos - 1 : pos
+            let hit = text.rangeOfCharacter(from: markers, options: [],
+                                            range: NSRange(location: searchStart, length: windowEnd - searchStart))
+            let bound = hit.location == NSNotFound ? windowEnd : hit.location
+            var q = pos
+            while q <= bound {
+                if friendly(q, code: code) { return q }
+                q += 1
+            }
+            return nil
+        }
+
         while pos < to {
+            // Phase B: past the target, stop at the first safe point.
+            if let target, pos >= target, let q = safePoint() {
+                emitter.finish(at: q)
+                return q
+            }
+            // Phase A: before the target, marker searches end there.
+            let limit = target.map { pos < $0 ? $0 : to } ?? to
             guard let top = state.frames.last else {
-                pos = scanCode(text, pos, to, &state, &emitter, &codeStart, inInterpolation: false,
+                pos = scanCode(text, pos, to, limit, &state, &emitter, &codeStart, inInterpolation: false,
                                matches: matches, prefixStart: prefixStart, boundary: boundary)
+                if pos == limit, limit < to { pos = afterPlainRun(limit) }
                 continue
             }
             switch top {
             case .interpolation:
-                pos = scanCode(text, pos, to, &state, &emitter, &codeStart, inInterpolation: true,
+                pos = scanCode(text, pos, to, limit, &state, &emitter, &codeStart, inInterpolation: true,
                                matches: matches, prefixStart: prefixStart, boundary: boundary)
+                if pos == limit, limit < to { pos = afterPlainRun(limit) }
 
             case .lineComment:
                 let hit = text.rangeOfCharacter(from: Self.lineBreaks, options: [],
-                                                range: NSRange(location: pos, length: to - pos))
-                guard hit.location != NSNotFound else { pos = to; break }
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
                 state.frames.removeLast()
                 pos = hit.location
                 codeStart = pos
@@ -351,9 +491,11 @@ public struct LexicalScanner: Sendable {
             case .blockComment(let formIndex, let depth):
                 let block = blocks[Int(formIndex)]
                 if !block.nests {
+                    // A closer starting before `limit` may end after it.
+                    let searchEnd = limit < to ? min(to, limit + block.close.count - 1) : to
                     let hit = text.range(of: block.closeString, options: .literal,
-                                         range: NSRange(location: pos, length: to - pos))
-                    guard hit.location != NSNotFound else { pos = to; break }
+                                         range: NSRange(location: pos, length: searchEnd - pos))
+                    guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
                     state.frames.removeLast()
                     pos = NSMaxRange(hit)
                     codeStart = pos
@@ -361,8 +503,8 @@ public struct LexicalScanner: Sendable {
                     break
                 }
                 let hit = text.rangeOfCharacter(from: block.markers, options: [],
-                                                range: NSRange(location: pos, length: to - pos))
-                guard hit.location != NSNotFound else { pos = to; break }
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
                 let p = hit.location
                 if matches(block.close, p, to) {
                     pos = p + block.close.count
@@ -385,8 +527,8 @@ public struct LexicalScanner: Sendable {
             case .string(let formIndex, let count, let delimiter):
                 let spec = strings[Int(formIndex)]
                 let hit = text.rangeOfCharacter(from: spec.contentMarkers, options: [],
-                                                range: NSRange(location: pos, length: to - pos))
-                guard hit.location != NSNotFound else { pos = to; break }
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
                 let p = hit.location
                 let c = at(p)
 
@@ -425,11 +567,17 @@ public struct LexicalScanner: Sendable {
                         break
                     }
                     if opened { break }
-                    // Plain escape: the escape (+ hashes) and one escaped unit;
-                    // CRLF after it counts as one line continuation.
+                    // Plain escape: the escape (+ hashes) and one escaped
+                    // character; CRLF after it counts as one line continuation,
+                    // a surrogate pair as one character (a search must never
+                    // start on a low surrogate: Foundation then skips a unit).
                     var q = afterEscape
                     if q < to {
-                        q += (at(q) == Self.cr && q + 1 < to && at(q + 1) == Self.lf) ? 2 : 1
+                        let escaped = at(q)
+                        let pair = q + 1 < to
+                            && ((escaped == Self.cr && at(q + 1) == Self.lf)
+                                || ((0xD800...0xDBFF).contains(escaped) && (0xDC00...0xDFFF).contains(at(q + 1))))
+                        q += pair ? 2 : 1
                     }
                     pos = min(q, to)
                     break
@@ -484,6 +632,7 @@ public struct LexicalScanner: Sendable {
             }
         }
         emitter.finish(at: to)
+        return to
     }
 
     /// End of the string's closer at `p`, or nil when `p` does not close it.
@@ -505,9 +654,10 @@ public struct LexicalScanner: Sendable {
 
     /// Scans code from `pos` up to the next construct boundary and returns the
     /// new position. In an interpolation it also tracks brackets, the closer
-    /// and line ends.
+    /// and line ends. The marker search ends at `limit` (≤ `to`; returned when
+    /// nothing is found); matching uses `to`.
     // swiftlint:disable:next function_parameter_count function_body_length cyclomatic_complexity
-    private func scanCode(_ text: NSString, _ pos: Int, _ to: Int,
+    private func scanCode(_ text: NSString, _ pos: Int, _ to: Int, _ limit: Int,
                           _ state: inout LexicalScanState, _ emitter: inout Emitter, _ codeStart: inout Int,
                           inInterpolation: Bool,
                           matches: ([unichar], Int, Int) -> Bool,
@@ -515,8 +665,8 @@ public struct LexicalScanner: Sendable {
                           boundary: (Int) -> Bool) -> Int {
         let markers = inInterpolation ? interpolationMarkers : codeMarkers
         let hit = text.rangeOfCharacter(from: markers, options: [],
-                                        range: NSRange(location: pos, length: to - pos))
-        guard hit.location != NSNotFound else { return to }
+                                        range: NSRange(location: pos, length: limit - pos))
+        guard hit.location != NSNotFound else { return limit }
         let p = hit.location
         let c = text.character(at: p)
 

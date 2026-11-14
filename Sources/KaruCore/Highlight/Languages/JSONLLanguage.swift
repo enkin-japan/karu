@@ -2,10 +2,9 @@ import Foundation
 
 /// JSON Lines / newline-delimited JSON.
 ///
-/// Each line is an independent JSON value, so the line-based tokenizer is exact
-/// here just as it is for JSON. The rules are reused verbatim from
-/// `JSONLanguage` (JSONL is structurally identical to JSON); only the
-/// identifier and file extensions differ.
+/// Each line is an independent JSON value, so JSONL is JSON's definition
+/// (rules, string profile, key follower) under another identifier and file
+/// extensions.
 public enum JSONLLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -15,9 +14,11 @@ public enum JSONLLanguage {
         return LanguageDefinition(
             identifier: "jsonl",
             fileExtensions: ["jsonl", "ndjson"],
-            // Reuse JSON's rule set unchanged — JSONL is JSON per line.
-            rules: JSONLanguage.make().rules,
-            keywords: ["true", "false", "null"]
+            // Reuse JSON's rules, profile and key follower — JSONL is JSON per line.
+            rules: JSONLanguage.rules(),
+            keywords: ["true", "false", "null"],
+            lexicalProfile: JSONLanguage.lexicalProfile,
+            propertyStringFollower: JSONLanguage.keyFollower
         )
     }
 }

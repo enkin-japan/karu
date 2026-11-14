@@ -21,6 +21,18 @@ private func pump(_ seconds: TimeInterval) async {
     try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
 }
 
+/// Lets the main run loop turn until `done` (at most `timeout` seconds), for
+/// work that is expected to land: under a busy parallel test run the
+/// debounced rescan may take longer than a fixed pump to get its main-thread
+/// slice. Checks that something did *not* happen keep a fixed `pump`.
+@MainActor
+private func pump(until done: () -> Bool, timeout: TimeInterval = 3) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !done(), Date() < deadline {
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
+
 /// Records the reasons an analysis notifies with.
 @MainActor
 private final class ReasonLog: DocumentAnalysisConsumer {
@@ -170,6 +182,7 @@ struct DocumentAnalysisTests {
                                                        with: "\nfresh_name = 1\n")
         #expect(editor.analysis.declarations == nil)
         await pump(0.4)   // past the analysis (0.07 s) and completion (0.15 s) debounces
+        await pump(until: { editor.completion.currentSymbolsForTesting.contains("fresh_name") })
         #expect(editor.analysis.declarationScanCount == 2)
         #expect(editor.analysis.declarations?.version == editor.analysis.version)
         #expect(editor.analysis.declarations?.scan.table.variables.contains("fresh_name") == true)
@@ -191,6 +204,7 @@ struct DocumentAnalysisTests {
                                                            with: "\(name) = 1\n")
         }
         await pump(0.3)
+        await pump(until: { editor.analysis.declarationScanCount > baseline && !log.reasons.isEmpty })
         #expect(editor.analysis.declarationScanCount == baseline + 1)
         #expect(log.reasons == [.declarations])
 
@@ -413,6 +427,7 @@ struct DocumentAnalysisTests {
                                                   with: "late = f\"{x!s}\" + '''open\nstill'''\n")
         #expect(a.checkpointOffsets == beforeEdit)
         await pump(0.3)   // the edit's declaration rescan lands
+        await pump(until: { a.engine.analysis.declarations != nil })
         #expect(a.engine.analysis.declarations != nil)
         expectMatchesFreshEngine(a, at: Int(Double(a.length) * 0.97), "edit-near-end")
         #expect(Array(a.checkpointOffsets.prefix(beforeEdit.count)) == beforeEdit)

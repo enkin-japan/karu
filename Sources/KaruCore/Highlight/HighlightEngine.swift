@@ -87,6 +87,12 @@ private extension NSColor {
 ///   before the band (`bandTokens`); nothing is scanned from offset 0 per pass.
 /// - **Off-screen cleanup** (T17.2): colour is held only in the last painted
 ///   band (`colouredRange`); each pass clears what lies outside its new band.
+/// - **Long lines** (plan §6 item 2): the band snaps to whole lines only when
+///   the line edge is within `LanguageDefinition.longLineThreshold` of the
+///   viewport (`bandBounds`); otherwise it starts / ends mid-line. Profiled
+///   languages resume the scanner to a safe point there (checkpoints inside a
+///   long line too) and paint only that slice; Python and unprofiled
+///   languages colour the slice with stateless rules.
 @MainActor
 public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnalysisConsumer {
     private weak var textView: NSTextView?
@@ -122,7 +128,8 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     private var moduleEnabled: Bool
 
     /// The character range actually painted by the last `highlightVisibleRange`
-    /// pass (the overscanned, whole-line span — not just the viewport). A pure
+    /// pass (the overscanned span, whole lines except inside a long line — not
+    /// just the viewport). A pure
     /// scroll whose new viewport still falls inside this band does zero work.
     /// Set back to `nil` whenever the painted colours may be stale: on edit, on
     /// language change, on a module toggle, and when all colour is cleared.
@@ -373,8 +380,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     private func removeAllForegroundColour() {
         paintedRange = nil
         colouredRange = nil
-        guard let layoutManager = textView?.layoutManager,
-              let length = (textView?.string as NSString?)?.length else { return }
+        guard let textView, let layoutManager = textView.layoutManager else { return }
+        // Length without copying the document (`textView.string` copies).
+        let length = textView.textStorage?.length ?? (textView.string as NSString).length
         layoutManager.removeTemporaryAttribute(.foregroundColor,
                                                forCharacterRange: NSRange(location: 0, length: length))
     }
@@ -402,22 +410,125 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             (outer.location + outer.length) >= (inner.location + inner.length)
     }
 
-    /// Maps `rect` to a whole-line, document-clamped character range via the
-    /// layout manager's glyph geometry.
-    private func lineClampedCharRange(for rect: NSRect,
-                                      ns: NSString,
-                                      layoutManager: NSLayoutManager,
-                                      container: NSTextContainer) -> NSRange {
+    /// A paint band before the scanner adjusts it (`bandBounds`): each edge
+    /// is a line boundary, or a raw position inside a long line (`…MidLine`).
+    struct BandBounds: Equatable {
+        var start: Int
+        var startMidLine: Bool
+        var end: Int
+        var endMidLine: Bool
+
+        var range: NSRange { NSRange(location: start, length: max(0, end - start)) }
+        var isSliced: Bool { startMidLine || endMidLine }
+    }
+
+    /// What `NSString.lineRange` ends a line at: CR, LF (CRLF as one), NEL,
+    /// LINE SEPARATOR and PARAGRAPH SEPARATOR — so band edges on short lines
+    /// stay exactly `wholeLineRange`'s.
+    private nonisolated static let lineBreaks = CharacterSet(charactersIn: "\r\n\u{0085}\u{2028}\u{2029}")
+
+    private nonisolated static func isLineBreak(_ u: unichar) -> Bool {
+        u == 10 || u == 13 || u == 0x85 || u == 0x2028 || u == 0x2029
+    }
+
+    /// The last line-break unit in `[from, to)`, or nil. Unit by unit through a
+    /// small buffer: a backward `rangeOfCharacter` reports composed ranges
+    /// around CRLF and surrogate pairs, which can skip the last terminator.
+    private nonisolated static func lastLineBreak(in ns: NSString, from: Int, to: Int) -> Int? {
+        let chunk = 1_024
+        var buffer = [unichar](repeating: 0, count: chunk)
+        var end = to
+        while end > from {
+            let start = max(from, end - chunk)
+            buffer.withUnsafeMutableBufferPointer { pointer in
+                ns.getCharacters(pointer.baseAddress!, range: NSRange(location: start, length: end - start))
+            }
+            for i in stride(from: end - start - 1, through: 0, by: -1) where isLineBreak(buffer[i]) {
+                return start + i
+            }
+            end = start
+        }
+        return nil
+    }
+
+    /// The first line-break unit in `[from, to)`, or nil. Starts a unit early on
+    /// a low surrogate: a forward `rangeOfCharacter` from the middle of a
+    /// surrogate pair skips the unit after it.
+    private nonisolated static func firstLineBreak(in ns: NSString, from: Int, to: Int) -> Int? {
+        guard to > from else { return nil }
+        var start = from
+        if start > 0, (0xDC00...0xDFFF).contains(ns.character(at: start)),
+           (0xD800...0xDBFF).contains(ns.character(at: start - 1)) {
+            start -= 1
+        }
+        let hit = ns.rangeOfCharacter(from: lineBreaks, options: [], range: NSRange(location: start, length: to - start))
+        return hit.location == NSNotFound ? nil : hit.location
+    }
+
+    /// End of the line whose terminator starts at `t` (CRLF counts as one).
+    private nonisolated static func lineEnd(afterTerminatorAt t: Int, in ns: NSString) -> Int {
+        ns.character(at: t) == 13 && t + 1 < ns.length && ns.character(at: t + 1) == 10 ? t + 2 : t + 1
+    }
+
+    /// `raw` clamped into the document and snapped outward to whole lines like
+    /// `wholeLineRange`, except that an edge whose line boundary lies more
+    /// than `threshold` units away stays at the raw position (mid-line, moved
+    /// off the middle of a surrogate pair). Pure, and it never scans more than
+    /// about `threshold` units: a long line is not walked to its ends. Short
+    /// lines give exactly `wholeLineRange`.
+    nonisolated static func bandBounds(raw: NSRange, in ns: NSString, threshold: Int) -> BandBounds {
+        let length = ns.length
+        guard length > 0 else { return BandBounds(start: 0, startMidLine: false, end: 0, endMidLine: false) }
+        func isHigh(_ u: unichar) -> Bool { (0xD800...0xDBFF).contains(u) }
+
+        // Start: the line start of the clamped raw start, if close enough.
+        let s = min(max(raw.location, 0), length - 1)
+        // The LF of a CRLF belongs to the line its CR ends.
+        let searchEnd = s > 0 && ns.character(at: s) == 10 && ns.character(at: s - 1) == 13 ? s - 1 : s
+        let windowStart = max(0, searchEnd - threshold - 1)
+        let lineStart: Int? = lastLineBreak(in: ns, from: windowStart, to: searchEnd)
+            .map { Self.lineEnd(afterTerminatorAt: $0, in: ns) } ?? (windowStart == 0 ? 0 : nil)
+        var start = s
+        var startMidLine = true
+        if let lineStart, s - lineStart <= threshold {
+            start = lineStart
+            startMidLine = false
+        } else if start > 0, isHigh(ns.character(at: start - 1)) {
+            start -= 1
+        }
+
+        // End: the line end of the line holding the clamped raw end, if close enough.
+        let rawEnd = min(max(raw.location + raw.length, 0), length)
+        let p = min(rawEnd, length - 1)
+        let windowEnd = min(length, p + threshold + 2)
+        let lineEnd: Int? = firstLineBreak(in: ns, from: p, to: windowEnd)
+            .map { Self.lineEnd(afterTerminatorAt: $0, in: ns) } ?? (windowEnd == length ? length : nil)
+        var end = rawEnd
+        var endMidLine = true
+        if let lineEnd, lineEnd - rawEnd <= threshold {
+            end = lineEnd
+            endMidLine = false
+        } else if end > 0, end < length, isHigh(ns.character(at: end - 1)) {
+            end += 1
+        }
+        if end < start { end = start }
+        return BandBounds(start: start, startMidLine: startMidLine, end: end, endMidLine: endMidLine)
+    }
+
+    /// The document-clamped character range `rect` covers, from the layout
+    /// manager's glyph geometry (not snapped to lines).
+    private func rawCharRange(for rect: NSRect, layoutManager: NSLayoutManager,
+                              container: NSTextContainer) -> NSRange {
         let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
-        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-        return Self.wholeLineRange(clamping: charRange, in: ns)
+        return layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
     }
 
     /// Tokenizes and colours the visible lines *plus an overscan margin*. Skips
     /// entirely when the viewport still sits inside the already-painted band
     /// (a pure scroll tick then does zero work). Clears the foreground colour
     /// still held outside the new band (off-screen cleanup, plan §6 item 1)
-    /// and inside it, then repaints the band.
+    /// and inside it, then repaints the band. Inside a long line the band is a
+    /// slice of it (`bandBounds`, `bandTokens`).
     private func highlightVisibleRange() {
         guard moduleEnabled,
               let language,
@@ -426,34 +537,50 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
               let container = textView.textContainer,
               let scrollView else { return }
 
-        let ns = textView.string as NSString
+        // The storage's own string: `textView.string` would copy the whole
+        // document on every pass.
+        let ns: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
         guard ns.length > 0 else { return }
         let perfStart = PerfLog.isEnabled ? PerfLog.now() : 0
+        let threshold = LanguageDefinition.longLineThreshold
 
         let visibleRect = scrollView.contentView.bounds
 
-        // The bare viewport (whole lines, no overscan): used only to decide
-        // whether the painted band already covers what's on screen.
-        let viewportChars = lineClampedCharRange(for: visibleRect, ns: ns,
-                                                 layoutManager: layoutManager, container: container)
+        // The bare viewport (whole lines unless inside a long line, no
+        // overscan): used only to decide whether the painted band already
+        // covers what's on screen.
+        let viewportChars = Self.bandBounds(raw: rawCharRange(for: visibleRect, layoutManager: layoutManager,
+                                                              container: container),
+                                            in: ns, threshold: threshold).range
         guard viewportChars.length > 0 else { return }
 
         // Zero-work fast path: the viewport is still inside the pre-painted band.
         if let painted = paintedRange, Self.range(painted, contains: viewportChars) {
             if PerfLog.isEnabled {
                 PerfLog.record("highlight.pass", since: perfStart,
-                               ["lang": language.identifier, "painted": 0, "skipped": 1])
+                               ["lang": language.identifier, "painted": 0, "skipped": 1, "sliced": 0])
             }
             return
         }
 
         // Overscan: expand the paint rect ~1.5 screens above and below so a
         // region scrolling into view is already coloured. Document-boundary
-        // clamping happens in `wholeLineRange`, so this only ever paints a few
-        // screens — never the whole document (ARCHITECTURE.md §3.1).
+        // clamping happens in `bandBounds`, so this only ever paints a few
+        // screens — never the whole document (ARCHITECTURE.md §3.1), and
+        // never a whole long line.
         let overscanRect = visibleRect.insetBy(dx: 0, dy: -1.5 * visibleRect.height)
-        let paintChars = lineClampedCharRange(for: overscanRect, ns: ns,
-                                              layoutManager: layoutManager, container: container)
+        let bounds = Self.bandBounds(raw: rawCharRange(for: overscanRect, layoutManager: layoutManager,
+                                                       container: container),
+                                     in: ns, threshold: threshold)
+        guard bounds.range.length > 0 else { return }
+
+        // Lexical state at the band start comes from the analysis's sparse
+        // checkpoints (Python and profiled languages); tokens are transient.
+        // Computed before clearing, since a sliced band's actual extent is
+        // only known once the scanner has found its safe points.
+        let band = Self.bandTokens(in: ns, bounds: bounds, language: language,
+                                   checkpoints: &analysis.checkpoints)
+        let paintChars = band.painted
         guard paintChars.length > 0 else { return }
 
         // Off-screen cleanup: the colour held outside the new band is cleared
@@ -471,10 +598,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: paintChars)
         colouredRange = paintChars
 
-        // Lexical state at the band start comes from the analysis's sparse
-        // checkpoints (Python and profiled languages); tokens are transient.
-        let tokens = Self.bandTokens(in: ns, range: paintChars, language: language,
-                                     checkpoints: &analysis.checkpoints)
+        let tokens = band.tokens
         for token in tokens {
             guard let color = theme.color(for: token.kind) else { continue }
             layoutManager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: token.range)
@@ -492,63 +616,194 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         paintedRange = paintChars
         if PerfLog.isEnabled {
             PerfLog.record("highlight.pass", since: perfStart,
-                           ["lang": language.identifier, "painted": paintChars.length, "skipped": 0])
+                           ["lang": language.identifier, "painted": paintChars.length, "skipped": 0,
+                            "sliced": bounds.isSliced ? 1 : 0])
         }
     }
 
     // MARK: - Band tokens (pure)
 
     /// The tokens of `range` (whole lines) with absolute, ascending ranges.
-    ///
-    /// - Profiled languages: the generic scanner's state at `range.location`
-    ///   (resumed from `checkpoints`), then `LanguageDefinition.tokens`.
-    /// - Python: `PythonTokenizer` line by line from its resumed state.
-    /// - Everything else: `tokenize(line:)` line by line, no state.
-    ///
-    /// Pure apart from recording checkpoints into `checkpoints`, so tests can
-    /// run the exact pass the engine paints with.
+    /// `bandTokens(in:bounds:…)` with both edges on line boundaries.
     nonisolated static func bandTokens(in ns: NSString, range: NSRange, language: LanguageDefinition,
                                        checkpoints: inout CheckpointStore) -> [(range: NSRange, kind: TokenKind)] {
-        let start = range.location
-        let end = NSMaxRange(range)
-        if language.lexicalScanner != nil {
-            var state = lexicalScanState(at: start, in: ns, language: language, checkpoints: &checkpoints)
-            return language.tokens(in: ns, range: range, state: &state)
+        let bounds = BandBounds(start: range.location, startMidLine: false, end: NSMaxRange(range), endMidLine: false)
+        return bandTokens(in: ns, bounds: bounds, language: language, checkpoints: &checkpoints).tokens
+    }
+
+    /// The tokens of the band `bounds` (absolute, ascending, inside
+    /// `painted`) and the range actually painted.
+    ///
+    /// - Profiled languages: the generic scanner's state at the band start
+    ///   (resumed from `checkpoints`), then `LanguageDefinition.tokens`. A
+    ///   mid-line start is moved to the first scanner safe point at or after
+    ///   it; the tokens are computed from a safe point `ruleContext` units
+    ///   earlier (a rule lead-in, so a rule token crossing the start keeps its
+    ///   extent) and clipped. A mid-line end stops at the first safe point at
+    ///   or after it.
+    /// - Python: `PythonTokenizer` line by line from its resumed state.
+    /// - Everything else: `tokenize(line:)` line by line, no state.
+    /// - Python and unprofiled languages, in a line longer than
+    ///   `longLineThreshold`: stateless rule tokens of the band's slice of
+    ///   that line only (`statelessRuleTokens`), never the whole line. For
+    ///   Python this ignores string state inside the long line — an accepted
+    ///   compromise; the state after it is resumed exactly.
+    ///
+    /// Pure apart from recording checkpoints into `checkpoints`, so tests can
+    /// run the exact pass the engine paints with. With both edges on line
+    /// boundaries and no long line this is the whole-line pass of T17.2.
+    nonisolated static func bandTokens(in ns: NSString, bounds: BandBounds, language: LanguageDefinition,
+                                       checkpoints: inout CheckpointStore)
+        -> (tokens: [(range: NSRange, kind: TokenKind)], painted: NSRange) {
+        if let scanner = language.lexicalScanner {
+            return profiledBandTokens(in: ns, bounds: bounds, language: language, scanner: scanner,
+                                      checkpoints: &checkpoints)
         }
+        return lineBandTokens(in: ns, bounds: bounds, language: language, checkpoints: &checkpoints)
+    }
+
+    private nonisolated static func profiledBandTokens(in ns: NSString, bounds: BandBounds,
+                                                       language: LanguageDefinition, scanner: LexicalScanner,
+                                                       checkpoints: inout CheckpointStore)
+        -> (tokens: [(range: NSRange, kind: TokenKind)], painted: NSRange) {
+        var from = bounds.start
+        var paintStart = bounds.start
+        var state: LexicalScanState
+        if bounds.startMidLine {
+            let resumed = lexicalScanResume(at: max(0, bounds.start - LanguageDefinition.ruleContext), in: ns,
+                                            language: language, checkpoints: &checkpoints)
+            from = resumed.position
+            state = resumed.state
+            var probe = state
+            paintStart = max(from, scanner.advance(ns, from: from, to: ns.length,
+                                                   stoppingAtSafePointFrom: bounds.start, state: &probe))
+        } else {
+            state = lexicalScanState(at: bounds.start, in: ns, language: language, checkpoints: &checkpoints)
+        }
+        var tokens: [(range: NSRange, kind: TokenKind)]
+        var end = bounds.end
+        if bounds.endMidLine {
+            (tokens, end) = language.tokens(in: ns, range: NSRange(location: from, length: ns.length - from),
+                                            stoppingAtSafePointFrom: max(bounds.end, paintStart), state: &state)
+        } else {
+            tokens = end > from
+                ? language.tokens(in: ns, range: NSRange(location: from, length: end - from), state: &state)
+                : []
+        }
+        let painted = NSRange(location: paintStart, length: max(0, end - paintStart))
+        if from < paintStart { tokens = clipped(tokens, to: painted) }
+        return (tokens, painted)
+    }
+
+    /// `tokens` (ascending) restricted to `range`.
+    nonisolated static func clipped(_ tokens: [(range: NSRange, kind: TokenKind)],
+                                    to range: NSRange) -> [(range: NSRange, kind: TokenKind)] {
+        tokens.compactMap { token in
+            let piece = NSIntersectionRange(token.range, range)
+            return piece.length > 0 ? (piece, token.kind) : nil
+        }
+    }
+
+    // swiftlint:disable:next function_body_length
+    private nonisolated static func lineBandTokens(in ns: NSString, bounds: BandBounds,
+                                                   language: LanguageDefinition,
+                                                   checkpoints: inout CheckpointStore)
+        -> (tokens: [(range: NSRange, kind: TokenKind)], painted: NSRange) {
+        let start = bounds.start
+        let end = bounds.end
+        let length = ns.length
+        let threshold = LanguageDefinition.longLineThreshold
+        let context = LanguageDefinition.ruleContext
         let isPython = language.identifier == "python"
-        var pythonState = isPython
-            ? pythonLexicalState(at: start, in: ns, language: language, checkpoints: &checkpoints)
-            : PythonTokenizer.State()
+        /// Python's state at `loc`, when known.
+        var pythonState: PythonTokenizer.State?
         var tokens: [(range: NSRange, kind: TokenKind)] = []
         var loc = start
         while loc < end {
-            let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
-            let lineString = ns.substring(with: lineRange)
-            let lineTokens = isPython
-                ? PythonTokenizer.scan(lineString, language: language, state: &pythonState)
-                : language.tokenize(line: lineString)
-            for token in lineTokens {
-                tokens.append((NSRange(location: lineRange.location + token.range.location,
-                                       length: token.range.length), token.kind))
+            // The line holding `loc`: its start when known (`loc` is a line
+            // start except at a mid-line band start), its end when found
+            // within `threshold` units (or inside the band), and whether it
+            // is long.
+            let atLineStart = !(loc == start && bounds.startMidLine)
+            var lineEnd: Int?
+            var isLong = !atLineStart
+            if atLineStart {
+                let reach = min(length, loc + threshold + 1)
+                if let lineBreak = firstLineBreak(in: ns, from: loc, to: reach) {
+                    lineEnd = Self.lineEnd(afterTerminatorAt: lineBreak, in: ns)
+                } else if reach == length {
+                    lineEnd = length
+                }
+                isLong = lineEnd.map { $0 - loc > threshold } ?? true
             }
-            let next = NSMaxRange(lineRange)
-            if next <= loc { break }
-            loc = next
+
+            if !isLong, let lineEnd {
+                let lineRange = NSRange(location: loc, length: lineEnd - loc)
+                let lineString = ns.substring(with: lineRange)
+                let lineTokens: [(range: NSRange, kind: TokenKind)]
+                if isPython {
+                    var state = pythonState
+                        ?? pythonLexicalState(at: loc, in: ns, language: language, checkpoints: &checkpoints)
+                    lineTokens = PythonTokenizer.scan(lineString, language: language, state: &state)
+                    pythonState = state
+                } else {
+                    lineTokens = language.tokenize(line: lineString)
+                }
+                for token in lineTokens {
+                    tokens.append((NSRange(location: loc + token.range.location, length: token.range.length),
+                                   token.kind))
+                }
+                loc = lineEnd
+                continue
+            }
+
+            // A long line: only the band's slice of it, stateless.
+            if lineEnd == nil {
+                lineEnd = firstLineBreak(in: ns, from: loc, to: end).map { Self.lineEnd(afterTerminatorAt: $0, in: ns) }
+            }
+            let sliceEnd = min(end, lineEnd ?? end)
+            // Rule context: within the line, up to `context` units around the slice.
+            let contextEnd: Int
+            if let lineEnd {
+                contextEnd = lineEnd
+            } else {
+                let reach = min(length, sliceEnd + context)
+                contextEnd = firstLineBreak(in: ns, from: sliceEnd, to: reach) ?? reach
+            }
+            tokens += language.statelessRuleTokens(in: ns, range: NSRange(location: loc, length: sliceEnd - loc),
+                                                   lineStart: atLineStart ? loc : max(0, loc - context),
+                                                   lineEnd: contextEnd)
+            pythonState = nil
+            guard sliceEnd > loc else { break }
+            loc = sliceEnd
         }
-        return tokens
+        return (tokens, NSRange(location: start, length: max(0, end - start)))
     }
 
     /// The generic scanner's state at `start` (a line start) for a profiled
     /// language. See `resumeLexicalState`.
     nonisolated static func lexicalScanState(at start: Int, in ns: NSString, language: LanguageDefinition,
                                              checkpoints: inout CheckpointStore) -> LexicalScanState {
-        guard let scanner = language.lexicalScanner else { return LexicalScanState() }
+        lexicalScanResume(at: start, in: ns, language: language, checkpoints: &checkpoints).state
+    }
+
+    /// The generic scanner's state at `start`, or — when `start` lies inside a
+    /// line — at the first scanner safe point at or after it, together with
+    /// that position. See `resumeLexicalState`.
+    nonisolated static func lexicalScanResume(at start: Int, in ns: NSString, language: LanguageDefinition,
+                                              checkpoints: inout CheckpointStore)
+        -> (position: Int, state: LexicalScanState) {
+        guard let scanner = language.lexicalScanner else { return (start, LexicalScanState()) }
         return resumeLexicalState(at: start, in: ns, languageIdentifier: language.identifier,
                                   initial: LexicalScanState(), checkpoints: &checkpoints,
                                   unwrap: { if case .generic(let s) = $0 { return s } else { return nil } },
                                   wrap: { .generic($0) },
                                   advance: { from, to, state in
                                       scanner.advance(ns, from: from, to: to, state: &state)
+                                  },
+                                  advanceToSafePoint: { from, to, target, state in
+                                      scanner.advance(ns, from: from, to: to, stoppingAtSafePointFrom: target,
+                                                      state: &state)
                                   })
     }
 
@@ -562,7 +817,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
                            advance: { from, to, state in
                                state = PythonTokenizer.state(in: ns, before: to, language: language,
                                                              from: from, initial: state)
-                           })
+                           }).state
     }
 
     /// Resumes from the nearest checkpoint at or before `start` whose state
@@ -570,13 +825,24 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// forward in line-aligned chunks of about `CheckpointStore.spacing`,
     /// recording a checkpoint at each chunk boundary, then advances to
     /// `start`. Logs `lexical.advance` (units scanned) when PerfLog is on.
-    // swiftlint:disable:next function_parameter_count
+    ///
+    /// Inside a line longer than the spacing, a tokenizer that can stop at a
+    /// safe point (`advanceToSafePoint(from, to, target, &state)` returns the
+    /// first safe point ≥ target; the generic scanner) steps to the safe point
+    /// at or after `offset + spacing` within the line and records a
+    /// checkpoint there; without it (Python) the chunk runs to the line end
+    /// as before. A `start` inside a line is reached the same way, so the
+    /// returned position may lie after it; at a line start it is `start`.
+    // swiftlint:disable:next function_parameter_count function_body_length
     nonisolated static func resumeLexicalState<State>(at start: Int, in ns: NSString, languageIdentifier: String,
                                                       initial: State, checkpoints: inout CheckpointStore,
                                                       unwrap: (LexicalState) -> State?,
                                                       wrap: (State) -> LexicalState,
-                                                      advance: (Int, Int, inout State) -> Void) -> State {
+                                                      advance: (Int, Int, inout State) -> Void,
+                                                      advanceToSafePoint: ((Int, Int, Int, inout State) -> Int)? = nil)
+        -> (position: Int, state: State) {
         let perfStart = PerfLog.isEnabled ? PerfLog.now() : 0
+        let length = ns.length
         var offset = 0
         var state = initial
         if let checkpoint = checkpoints.nearest(atOrBefore: start), let saved = unwrap(checkpoint.state) {
@@ -585,11 +851,31 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         }
         let resumedAt = offset
         let spacing = CheckpointStore.spacing
+        let midLine: Bool = {
+            guard start > 0, start < length else { return false }
+            let previous = ns.character(at: start - 1)
+            if previous == 13 { return ns.character(at: start) == 10 }
+            return !isLineBreak(previous)
+        }()
+        // A safe-point step never runs past a `start` at a line start (line
+        // starts are safe points); towards a mid-line `start` it may.
+        let stepEnd = midLine ? length : start
         while start - offset > spacing {
-            // The line start at or before `offset + spacing`; when one line is
-            // longer than the spacing, the end of that line instead.
-            var next = ns.lineRange(for: NSRange(location: offset + spacing, length: 0)).location
-            if next <= offset {
+            // The line start at or before `offset + spacing` (found by a
+            // bounded backward search, so a long line is not walked).
+            var next: Int
+            if let lineBreak = lastLineBreak(in: ns, from: offset, to: offset + spacing) {
+                next = Self.lineEnd(afterTerminatorAt: lineBreak, in: ns)
+            } else if let advanceToSafePoint {
+                // Inside a line longer than the spacing: the first safe point
+                // after `offset + spacing`.
+                next = advanceToSafePoint(offset, stepEnd, offset + spacing, &state)
+                guard next > offset else { break }
+                if next < start { checkpoints.record(offset: next, state: wrap(state)) }
+                offset = next
+                continue
+            } else {
+                // No safe points: the end of that line instead.
                 next = NSMaxRange(ns.lineRange(for: NSRange(location: offset, length: 0)))
             }
             guard next > offset, next < start else { break }
@@ -597,13 +883,20 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             checkpoints.record(offset: next, state: wrap(state))
             offset = next
         }
-        if start > offset { advance(offset, start, &state) }
+        var position = start
+        if offset >= start {
+            position = offset
+        } else if midLine, let advanceToSafePoint {
+            position = advanceToSafePoint(offset, length, start, &state)
+        } else {
+            advance(offset, start, &state)
+        }
         if PerfLog.isEnabled {
             PerfLog.record("lexical.advance", since: perfStart,
-                           ["lang": languageIdentifier, "units": start - resumedAt,
+                           ["lang": languageIdentifier, "units": position - resumedAt,
                             "resumedAt": resumedAt, "checkpoints": checkpoints.entries.count])
         }
-        return state
+        return (position, state)
     }
 
     /// `outer` minus `inner`, as up to two ranges clamped to `[0, length)`.
