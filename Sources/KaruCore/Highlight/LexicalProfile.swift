@@ -98,22 +98,48 @@ public struct LexicalProfile: Sendable {
         }
     }
 
+    /// Text before an atom that allows it (`AtomForm.precededBy`). Going
+    /// backward from the atom's first unit (its prefix, if any) over spaces,
+    /// tabs, CR and LF — at most `AtomContext.reach` units — the atom matches
+    /// when the document start is reached, or the unit found is one of
+    /// `characters`, or the identifier run (`[A-Za-z0-9_$]`, ≥ U+0080) ending
+    /// there is one of `words`; otherwise (any other unit, or only whitespace
+    /// within the reach) it does not. Purely text-based, independent of the
+    /// scanner state (JS regex literal vs division: `x = /re/` but `a / b / c`).
+    public struct AtomContext: Sendable, Hashable {
+        /// How far back the whitespace skip and word read may look.
+        public static let reach = 256
+
+        public var characters: String
+        public var words: [String]
+
+        public init(characters: String, words: [String] = []) {
+            self.characters = characters
+            self.words = words
+        }
+    }
+
     /// A single-line token consumed atomically in code, so its characters can
     /// never open a string or comment (Rust `'"'`, `'a`). `pattern` is matched
     /// anchored at a character from `firstCharacters` (optionally preceded by
     /// one of `prefixes`, word-boundary guarded like string prefixes) and must
-    /// not cross a line break. Reported as `LexicalSegment.atom(kind)`.
+    /// not cross a line break; it sees up to 16 units before that character
+    /// for lookbehinds. With `precededBy`, the atom only matches in that
+    /// context. Reported as `LexicalSegment.atom(kind)`.
     public struct AtomForm: Sendable {
         public var pattern: String
         public var firstCharacters: String
         public var kind: TokenKind
         public var prefixes: [String]
+        public var precededBy: AtomContext?
 
-        public init(pattern: String, firstCharacters: String, kind: TokenKind, prefixes: [String] = []) {
+        public init(pattern: String, firstCharacters: String, kind: TokenKind, prefixes: [String] = [],
+                    precededBy: AtomContext? = nil) {
             self.pattern = pattern
             self.firstCharacters = firstCharacters
             self.kind = kind
             self.prefixes = prefixes
+            self.precededBy = precededBy
         }
     }
 
@@ -121,15 +147,23 @@ public struct LexicalProfile: Sendable {
     public var blockComments: [BlockCommentForm]
     public var strings: [StringForm]
     public var atoms: [AtomForm]
+    /// For `LanguageDefinition`: when true, regex rules of kind `.string`
+    /// still run inside code segments (`.comment` rules stay skipped). For
+    /// strings that exist only in a context the profile does not model:
+    /// markup quotes delimit strings only inside a tag (HTML / XML attribute
+    /// values stay single-line rules); C's `#include <header>`.
+    public var keepsStringRules: Bool
 
     public init(lineComments: [String] = [],
                 blockComments: [BlockCommentForm] = [],
                 strings: [StringForm] = [],
-                atoms: [AtomForm] = []) {
+                atoms: [AtomForm] = [],
+                keepsStringRules: Bool = false) {
         self.lineComments = lineComments
         self.blockComments = blockComments
         self.strings = strings
         self.atoms = atoms
+        self.keepsStringRules = keepsStringRules
     }
 }
 

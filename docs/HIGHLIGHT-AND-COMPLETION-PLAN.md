@@ -140,6 +140,8 @@
 - `LanguageDefinition` 增加可选的 `lexicalProfile`。有档案的语言，正则规则只在代码片段里生效，并跳过 `.string`、`.comment` 类规则，字符串和注释以档案为准；没有档案的语言（JSON、JSONL，以及 T17.3 前尚未接入的语言）保持逐行规则。
 - 删除 `multilineStringDelimiters` 与 `openMultilineDelimiter` 这条从偏移 0 起扫的路径。高亮按「最近检查点 → `advance` → 视口 `segments`」取得状态。
 - 试点：T17.2 接入 JavaScript、TypeScript、Rust 来验证档案，其余语言在 T17.3 接入。
+- **超长行（T17.2b）**：扫描器 `advance` / `segments(…stoppingAtSafePointFrom:)` 返回目标之后第一个安全切点（token 边界，不在代理对、标识符、CRLF 中间，代码里前一单元不是可回看的前缀字符）。行长超过 `longLineThreshold`（8192）时色带停在行内，长行内部也记检查点。JSON/JSONL 用只含字符串的档案，键由 `propertyStringFollower` 判定。
+- **T17.3 通用扩展**：`LexicalProfile.keepsStringRules`（HTML/XML 属性值、C `#include <…>` 仍走 `.string` 规则）；`AtomForm.precededBy`（`AtomContext`：往回跳过空白看前一字符或单词，只读文本，JS 正则与除号的判定）。
 
 ## 5. 候选怎么选、怎么排
 

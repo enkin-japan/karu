@@ -1,16 +1,35 @@
 import Foundation
 
-/// TOML definition (v1, line-based).
+/// TOML definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
+/// Comments and strings come from `lexicalProfile` (M17 T17.3): `#` line
+/// comments; multi-line basic `"""…"""` (with `\` escapes, so a trailing `\`
+/// joins lines) and literal `'''…'''` strings (no escapes), listed before the
+/// single-line basic `"…"` and literal `'…'` forms. A quoted key — a string
+/// followed by `=` on its line — is `.property` (`propertyStringFollower`).
+///
+/// Remaining approximations:
+/// - A multi-line string ends at the first `"""` / `'''`, so the one or two
+///   extra quotes TOML allows right before the closer (`""""`) are not
+///   modelled.
 /// - Table headers (`[table]`, `[[array]]`) are recognised only at the start of
-///   a line, so an inline array (`x = [1, 2]`) is not mistaken for a table.
-/// - Multi-line basic / literal strings (`"""` / `'''`) are coloured on their
-///   opening line to end-of-line; interior and closing lines are not tracked
-///   (no cross-line state).
+///   a line, so an inline array (`x = [1, 2]`) is not mistaken for a table. In
+///   a header with a quoted part (`[owner."key"]`) only the part before the
+///   quote is coloured as the header; the quoted part is a string.
 public enum TOMLLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
+
+    /// Comments and the four string forms (triple-quoted first).
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["#"],
+        strings: [
+            .init(delimiter: .fixed(open: "\"\"\"", close: "\"\"\""), multiline: true),
+            .init(delimiter: .fixed(open: "'''", close: "'''"), multiline: true, escape: nil),
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+            .init(delimiter: .fixed(open: "'", close: "'"), multiline: false, escape: nil),
+        ]
+    )
 
     public static func make() -> LanguageDefinition {
         buildCount += 1
@@ -21,22 +40,13 @@ public enum TOMLLanguage {
             identifier: "toml",
             fileExtensions: ["toml"],
             rules: [
-                // Comment.
-                LanguageRule(pattern: #"#.*"#, kind: .comment),
-                // Table headers (start of line): array-of-tables before table.
+                // Table headers (start of line): array-of-tables before table,
+                // then the part of a header before a quoted key.
                 LanguageRule(pattern: #"^\[\[[^\]]*\]\]"#, kind: .type),
                 LanguageRule(pattern: #"^\[[^\]]*\]"#, kind: .type),
-                // Quoted keys (win over the generic string rule).
-                LanguageRule(pattern: #""[^"\n]*"(?=\s*=)"#, kind: .property),
-                LanguageRule(pattern: #"'[^'\n]*'(?=\s*=)"#, kind: .property),
+                LanguageRule(pattern: #"^\[\[?[^\]"'\r\n]*(?=["'])"#, kind: .type),
                 // Bare key: an identifier immediately followed by `=`.
                 LanguageRule(pattern: #"[A-Za-z0-9_-]+(?=\s*=)"#, kind: .property),
-                // Multi-line strings: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #""""(?:.*?"""|.*)"#, kind: .string),
-                LanguageRule(pattern: #"'''(?:.*?'''|.*)"#, kind: .string),
-                // Single-line basic and literal strings.
-                LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
-                LanguageRule(pattern: #"'[^'\n]*'"#, kind: .string),
                 // Dates / date-times (RFC 3339), coloured as numeric literals.
                 LanguageRule(
                     pattern: #"(?<![\w.])\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?)?"#,
@@ -51,7 +61,9 @@ public enum TOMLLanguage {
                 ),
             ],
             keywords: keywords,
-            builtins: []
+            builtins: [],
+            lexicalProfile: lexicalProfile,
+            propertyStringFollower: #"[ \t]*="#
         )
     }
 }

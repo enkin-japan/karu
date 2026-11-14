@@ -74,8 +74,13 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     let verbatim = spans(cs, #"string path = @"C:\temp\a.txt";"#)
     #expect(kind(of: #"@"C:\temp\a.txt""#, in: verbatim) == .string)
 
+    // M17 T17.3: the interpolation hole is code, its braces punctuation.
     let interpolated = spans(cs, #"string s = $"hi {name}";"#)
-    #expect(kind(of: #"$"hi {name}""#, in: interpolated) == .string)
+    #expect(kind(of: #"$"hi "#, in: interpolated) == .string)
+    #expect(kind(of: "{", in: interpolated) == .punctuation)
+    #expect(kind(of: "name", in: interpolated) == nil)
+    #expect(kind(of: "}", in: interpolated) == .punctuation)
+    #expect(kind(of: #"""#, in: interpolated) == .string)
 }
 
 @Test func csharpKeywordsAndAttribute() {

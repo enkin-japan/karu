@@ -1,13 +1,11 @@
 import Foundation
 
-/// Go definition (v1, line-based).
+/// Go definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - `//` line comments are exact; `/* … */` block comments are approximated
-///   per line (complete-on-line, then open-to-end-of-line) with no cross-line
-///   state.
-/// - Raw string literals (back-quoted) may legally span lines in Go; only their
-///   single-line form is coloured here.
+/// Comments and strings come from `lexicalProfile` (M17 T17.3): `//` line
+/// comments, non-nesting `/* … */` block comments that span lines, raw
+/// (back-quoted) strings that span lines without escapes, single-line
+/// interpreted `"…"` strings, and rune literals (`'"'`, `'\''`) as atoms.
 public enum GoLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -39,21 +37,25 @@ public enum GoLanguage {
         LanguageRule(pattern: "\\b(?:\(words.joined(separator: "|")))\\b", kind: kind)
     }
 
+    /// Comments, raw and interpreted strings, rune literals.
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["//"],
+        blockComments: [.init(open: "/*", close: "*/")],
+        strings: [
+            .init(delimiter: .fixed(open: "`", close: "`"), multiline: true, escape: nil),
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+        ],
+        atoms: [
+            .init(pattern: #"'(?:[^'\\\r\n]|\\[^\r\n])+'"#, firstCharacters: "'", kind: .string),
+        ]
+    )
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
             identifier: "go",
             fileExtensions: ["go"],
             rules: [
-                // Line comment.
-                LanguageRule(pattern: #"//.*"#, kind: .comment),
-                // Block comment: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"/\*.*?\*/"#, kind: .comment),
-                LanguageRule(pattern: #"/\*.*"#, kind: .comment),
-                // Interpreted, raw (back-quoted) and rune literals.
-                LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
-                LanguageRule(pattern: #"`[^`]*`"#, kind: .string),
-                LanguageRule(pattern: #"'(?:[^'\\]|\\.)*'"#, kind: .string),
                 // Numbers: hex / octal / binary / decimal / float, `_` separators,
                 // optional exponent and imaginary `i` suffix.
                 LanguageRule(
@@ -62,12 +64,13 @@ public enum GoLanguage {
                 ),
                 wordRule(keywords, kind: .keyword),
                 // Predeclared types then built-in functions (disjoint from
-                // keywords; strings and comments are consumed earlier).
+                // keywords; rules only run in code segments).
                 wordRule(types, kind: .type),
                 wordRule(builtins, kind: .builtin),
             ],
             keywords: keywords,
-            builtins: types + builtins
+            builtins: types + builtins,
+            lexicalProfile: lexicalProfile
         )
     }
 }

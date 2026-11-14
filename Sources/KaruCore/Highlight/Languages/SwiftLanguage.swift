@@ -1,13 +1,16 @@
 import Foundation
 
-/// Swift definition (v1, line-based).
+/// Swift definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - `//` line comments are exact; `/* … */` block comments are approximated
-///   per line with no cross-line state.
-/// - Multi-line string literals (`"""`) are coloured on their opening line to
-///   end-of-line. String interpolation `\( … )` is not tokenized separately —
-///   the whole literal is coloured as a string.
+/// Comments and strings come from `lexicalProfile` (M17 T17.3): `//` line
+/// comments, nesting `/* … */` block comments, multi-line `"""…"""` and
+/// single-line `"…"` strings with `\` escapes and `\(…)` interpolations
+/// (scanned as code, nested strings included), and their extended-delimiter
+/// forms `#"…"#` / `#"""…"""#` (any number of `#`; the escape and the
+/// interpolation then need the same hashes, `\#(…)`).
+///
+/// Not modelled: regex literals (`/…/`, `#/…/#`) stay plain code, so a quote
+/// inside one can open a string.
 public enum SwiftLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -44,21 +47,26 @@ public enum SwiftLanguage {
         LanguageRule(pattern: "\\b(?:\(words.joined(separator: "|")))\\b", kind: kind)
     }
 
+    /// Comments and strings. The hashed delimiter with zero hashes is the
+    /// plain form, so one form per quote length covers `"""` and `#"""`;
+    /// triple quotes first.
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["//"],
+        blockComments: [.init(open: "/*", close: "*/", nests: true)],
+        strings: [
+            .init(delimiter: .hashed(lead: "", hash: "#", quote: "\"\"\"", hashesApplyToEscapes: true),
+                  multiline: true, interpolations: [.init(open: "\\(", close: ")")]),
+            .init(delimiter: .hashed(lead: "", hash: "#", quote: "\"", hashesApplyToEscapes: true),
+                  multiline: false, interpolations: [.init(open: "\\(", close: ")")]),
+        ]
+    )
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
             identifier: "swift",
             fileExtensions: ["swift"],
             rules: [
-                // Line comment.
-                LanguageRule(pattern: #"//.*"#, kind: .comment),
-                // Block comment: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"/\*.*?\*/"#, kind: .comment),
-                LanguageRule(pattern: #"/\*.*"#, kind: .comment),
-                // Multi-line string: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #""""(?:.*?"""|.*)"#, kind: .string),
-                // Single-line string (interpolation coloured as part of the string).
-                LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
                 // Attribute (`@objc`, `@escaping`, …).
                 LanguageRule(pattern: #"@\w+"#, kind: .type),
                 // Numbers with `_` separators (hex / octal / binary / decimal / float).
@@ -68,12 +76,13 @@ public enum SwiftLanguage {
                 ),
                 wordRule(keywords, kind: .keyword),
                 // Standard-library types then global functions (disjoint from
-                // keywords; strings and comments are consumed earlier).
+                // keywords; rules only run in code segments).
                 wordRule(types, kind: .type),
                 wordRule(builtins, kind: .builtin),
             ],
             keywords: keywords,
-            builtins: types + builtins
+            builtins: types + builtins,
+            lexicalProfile: lexicalProfile
         )
     }
 }

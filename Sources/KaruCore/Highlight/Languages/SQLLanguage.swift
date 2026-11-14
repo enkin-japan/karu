@@ -1,19 +1,20 @@
 import Foundation
 
-/// SQL definition (v1, line-based).
+/// SQL definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - `--` line comments are exact; `/* … */` block comments are
-///   approximated: complete-on-line is coloured exactly, an opening line
-///   colours to end-of-line, and interior/closing lines of a multi-line
-///   block comment are not tracked (no cross-line state).
+/// Comments and strings come from `lexicalProfile` (M17 T17.3): `--` line
+/// comments, non-nesting `/* … */` block comments, and `'…'` strings that
+/// span lines with the doubled `''` escape and no backslash escapes. Quoted
+/// identifiers `"…"` and MySQL back-quoted names are coloured as strings the
+/// same way (as VS Code's SQL grammar does). PostgreSQL dollar quoting
+/// (`$$…$$`) is not modelled: VS Code treats a function body there as code
+/// too.
+///
+/// The regex rules cover the rest in code segments:
 /// - Keywords are matched case-insensitively (`(?i)`), matching real-world
 ///   SQL where `select` / `SELECT` / `Select` are all valid; identifiers
 ///   that happen to collide with a keyword spelling are still coloured as
 ///   keywords (no symbol-table awareness).
-/// - String literals use the standard SQL `''` escape for an embedded quote;
-///   dialect-specific quoting (backtick identifiers, `$$`-quoted bodies,
-///   etc.) is out of scope for v1.
 public enum SQLLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -30,19 +31,23 @@ public enum SQLLanguage {
         "MAX",
     ]
 
+    /// Comments, strings and quoted identifiers.
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["--"],
+        blockComments: [.init(open: "/*", close: "*/")],
+        strings: [
+            .init(delimiter: .fixed(open: "'", close: "'"), multiline: true, escape: nil, doubledCloseEscapes: true),
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: true, escape: nil, doubledCloseEscapes: true),
+            .init(delimiter: .fixed(open: "`", close: "`"), multiline: true, escape: nil, doubledCloseEscapes: true),
+        ]
+    )
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
             identifier: "sql",
             fileExtensions: ["sql"],
             rules: [
-                // Line comment.
-                LanguageRule(pattern: #"--.*"#, kind: .comment),
-                // Block comment: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"/\*.*?\*/"#, kind: .comment),
-                LanguageRule(pattern: #"/\*.*"#, kind: .comment),
-                // String (`''` is the escape for an embedded quote).
-                LanguageRule(pattern: #"'(?:[^']|'')*'"#, kind: .string),
                 // Keywords, case-insensitive.
                 LanguageRule(pattern: "(?i)\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
                 // Numbers.
@@ -51,7 +56,8 @@ public enum SQLLanguage {
                     kind: .number
                 ),
             ],
-            keywords: keywords
+            keywords: keywords,
+            lexicalProfile: lexicalProfile
         )
     }
 }

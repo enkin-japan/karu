@@ -1,19 +1,22 @@
 import Foundation
 
-/// C# definition (v1, line-based).
+/// C# definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - `//` line comments are exact; `/* … */` block comments are
-///   approximated: complete-on-line is coloured exactly, an opening line
-///   colours to end-of-line, and interior/closing lines of a multi-line
-///   block comment are not tracked (no cross-line state).
-/// - Verbatim strings `@"…"` are approximated per line the same way
-///   (`""` — the verbatim escape for a literal quote — is accepted within a
-///   complete-on-line match); a verbatim string spanning multiple lines is
-///   only coloured on its opening line.
-/// - Interpolated strings `$"…"` are coloured as a whole string token;
-///   `{…}` interpolation holes are not tokenized separately, matching the
-///   template-literal trade-off used for JS/TS.
+/// Comments and strings come from `lexicalProfile` (M17 T17.3):
+/// - `//` line comments and non-nesting `/* … */` block comments.
+/// - Raw strings `"""…"""` (a run of N ≥ 3 quotes closes with exactly N,
+///   multi-line, no escapes); interpolated raw strings `$"""…{x}…"""`.
+///   `$$"""…{{x}}…"""` is approximated: `{{` opens the interpolation and the
+///   first `}` closes it, so the second `}` reads as string content and a
+///   single `{` stays literal (more `$` signs are not modelled).
+/// - Verbatim strings `@"…"` (multi-line, no escapes, `""` is a quote) and
+///   interpolated verbatim strings `$@"…"` / `@$"…"`.
+/// - Interpolated strings `$"…{x}…"` (single-line, `\` escapes, `{{` is a
+///   literal brace) and ordinary `"…"` strings.
+/// - Interpolation holes are scanned as code (nested strings included).
+/// - Character literals (`'"'`) are atoms, so they never open a string.
+///
+/// The regex rules cover the rest in code segments:
 /// - Attributes are matched only in their simplest form `[Name]` (no
 ///   arguments); `[Obsolete("reason")]` is not recognised as a single token.
 public enum CSharpLanguage {
@@ -44,32 +47,48 @@ public enum CSharpLanguage {
         "Linq", "Select", "Where", "FirstOrDefault", "ToList", "ToArray",
     ]
 
+    /// Interpolation hole of `$"…"` / `$@"…"` (`{{` is a literal brace).
+    private static let hole = LexicalProfile.InterpolationForm(open: "{", close: "}", escapedOpen: "{{")
+
+    /// Comments, the string family (most specific opener first: `$$"""`
+    /// before `$"""` before `"""`; `$@"` / `@$"` before `@"` and `$"`) and
+    /// character literals.
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["//"],
+        blockComments: [.init(open: "/*", close: "*/")],
+        strings: [
+            .init(prefixes: ["$$"], prefixRequired: true, delimiter: .repeatedQuote(quote: "\"", minimum: 3),
+                  multiline: true, escape: nil, interpolations: [.init(open: "{{", close: "}")]),
+            .init(prefixes: ["$"], prefixRequired: true, delimiter: .repeatedQuote(quote: "\"", minimum: 3),
+                  multiline: true, escape: nil, interpolations: [.init(open: "{", close: "}")]),
+            .init(delimiter: .repeatedQuote(quote: "\"", minimum: 3), multiline: true, escape: nil),
+            .init(prefixes: ["$@", "@$"], prefixRequired: true, delimiter: .fixed(open: "\"", close: "\""),
+                  multiline: true, escape: nil, doubledCloseEscapes: true, interpolations: [hole]),
+            .init(prefixes: ["@"], prefixRequired: true, delimiter: .fixed(open: "\"", close: "\""),
+                  multiline: true, escape: nil, doubledCloseEscapes: true),
+            .init(prefixes: ["$"], prefixRequired: true, delimiter: .fixed(open: "\"", close: "\""),
+                  multiline: false, interpolations: [hole]),
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+        ],
+        atoms: [
+            .init(pattern: #"'(?:[^'\\\r\n]|\\[^\r\n])+'"#, firstCharacters: "'", kind: .string),
+        ]
+    )
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
             identifier: "csharp",
             fileExtensions: ["cs"],
             rules: [
-                // Line comment.
-                LanguageRule(pattern: #"//.*"#, kind: .comment),
-                // Block comment: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"/\*.*?\*/"#, kind: .comment),
-                LanguageRule(pattern: #"/\*.*"#, kind: .comment),
-                // Verbatim string: complete-on-line (accepting `""` escapes),
-                // then open-to-end-of-line.
-                LanguageRule(pattern: #"@"(?:[^"]|"")*""#, kind: .string),
-                LanguageRule(pattern: #"@".*"#, kind: .string),
-                // Interpolated string.
-                LanguageRule(pattern: #"\$"(?:[^"\\]|\\.)*""#, kind: .string),
-                // Plain string.
-                LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
                 // Attribute, e.g. `[Obsolete]`.
                 LanguageRule(pattern: #"\[\w+\]"#, kind: .type),
                 // Keywords.
                 LanguageRule(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
                 // Built-in library types / members after keywords (disjoint);
-                // comments, strings and attributes are consumed earlier, so a
-                // built-in word inside one is never reached here.
+                // attributes are consumed earlier, and rules only run in code
+                // segments, so a built-in word inside a string or comment is
+                // never reached here.
                 LanguageRule(pattern: "\\b(?:\(builtins.joined(separator: "|")))\\b", kind: .builtin),
                 // Numbers: hex or decimal/float with optional exponent and
                 // numeric-type suffix.
@@ -79,7 +98,8 @@ public enum CSharpLanguage {
                 ),
             ],
             keywords: keywords,
-            builtins: builtins
+            builtins: builtins,
+            lexicalProfile: lexicalProfile
         )
     }
 }

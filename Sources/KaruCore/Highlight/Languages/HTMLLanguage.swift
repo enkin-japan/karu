@@ -1,17 +1,28 @@
 import Foundation
 
-/// HTML definition (v1, line-based).
+/// HTML definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - `<!-- … -->` comments are approximated per line (complete-on-line, or
-///   open-to-end-of-line); a comment spanning multiple lines is only coloured
-///   on its opening line.
+/// Comments come from `lexicalProfile` (M17 T17.3): `<!-- … -->` spans lines.
+/// The profile has no string forms — quotes only delimit attribute values
+/// inside a tag, and a quote in text content is plain text — so attribute
+/// values stay single-line regex rules (`keepsStringRules`), which run in
+/// the code outside comments.
+///
+/// Remaining approximations:
 /// - Attribute names are matched as any `name=` token and attribute values as
-///   any quoted string, without verifying they sit inside a tag; embedded
-///   `<script>` / `<style>` bodies are not switched to JS / CSS.
+///   any quoted string on one line, without verifying they sit inside a tag;
+///   a value spanning lines is not coloured, and a `<!--` inside a value
+///   opens a comment.
+/// - Embedded `<script>` / `<style>` bodies are not switched to JS / CSS.
 public enum HTMLLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
+
+    /// Comments only; attribute strings stay rules.
+    public static let lexicalProfile = LexicalProfile(
+        blockComments: [.init(open: "<!--", close: "-->")],
+        keepsStringRules: true
+    )
 
     public static func make() -> LanguageDefinition {
         buildCount += 1
@@ -19,9 +30,6 @@ public enum HTMLLanguage {
             identifier: "html",
             fileExtensions: ["html", "htm"],
             rules: [
-                // Comment: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"<!--.*?-->"#, kind: .comment),
-                LanguageRule(pattern: #"<!--.*"#, kind: .comment),
                 // Tag name, including the opening `<` or `</` (e.g. `<div`,
                 // `</span`, `<my-element`).
                 LanguageRule(pattern: #"</?[a-zA-Z][\w-]*"#, kind: .keyword),
@@ -32,7 +40,8 @@ public enum HTMLLanguage {
                 LanguageRule(pattern: #"&#?\w+;"#, kind: .number),
                 // Attribute name (a word immediately before `=`).
                 LanguageRule(pattern: #"[\w-]+(?==)"#, kind: .property),
-            ]
+            ],
+            lexicalProfile: lexicalProfile
         )
     }
 }

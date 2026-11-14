@@ -1,19 +1,16 @@
 import Foundation
 
-/// C++ definition (v1, line-based).
+/// C++ definition.
 ///
-/// Built on top of `CLanguage`: it reuses C's comment / string / char-literal
-/// / preprocessor / number rules and keyword set, adding the C++-only
-/// keywords, the `::` scope-resolution operator, and raw string literals.
+/// Built on top of `CLanguage`: it reuses C's preprocessor / number rules,
+/// character-literal atom and keyword set, adding the C++-only keywords and
+/// the `::` scope-resolution operator.
 ///
-/// Line-approximation trade-offs accepted for v1 (in addition to those
-/// inherited from `CLanguage`):
-/// - Raw string literals `R"(...)"` are approximated per line: a literal that
-///   opens and closes on the same line is coloured exactly (a custom
-///   delimiter between `"` and `(`, e.g. `R"delim(...)delim"`, is not
-///   recognised — only the plain `R"( … )"` form); an *opening* line colours
-///   from `R"(` to end-of-line, with no cross-line state for the closing
-///   line.
+/// Comments and strings come from `lexicalProfile` (M17 T17.3): C's profile
+/// plus raw string literals `R"delim(…)delim"` (any delimiter of up to 16
+/// units, spanning lines, no escapes, with the `L` / `u` / `U` / `u8`
+/// prefixes). A digit separator (`1'000'000`) never starts a character
+/// literal (see `CLanguage.charLiteral`).
 public enum CppLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -41,6 +38,20 @@ public enum CppLanguage {
         "optional", "variant", "function",
     ]
 
+    /// C's comments, strings and character literals plus raw strings (listed
+    /// first, so `R"(` is not read as `R` + an ordinary string); keeps C's
+    /// `#include <header>` string rule.
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["//"],
+        blockComments: [.init(open: "/*", close: "*/")],
+        strings: [
+            .init(prefixes: CLanguage.encodingPrefixes, delimiter: .cppRaw, multiline: true, escape: nil),
+            .init(prefixes: CLanguage.encodingPrefixes, delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+        ],
+        atoms: [CLanguage.charLiteral],
+        keepsStringRules: true
+    )
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         let keywords = CLanguage.keywords + extraKeywords
@@ -49,19 +60,9 @@ public enum CppLanguage {
             identifier: "cpp",
             fileExtensions: ["cpp", "cc", "cxx", "hpp", "hh"],
             rules: [
-                // Line comment.
-                LanguageRule(pattern: #"//.*"#, kind: .comment),
-                // Block comment: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"/\*.*?\*/"#, kind: .comment),
-                LanguageRule(pattern: #"/\*.*"#, kind: .comment),
-                // Raw string literal: complete-on-line, then open-to-EOL.
-                LanguageRule(pattern: #"R"\([^)]*\)""#, kind: .string),
-                LanguageRule(pattern: #"R"\(.*"#, kind: .string),
-                // Strings and char literals.
-                LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
-                LanguageRule(pattern: #"'(?:[^'\\]|\\.)*'"#, kind: .string),
                 // Preprocessor directive token (line-start only).
                 LanguageRule(pattern: #"^\s*#\w+"#, kind: .type),
+                CLanguage.includeRule,
                 // Scope resolution operator.
                 LanguageRule(pattern: #"::"#, kind: .punctuation),
                 // Keywords (C's set plus C++-only additions).
@@ -76,7 +77,8 @@ public enum CppLanguage {
                 ),
             ],
             keywords: keywords,
-            builtins: builtins
+            builtins: builtins,
+            lexicalProfile: lexicalProfile
         )
     }
 }

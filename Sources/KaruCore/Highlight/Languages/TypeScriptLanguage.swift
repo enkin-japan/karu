@@ -9,7 +9,7 @@ import Foundation
 /// (`interface`, `readonly`, `public`, …) as `.keyword`.
 ///
 /// Shares JavaScript's `lexicalProfile` (cross-line block comments, template
-/// literals with `${…}`; regex literals not yet highlighted). Only the `.ts`
+/// literals with `${…}`, regex literals as atoms). Only the `.ts`
 /// extension is registered — JSX (`.tsx`) is out of scope for v1, so its
 /// angle-bracket syntax is not handled.
 public enum TypeScriptLanguage {

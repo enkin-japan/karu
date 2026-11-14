@@ -55,7 +55,9 @@ public struct LanguageRule {
 ///   strings, and the generic `LexicalScanner` carries their state across
 ///   lines (`tokens(in:range:state:)`). The regex `rules` then apply only to
 ///   the code segments the scanner reports, and rules of kind `.string` /
-///   `.comment` are skipped there — the profile is authoritative for those.
+///   `.comment` are skipped there — the profile is authoritative for those
+///   (`.string` rules still run when the profile `keepsStringRules`: HTML /
+///   XML attribute values, C's `#include <header>`).
 ///   JSON / JSONL are profiled too (a string-only profile), so a slice that
 ///   starts in the middle of a long line knows whether it is inside a string.
 ///
@@ -166,8 +168,9 @@ public struct LanguageDefinition {
     /// form's kind; inside code segments the regex `rules` run line by line
     /// exactly as in `tokenize(line:)` (anchored, transparent bounds, `^` only
     /// at a real line start), limited to the segment and skipping rules of
-    /// kind `.string` / `.comment`. In a line longer than `longLineThreshold`
-    /// they see the segment plus `ruleContext` units on either side.
+    /// kind `.comment` and — unless the profile `keepsStringRules` — `.string`.
+    /// In a line longer than `longLineThreshold` they see the segment plus
+    /// `ruleContext` units on either side.
     ///
     /// For an unprofiled language this is the plain rule loop over each line
     /// overlapping `range`, restricted to `range`; `state` is untouched.
@@ -252,7 +255,8 @@ public struct LanguageDefinition {
                 let matchUpTo = upTo == limit ? min(matchLimit, NSMaxRange(lr)) : upTo
                 let (ls, base) = ruleWindow(lr, from: loc, to: matchUpTo)
                 applyRules(in: ls, from: loc - base, to: matchUpTo - base, offset: base,
-                           skipStringsAndComments: lexicalScanner != nil) { token in
+                           skipStringsAndComments: lexicalScanner != nil,
+                           keepStrings: lexicalProfile?.keepsStringRules ?? false) { token in
                     if matchUpTo > upTo {
                         let clipped = NSIntersectionRange(token.range, NSRange(location: loc, length: upTo - loc))
                         if clipped.length > 0 { out.append((clipped, token.kind)) }
@@ -351,16 +355,18 @@ public struct LanguageDefinition {
 
     /// The rule loop: at each position of `line[from..<to]` the first rule
     /// that matches there wins; unmatched positions advance by one unit.
-    /// Emits ranges shifted by `offset`.
+    /// Emits ranges shifted by `offset`. `skipStringsAndComments` skips
+    /// `.comment` rules, and `.string` rules unless `keepStrings`.
     private func applyRules(in line: String, from: Int, to: Int, offset: Int,
-                            skipStringsAndComments: Bool,
+                            skipStringsAndComments: Bool, keepStrings: Bool = false,
                             _ append: ((range: NSRange, kind: TokenKind)) -> Void) {
         var location = from
         while location < to {
             var matched = false
             let searchRange = NSRange(location: location, length: to - location)
             for rule in rules {
-                if skipStringsAndComments, rule.kind == .string || rule.kind == .comment { continue }
+                if skipStringsAndComments,
+                   rule.kind == .comment || (rule.kind == .string && !keepStrings) { continue }
                 // `.anchored` forces the match to begin exactly at `location`,
                 // giving us "first rule that matches here wins" priority.
                 // `.withTransparentBounds` lets `\b` / lookbehind see the text

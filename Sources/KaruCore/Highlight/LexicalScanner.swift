@@ -14,7 +14,11 @@ import Foundation
 /// **Ranges.** Both accept any `[from, to)`, not necessarily line-aligned. The
 /// scanner never reads at or beyond `to`; it may read *before* `from`, but
 /// only the single unit in front of a string / atom prefix (the word-boundary
-/// guard) or, when stopping at a safe point, in front of `from` itself.
+/// guard), an atom's lookbehind context (16 units), an atom's `precededBy`
+/// context (up to `LexicalProfile.AtomContext.reach` units of whitespace,
+/// then the unit or word before it) or, when stopping at a safe point, the
+/// unit in front of `from` itself. The atom reads depend on the text alone,
+/// never on the state, so they cannot break the split guarantee below.
 ///
 /// **Split guarantee.** For a split point `b` in `[a, c)`, scanning `a..<b`
 /// then `b..<c` gives the same end state as scanning `a..<c`, and the
@@ -94,11 +98,19 @@ public struct LexicalScanner: Sendable {
         let regex: NSRegularExpression
     }
 
+    /// Compiled `LexicalProfile.AtomContext`.
+    private struct AtomContext: Sendable {
+        let characters: Set<unichar>
+        let words: Set<[unichar]>
+        let longestWord: Int
+    }
+
     private struct Atom: Sendable {
         let regex: RegexBox
         let first: Set<unichar>
         let kind: TokenKind
         let prefixes: [[unichar]]          // longest first
+        let context: AtomContext?
     }
 
     private let lineComments: [[unichar]]
@@ -208,8 +220,13 @@ public struct LexicalScanner: Sendable {
         atoms = profile.atoms.map { form in
             // swiftlint:disable:next force_try
             let regex = try! NSRegularExpression(pattern: form.pattern)
+            let context = form.precededBy.map { c in
+                AtomContext(characters: Set(c.characters.utf16),
+                            words: Set(c.words.filter { !$0.isEmpty }.map(units)),
+                            longestWord: c.words.map(\.utf16.count).max() ?? 0)
+            }
             return Atom(regex: RegexBox(regex: regex), first: Set(form.firstCharacters.utf16),
-                        kind: form.kind, prefixes: longestFirst(form.prefixes))
+                        kind: form.kind, prefixes: longestFirst(form.prefixes), context: context)
         }
 
         var code: [unichar] = lineComments.map { $0[0] } + blocks.map { $0.open[0] } + strings.map(\.anchor)
@@ -703,7 +720,7 @@ public struct LexicalScanner: Sendable {
         var window: (start: Int, end: Int, text: String)?
         for atom in atoms where atom.first.contains(c) {
             if window == nil { window = atomWindow(text, at: p, to: to) }
-            guard let match = matchAtom(atom, at: p, window: window!, codeStart: codeStart,
+            guard let match = matchAtom(atom, at: p, window: window!, codeStart: codeStart, text: text,
                                         prefixStart: prefixStart) else { continue }
             emitter.mark(match.start, .atom(atom.kind))
             emitter.mark(match.end, .code)
@@ -833,16 +850,48 @@ public struct LexicalScanner: Sendable {
         return (start, end, text.substring(with: NSRange(location: start, length: end - start)))
     }
 
+    // swiftlint:disable:next function_parameter_count
     private func matchAtom(_ atom: Atom, at p: Int, window: (start: Int, end: Int, text: String),
-                           codeStart: Int,
+                           codeStart: Int, text: NSString,
                            prefixStart: ([[unichar]], Int, Int, Bool) -> Int?) -> (start: Int, end: Int)? {
-        guard window.end > p,
-              let match = atom.regex.regex.firstMatch(
+        guard window.end > p else { return nil }
+        let start = prefixStart(atom.prefixes, p, codeStart, false) ?? p
+        // The context check is cheap; run it before the regex.
+        if let context = atom.context, !Self.allows(context, before: start, in: text) { return nil }
+        guard let match = atom.regex.regex.firstMatch(
                   in: window.text,
                   options: [.anchored, .withTransparentBounds, .withoutAnchoringBounds],
                   range: NSRange(location: p - window.start, length: window.end - p)),
               match.range.length > 0 else { return nil }
-        let start = prefixStart(atom.prefixes, p, codeStart, false) ?? p
         return (start, p + match.range.length)
+    }
+
+    /// `AtomContext` check: reads only text before `start` — at most
+    /// `LexicalProfile.AtomContext.reach` units of whitespace, then the unit
+    /// or word ending there (≤ the longest word + 1 units) — independent of
+    /// the scanner state, so it gives the same answer for any split.
+    private static func allows(_ context: AtomContext, before start: Int, in text: NSString) -> Bool {
+        let floor = max(0, start - LexicalProfile.AtomContext.reach)
+        var q = start - 1
+        while q >= floor {
+            let u = text.character(at: q)
+            guard u == 32 || u == 9 || u == cr || u == lf else { break }
+            q -= 1
+        }
+        if q < 0 { return true }              // document start
+        if q < floor { return false }         // only whitespace within reach
+        let last = text.character(at: q)
+        if context.characters.contains(last) { return true }
+        guard context.longestWord > 0, isIdentifier(last) || last == 36 else { return false }
+        // The identifier run ending at `q` (`$` included, as in JS), read up
+        // to one unit past the longest word: a longer run is no word.
+        var s = q
+        while s > 0, q - s + 1 <= context.longestWord {
+            let u = text.character(at: s - 1)
+            guard isIdentifier(u) || u == 36 else { break }
+            s -= 1
+        }
+        guard q - s + 1 <= context.longestWord else { return false }
+        return context.words.contains((s...q).map { text.character(at: $0) })
     }
 }

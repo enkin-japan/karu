@@ -159,9 +159,33 @@ private let syntheticProfile = LexicalProfile(
     ]
 )
 
+private let cFragments = ["\"", "L\"", "u8\"", "'", "'x'", "L'x'", "u8'a'", "'\\''", "1'000", "\\", "\\\"", "//",
+                          "/*", "*/", "*", "/", "\n", "\r\n", " ", "abc", "x1", "42", "😀", "(", ")", "#include",
+                          "<a.h>", "u", "L", "U", "8"]
+private let markupFragments = ["<!--", "-->", "--", "<", ">", "\"", "'", "a=", "<div", "\n", "\r\n", " ", "abc",
+                               "&amp;", "😀", "!", "["]
+
 private let fragments: [String: [String]] = [
     "javascript": ["\"", "'", "`", "${", "}", "{", "\\", "\\\"", "\\`", "//", "/*", "*/", "*", "/", "\n", "\r\n",
-                   " ", "abc", "x1", "42", "1.5", "😀", "(", ")", "+", "=", ";", "r", "é"],
+                   " ", "abc", "x1", "42", "1.5", "😀", "(", ")", "+", "=", ";", "r", "é",
+                   "/re/g", "/[/]/", "\\/", "[", "]", "return ", "\t", "/'/"],
+    "c": cFragments,
+    "cpp": cFragments + ["R\"(", ")\"", "R\"d(", ")d\"", "u8R\"x(", ")x\"", "R"],
+    "csharp": ["\"", "\"\"", "\"\"\"", "\"\"\"\"", "$\"", "$$\"\"\"", "$\"\"\"", "@\"", "$@\"", "@$\"", "{", "{{", "}",
+               "}}", "'", "'x'", "'\\''", "\\", "\\\"", "//", "/*", "*/", "\n", "\r\n", " ", "abc", "42", "😀",
+               "(", ")", "$", "@"],
+    "java": ["\"", "\"\"\"", "'", "'x'", "'\\''", "\\", "\\\"", "//", "/*", "*/", "\n", "\r\n", " ", "abc", "42",
+             "😀", "(", ")", "@A"],
+    "go": ["\"", "`", "'", "'x'", "'\\''", "\\", "\\\"", "//", "/*", "*/", "\n", "\r\n", " ", "abc", "42", "😀"],
+    "css": ["\"", "'", "\\", "\\\"", "/*", "*/", "*", "/", "\n", "\r\n", " ", "a", "{", "}", ":", ";", "#fff",
+            "😀", "1px"],
+    "sql": ["'", "''", "\"", "\"\"", "`", "--", "-", "/*", "*/", "*", "/", "$$", "\n", "\r\n", " ", "SELECT", "x1",
+            "42", "😀", "\\"],
+    "swift": ["\"", "\"\"\"", "#\"", "\"#", "##\"", "\"##", "#\"\"\"", "\"\"\"#", "\\(", "\\#(", "\\##(", ")", "(",
+              "\\", "\\\"", "#", "/*", "*/", "//", "\n", "\r\n", " ", "abc", "42", "😀"],
+    "toml": ["\"", "\"\"\"", "'", "'''", "#", "\\", "\\\"", "=", "[", "]", "\n", "\r\n", " ", "key", "42", "😀"],
+    "html": markupFragments,
+    "xml": markupFragments + ["<![CDATA[", "]]>", "]]", "<?xml", "CDATA"],
     "rust": ["\"", "r\"", "r#\"", "\"#", "br##\"", "\"##", "b\"", "c\"", "'", "'a", "'x'", "b'x'", "'\\u{1F600}'",
              "'\\''", "/*", "*/", "//", "\\", "#", "r", "b", "\n", "\r\n", " ", "abc", "42", "😀", "(", ")", "!"],
     "json": ["\"", "\\", "\\\"", "{", "}", ":", ",", "[", "]", "1.5", "-2", "true", "null", " ", "\n", "\r\n",
@@ -189,7 +213,9 @@ private func scanner(_ language: String) throws -> LexicalScanner {
 struct LongLineSlicingScannerTests {
     static let languages: [(language: String, fragments: String)] = [
         ("javascript", "javascript"), ("typescript", "javascript"), ("rust", "rust"), ("json", "json"),
-        ("synthetic", "synthetic"),
+        ("synthetic", "synthetic"), ("c", "c"), ("cpp", "cpp"), ("csharp", "csharp"), ("java", "java"),
+        ("go", "go"), ("css", "css"), ("sql", "sql"), ("swift", "swift"), ("toml", "toml"), ("html", "html"),
+        ("xml", "xml"),
     ]
 
     @Test(arguments: languages)
@@ -225,6 +251,16 @@ struct LongLineSlicingScannerTests {
         ("json", "{\"key\\\"x\": [1.5, -2e3, \"v😀\", true, null], \"k2\" : \"a\\\\\"}\r\n[\"\\u00e9\", {}]"),
         // An escaped surrogate pair is one escaped character.
         ("json", "[\"a\\😀\\\"b\", \"\\😀\", 1]"),
+        ("javascript", "x = /a\\/b[/\"]c/gi; y = a / b / c; return /'/.test(s) || f(x) / 2 /* c */ / 3;\r\n"
+            + "z = [/`/, x ? /\"/ : /$/]; i++ / 2 / x; } /x/\n/re/u.exec(t) // end"),
+        ("cpp", "auto a = u8R\"x(raw )\" x)x\" + L'\\'' + u8\"s\\\"\" + 1'000'000 + U'a'; /* c\r\n*/ R\"(z)\"\n"
+            + "#include <map> // tail 😀"),
+        ("csharp", "var s = $\"a{b + $\"{c}\"}d{{e\" + @\"x\"\"y\" + $@\"{p}\\q\r\nr\" + $$\"\"\"{{v}}{w}\"\"\" + '\"';\n"
+            + "\"\"\"\"raw \"\"\" more\"\"\"\" + \"\"; // 😀"),
+        ("swift", "let a = #\"x\\(no)\\#(yes)\"# + \"q\\(f(\"in\"))r\" + ##\"\"\"\r\nm\\##(z)\"\"\"## /* a /* b */ c */ x😀"),
+        ("sql", "SELECT 'it''s\r\nmulti' AS \"a\"\"b\", `c` -- note 'x\n/* block\n*/ FROM t"),
+        ("xml", "<a b=\"c\"><![CDATA[ x ]] <!-- ]]> <!-- c\r\n --> <d/>😀 &amp;"),
+        ("toml", "a = \"\"\"x\\\r\ny\"\"\" # c\nb = '''z'''\n\"k\" = 'v' # \"q\""),
         ("synthetic", "x = R\"d(a)\"b)d\" + R\"(z)\" + rb##\"q\"#r\"## + #\"a\\(b)c\\#(d)e\"# + \"p\\(f(1))q\"\r\n"
             + "''' a '' b '''' c ''' + ''''x'''' + b'x' + '\\u{1F600}' + F`a${b}c{d}{{e` + %a%%b%\r"
             + "/* a /* b */ c */ (* d /* e *) f😀g // end\nabc_def"),

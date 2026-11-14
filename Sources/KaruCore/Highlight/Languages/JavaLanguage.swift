@@ -1,14 +1,12 @@
 import Foundation
 
-/// Java definition (v1, line-based).
+/// Java definition.
 ///
-/// Line-approximation trade-offs accepted for v1:
-/// - `//` line comments are exact; `/* … */` block comments (and Javadoc
-///   `/** … */`) are approximated: complete-on-line is coloured exactly, an
-///   opening line colours to end-of-line, and interior/closing lines of a
-///   multi-line block comment are not tracked (no cross-line state).
-/// - Text blocks (`"""…"""`, Java 15+) are not specially handled; only
-///   single-line double-quoted strings are tokenized.
+/// Comments and strings come from `lexicalProfile` (M17 T17.3): `//` line
+/// comments, non-nesting `/* … */` block comments (Javadoc included) that
+/// span lines, text blocks `"""…"""` (multi-line, `\` escapes, so `\"""` does
+/// not close) before single-line `"…"` strings, and character literals
+/// (`'"'`, `'\\'`) as atoms. The regex rules cover the rest in code:
 /// - Annotations are matched as `@\w+` only — annotation arguments
 ///   (`@SuppressWarnings("x")`) are not part of the token.
 public enum JavaLanguage {
@@ -38,26 +36,33 @@ public enum JavaLanguage {
         "toString", "valueOf", "parseInt",
     ]
 
+    /// Comments, text blocks, strings and character literals.
+    public static let lexicalProfile = LexicalProfile(
+        lineComments: ["//"],
+        blockComments: [.init(open: "/*", close: "*/")],
+        strings: [
+            .init(delimiter: .fixed(open: "\"\"\"", close: "\"\"\""), multiline: true),
+            .init(delimiter: .fixed(open: "\"", close: "\""), multiline: false),
+        ],
+        atoms: [
+            .init(pattern: #"'(?:[^'\\\r\n]|\\[^\r\n])+'"#, firstCharacters: "'", kind: .string),
+        ]
+    )
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         return LanguageDefinition(
             identifier: "java",
             fileExtensions: ["java"],
             rules: [
-                // Line comment.
-                LanguageRule(pattern: #"//.*"#, kind: .comment),
-                // Block comment: complete-on-line, then open-to-end-of-line.
-                LanguageRule(pattern: #"/\*.*?\*/"#, kind: .comment),
-                LanguageRule(pattern: #"/\*.*"#, kind: .comment),
-                // String.
-                LanguageRule(pattern: #""(?:[^"\\]|\\.)*""#, kind: .string),
                 // Annotation, e.g. `@Override`.
                 LanguageRule(pattern: #"@\w+"#, kind: .type),
                 // Keywords.
                 LanguageRule(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b", kind: .keyword),
                 // Standard-library types / members after keywords (disjoint);
-                // comments, strings and annotations are consumed earlier, so a
-                // built-in word inside one is never reached here.
+                // annotations are consumed earlier, and rules only run in code
+                // segments, so a built-in word inside a string or comment is
+                // never reached here.
                 LanguageRule(pattern: "\\b(?:\(builtins.joined(separator: "|")))\\b", kind: .builtin),
                 // Numbers: hex / binary / decimal / float, with `_`
                 // separators and an optional `L` / `f` / `d` suffix. The
@@ -68,7 +73,8 @@ public enum JavaLanguage {
                 ),
             ],
             keywords: keywords,
-            builtins: builtins
+            builtins: builtins,
+            lexicalProfile: lexicalProfile
         )
     }
 }

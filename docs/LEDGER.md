@@ -45,7 +45,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.1 | 分析骨架 `DocumentAnalysis`：版本、稀疏检查点、分片调度与取消、共用声明扫描、`applyLanguage` 统一失效、两个新模块开关 | T17.0 | implementer，main 审查 | ✅ 自动化通过 |
 | T17.2 | 通用词法扫描器：档案、两种模式、检查点接入，取代从 0 起扫；Python 迁移结论 | T17.1 | main 定接口 + implementer | ✅ 自动化通过；Python 保留原 tokenizer |
 | T17.2b | 超长行分片（方案 §6 第 2 条）：扫描器安全切点、色带行内切片、行内检查点、JSON 接入档案 | T17.2 | main 定接口 + implementer | ✅ 自动化通过；未在真机打开长行实测 |
-| T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | ⬜ |
+| T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | 🔶 T17.3a ✅（C 系、标记语言、JS 正则）；T17.3b（Bash、YAML、Markdown 钩子）进行中 |
 | T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | ⬜ |
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ⬜ |
 | T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | ⬜ |
@@ -212,6 +212,43 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **验证**：全量 **1028 tests / 51 suites** 通过（main 复跑一次，implementer 连续 5 次）；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
   - **未做**：真实 App 打开长行文件滚动、编辑的实测，release 耗时，以及 mem-benchmark。本步没有新增常驻状态，长行里检查点密度与原来相同，留到 T17.15 一起实测。
   - 基线目录中 JS/TS/Rust/JSX/TSX 的 TSV 仍是 T17.0「现版」读数（T17.2 起有意不刷新），重跑基线套件后照旧 `git checkout` 还原。
+
+- T17.3a 纯档案语言与 JS 正则（main 定范围，implementer 实现，main 审查 diff，2026-11-14）：
+  - **接入档案**：C、C++、Java、C#、Go、CSS、SQL、Swift、TOML、HTML、XML/plist；JS/TS 增加正则字面量原子。
+    - C/C++：`L u U u8` 前缀；字符原子带前缀，并用 lookbehind 排除 C++14 数字分隔 `1'000`；C++ raw `R"d(…)d"`。
+    - C#：`$$"""`、`$"""`、`"""`、`$@"`/`@$"`、`@"`（双写引号、可跨行）、`$"`（`{{` 为转义）。Java 文本块 `"""`；Go 反引号。
+    - Swift：可嵌套注释，`"`/`"""` 各带 `#` 计数，`\(`/`\#(` 插值。SQL：`'`、`"`、反引号可跨行，双写转义。
+    - TOML：三引号与单引号四种字符串。HTML/XML：`<!-- -->`，XML 另有 CDATA。
+  - **两个通用扩展**（写入方案 §4 接口）：
+    - `LexicalProfile.keepsStringRules`：为 true 时 `.string` 规则在代码段里照常运行。用于 HTML/XML（引号只在标签内才算字符串，属性值仍是单行规则）和 C 的 `#include <header>`。
+    - `AtomForm.precededBy: AtomContext(characters:words:)`：往回跳过空白（最多 256 单元），看前一个字符或单词决定原子是否成立。只读文本，不影响切分保证。JS 正则用它区分 `x = /re/` 与 `a / b / c`。
+  - **与 VS Code Dark Modern 的一致率**（T17.0 → 本次）：
+    - c 25.3 → **95.6**；java 50.5 → 75.6；xml 42.0 → 75.7；go 46.6 → 70.7；sql 69.7 → 88.1；
+    - csharp 58.4 → 69.5；swift 55.9 → 69.5；css 53.8 → 67.3；html 69.2 → 79.9；
+    - javascript 93.9 → 94.3、typescript 49.5 → 50.1（与 T17.2 比）；cpp 56.0 → 56.1；
+    - **全部样本 57.2%（T17.2）→ 75.7%**。没有语言下降；JSON/JSONL 的 TSV 逐字节不变。TOML 无 VS Code 参照。
+    - cpp 几乎不变：VS Code 把 `R"glsl(` 按分隔符名嵌入 GLSL 着色，单这一处就会让 cpp 从 56.0 降到 53.7，靠 `#include <…>` 规则补回。
+    - 剩余差异主要是类别（变量、类型、常量、控制流）、转义和正则颜色，属 T17.4/T17.7；SQL 关键字表缺词；CSS 无引号取值。
+  - **妥协（入账，均未加钩子）**：
+    - C++ raw string 的嵌入语言（`R"glsl(`）不做。
+    - C# `$$"""` 简化：`{{` 开插值、第一个 `}` 关；`$$$` 不建模。
+    - Swift 正则字面量 `/…/`、`#/…/#` 不建模。
+    - SQL：PostgreSQL `$$…$$` 不建模（样本里 VS Code 也把函数体当代码）；MySQL `#` 注释与反斜杠转义不建模。
+    - TOML：结尾多出的引号（如四连引号）不建模。
+    - HTML/XML：跨行属性值不着色；属性值里的 `<!--` 会开启注释。
+    - JS 正则：
+      - `i++ / 2 / x` 会读成正则（`+` 算运算符）。
+      - `}` 后的 `/re/` 算正则（VS Code 判除号）。
+      - 上一行以标识符结尾时，下一行开头的 `/` 判为除号（合乎 JS 语义，VS Code 判正则）。
+      - 正则颜色暂用字符串色，T17.7 换。
+  - **改动的旧测试期望**：C# `$"hi {name}"` 的插值内部改为代码、`{` `}` 为标点（与 §4 和 VS Code 一致）；`unprofiledLanguagesKeepPerLineTokens` 中 C 换成 Bash。
+  - **测试**：
+    - 新增 `LexicalProfiles` 套件（12 个），覆盖各跨行结构与正则/除号判定。
+    - 新语言全部加入四路一致性、随机切分、安全点随机文本和对抗样本。
+    - 全量 **1040 tests / 52 suites** 通过（main 复跑）；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+    - implementer 有一次全量运行中 `ToolchainManagerTests.installingCancelInstallAndUninstallFromTheRows` 失败，重跑通过，判为时序抖动，与本次无关。
+  - **性能**（debug，约 10 MB、无检查点冷算到末尾）：C 45 ms、SQL 209、C++ 268、JS 133、XML 338、Swift 526、C# 546 ms，均低于 1 s。
+  - **未做**：mem-benchmark（本步只多语言档案，随语言定义释放）、真机交互、release 耗时。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

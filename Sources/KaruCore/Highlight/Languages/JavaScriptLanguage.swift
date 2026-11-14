@@ -10,10 +10,19 @@ import Foundation
 /// literals inside included). The regex rules cover numbers, keywords and
 /// built-ins inside code segments only.
 ///
-/// **Regex literals are intentionally not highlighted yet.** Distinguishing
-/// `/` as the start of a regex from a division operator depends on the
-/// preceding token; that is a T17.3 scanner hook, so `/…/` stays plain text
-/// (a quote inside a regex literal can therefore still open a string).
+/// **Regex literals** (M17 T17.3) are an atom (coloured as a string until the
+/// regex colour of T17.7), so quotes, `//` and `/*` inside one stay inert.
+/// Whether a `/` starts one or divides is decided from the text before it
+/// (`regexContext`): the previous non-whitespace unit, across lines, must be
+/// an operator or opening punctuation, or the word before it a keyword that
+/// precedes an expression (`return /re/`); else — after an identifier,
+/// number, `)` or `]` — it is division (`a / b / c`, `f(x) / 2`). The literal
+/// must close on its line; the atom has no lookahead past its end, so a cut
+/// line can never make it match where the whole line does not.
+/// Approximations: `++` / `--` before a `/` read as operators (`i++ / 2 / x`
+/// reads `/ 2 /` as a regex); `}` counts as a block end, so `}` followed by
+/// `/re/` is a regex (VS Code reads division there); `<` is left out so a JSX
+/// closing tag `</p>` is never a regex.
 public enum JavaScriptLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
@@ -42,7 +51,15 @@ public enum JavaScriptLanguage {
         "globalThis", "structuredClone", "queueMicrotask",
     ]
 
-    /// Comments, strings and template literals, shared with TypeScript.
+    /// What may precede a regex literal (see the type comment).
+    static let regexContext = LexicalProfile.AtomContext(
+        characters: "(,=:[!&|?{};+-*%>~^",
+        words: ["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
+                "case", "do", "else", "yield", "await"]
+    )
+
+    /// Comments, strings, template literals and regex literals, shared with
+    /// TypeScript.
     public static let lexicalProfile = LexicalProfile(
         lineComments: ["//"],
         blockComments: [.init(open: "/*", close: "*/")],
@@ -51,6 +68,11 @@ public enum JavaScriptLanguage {
             .init(delimiter: .fixed(open: "'", close: "'"), multiline: false),
             .init(delimiter: .fixed(open: "`", close: "`"), multiline: true,
                   interpolations: [.init(open: "${", close: "}")]),
+        ],
+        atoms: [
+            // `/body/flags`: escapes, and classes in which `/` is literal.
+            .init(pattern: #"/(?![/*])(?:\\[^\r\n]|\[(?:\\[^\r\n]|[^\]\\\r\n])*\]|[^/\\\[\r\n])+/[dgimsuyv]*"#,
+                  firstCharacters: "/", kind: .string, precededBy: regexContext),
         ]
     )
 

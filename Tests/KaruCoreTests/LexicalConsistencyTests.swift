@@ -47,9 +47,10 @@ private func isWordUnit(_ u: unichar) -> Bool {
 /// `LexicalScanner`): a line start; after a space or tab (unless a `'` atom
 /// starts there); or inside a word whose neighbours cannot make it part of an
 /// opener, closer, prefix or atom (not after `'` or `"`, not before `"`, `'`
-/// or `#`).
-private func isSafeSplit(_ ns: NSString, _ p: Int) -> Bool {
+/// or `#`) — and never in `interiors` (see `tokenInteriors`).
+private func isSafeSplit(_ ns: NSString, _ p: Int, interiors: Set<Int> = []) -> Bool {
     guard p > 0, p < ns.length else { return true }
+    if interiors.contains(p) { return false }
     let prev = ns.character(at: p - 1), cur = ns.character(at: p)
     if prev == 10 { return true }
     if prev == 32 || prev == 9 { return cur != 39 }
@@ -61,6 +62,40 @@ private func isSafeSplit(_ ns: NSString, _ p: Int) -> Bool {
     if s > 0, [UInt16(39), 34].contains(ns.character(at: s - 1)) { return false }
     if e < ns.length, [UInt16(34), 39, 35].contains(ns.character(at: e)) { return false }
     return true
+}
+
+/// Positions strictly inside a token a word-level split could still cut:
+/// any occurrence of a multi-unit delimiter of `profile` (comment openers and
+/// closers, fixed string delimiters, interpolation openers — `<![CDATA[` has
+/// a word inside), and the atoms of the single pass `segments` (a JS regex
+/// literal can contain words).
+private func tokenInteriors(_ ns: NSString, _ profile: LexicalProfile,
+                            segments: [(NSRange, LexicalSegment)]) -> Set<Int> {
+    var delimiters = profile.lineComments
+    for block in profile.blockComments { delimiters += [block.open, block.close] }
+    for form in profile.strings {
+        if case .fixed(let open, let close) = form.delimiter { delimiters += [open, close] }
+        for interpolation in form.interpolations {
+            delimiters.append(interpolation.open)
+            if let escaped = interpolation.escapedOpen { delimiters.append(escaped) }
+        }
+    }
+    var out = Set<Int>()
+    for delimiter in Set(delimiters) where (delimiter as NSString).length > 1 {
+        let length = (delimiter as NSString).length
+        var from = 0
+        while from < ns.length {
+            let hit = ns.range(of: delimiter, options: .literal, range: NSRange(location: from, length: ns.length - from))
+            guard hit.location != NSNotFound else { break }
+            for k in 1..<length { out.insert(hit.location + k) }
+            from = hit.location + 1
+        }
+    }
+    for (range, kind) in segments {
+        guard case .atom = kind else { continue }
+        for k in 1..<max(1, range.length) { out.insert(range.location + k) }
+    }
+    return out
 }
 
 /// Merges adjacent runs of the same kind (each call emits maximal runs of
@@ -111,12 +146,17 @@ private func firstDifference(_ a: [TokenKind?], _ b: [TokenKind?]) -> Int? {
 /// checkpoint a jump to 70 % records. An edit there then changes the
 /// state *at* that checkpoint even in a language whose state resyncs
 /// within about one fixture copy (JS), so resuming from un-invalidated
-/// checkpoints would visibly go wrong.
+/// checkpoints would visibly go wrong. With `opener` (profiled languages),
+/// the layout is only accepted when inserting it at the anchor really
+/// changes the scanner state at that checkpoint — needed where the opened
+/// construct ends within a few hundred units (a C block comment); `step` is
+/// the padding increment.
 private func editLayout(_ text: String, def: LanguageDefinition, anchor: String,
-                        reach: Int = 2_500) throws -> (doc: String, checkpoint: Int, editAt: Int) {
+                        reach: Int = 2_500, opener: String? = nil,
+                        step: Int = 500) throws -> (doc: String, checkpoint: Int, editAt: Int) {
     let spacing = CheckpointStore.spacing
     let body = repeated(text, longerThan: 4 * spacing + spacing / 2)
-    for pad in stride(from: 0, to: 14_000, by: 500) {
+    for pad in stride(from: 0, to: 14_000, by: step) {
         let doc = String(repeating: " ", count: pad) + "\n" + body
         let ns = doc as NSString
         var store = CheckpointStore()
@@ -128,6 +168,14 @@ private func editLayout(_ text: String, def: LanguageDefinition, anchor: String,
                            range: NSRange(location: 0, length: checkpoint - 64))
         guard hit.location != NSNotFound, checkpoint - (hit.location + 1) <= reach,
               hit.location + 1 > store.entries[0].offset else { continue }
+        if let opener, let scanner = def.lexicalScanner {
+            let edited = NSMutableString(string: doc)
+            edited.insert(opener, at: hit.location + 1)
+            var before = LexicalScanState(), after = LexicalScanState()
+            scanner.advance(ns, from: 0, to: checkpoint, state: &before)
+            scanner.advance(edited, from: 0, to: checkpoint + (opener as NSString).length, state: &after)
+            guard before != after else { continue }
+        }
         return (doc, checkpoint, hit.location + 1)
     }
     throw CocoaError(.featureUnsupported)
@@ -137,8 +185,13 @@ private func editLayout(_ text: String, def: LanguageDefinition, anchor: String,
 
 @Suite("LexicalConsistency")
 struct LexicalConsistencyTests {
+    /// Every profiled language's fixture (JSON / JSONL have no multi-line
+    /// constructs and are covered by the long-line suite).
     static let pilots: [(file: String, language: String)] = [
         ("javascript.js", "javascript"), ("typescript.ts", "typescript"), ("rust.rs", "rust"),
+        ("c.c", "c"), ("cpp.cpp", "cpp"), ("csharp.cs", "csharp"), ("java.java", "java"), ("go.go", "go"),
+        ("css.css", "css"), ("sql.sql", "sql"), ("swift.swift", "swift"), ("toml.toml", "toml"),
+        ("html.html", "html"), ("xml.xml", "xml"),
     ]
 
     @Test(arguments: pilots)
@@ -152,9 +205,11 @@ struct LexicalConsistencyTests {
         var oneState = LexicalScanState()
         var one: [(NSRange, LexicalSegment)] = []
         scanner.segments(ns, from: 0, to: ns.length, state: &oneState) { one.append(($0, $1)) }
-        #expect(one.contains { $0.1 == .comment } && one.contains { $0.1 == .string })
+        #expect(one.contains { $0.1 == .comment })
+        #expect(scanner.profile.strings.isEmpty || one.contains { $0.1 == .string })
 
-        let safe = (1..<ns.length).filter { isSafeSplit(ns, $0) }
+        let interiors = tokenInteriors(ns, scanner.profile, segments: one)
+        let safe = (1..<ns.length).filter { isSafeSplit(ns, $0, interiors: interiors) }
         #expect(safe.count > ns.length / 3, "too few safe split points: \(safe.count)")
         var rng = SplitMix(state: 0x17_2_0_5EED)
         for trial in 0..<150 {
@@ -196,11 +251,29 @@ struct LexicalConsistencyTests {
     /// `anchor` (the first such line before a checkpoint, see `editLayout`):
     /// a template / comment opener on a blank line, an interpolation opener
     /// typed into a template / f-string body line, a nesting comment opener.
+    ///
+    /// T17.3 languages: a C block comment opened in `main` (closed by the next
+    /// copy's first line), a C++ raw string that never closes, a C# raw
+    /// string and a Java text block that re-pair the triple quotes below, a
+    /// Go raw string re-pairing the backticks, a CSS comment, an SQL string
+    /// re-pairing the quotes, a nesting Swift comment that never closes, a
+    /// TOML literal block, an HTML comment and an XML CDATA section.
     static let fourWay: [(file: String, language: String, opener: String, anchor: String)] = [
         ("javascript.js", "javascript", "`", "\nfunction priceLabel"),
         ("typescript.ts", "typescript", "${", "User: ${user.name}"),
         ("rust.rs", "rust", "/*", "//! Config loader"),
         ("python.py", "python", "{", "    <h1>{title.upper()}"),
+        ("c.c", "c", "/*", "int main(void)"),
+        ("cpp.cpp", "cpp", "R\"zz(", "int main() {"),
+        ("csharp.cs", "csharp", "\"\"\"", "    public string Summary()"),
+        ("java.java", "java", "\"\"\"", "    public String render(String title) {"),
+        ("go.go", "go", "`", "func main() {"),
+        ("css.css", "css", "/*", "a[href^="),
+        ("sql.sql", "sql", "'", "INSERT INTO"),
+        ("swift.swift", "swift", "/*", "struct Greeter {"),
+        ("toml.toml", "toml", "'''", "[server]"),
+        ("html.html", "html", "<!--", "  <footer>"),
+        ("xml.xml", "xml", "<![CDATA[", "  </item>"),
     ]
 
     /// Reference = one sequential pass from offset 0. (i) Head-to-tail (bands
@@ -214,7 +287,11 @@ struct LexicalConsistencyTests {
     func headToTailJumpEditAndUndoAgree(_ sample: (file: String, language: String, opener: String, anchor: String)) throws {
         let def = try #require(LanguageRegistry.definition(forIdentifier: sample.language))
         let spacing = CheckpointStore.spacing
-        let layout = try editLayout(try fixture(sample.file), def: def, anchor: sample.anchor)
+        // Pilots keep their T17.2 layout; T17.3 languages search finer and
+        // require the opener to change the state at the checkpoint.
+        let pilot = ["javascript", "typescript", "rust", "python"].contains(sample.language)
+        let layout = try editLayout(try fixture(sample.file), def: def, anchor: sample.anchor,
+                                    opener: pilot ? nil : sample.opener, step: pilot ? 500 : 100)
         let doc = layout.doc
         let ns = doc as NSString
         #expect(ns.length > 4 * spacing)
