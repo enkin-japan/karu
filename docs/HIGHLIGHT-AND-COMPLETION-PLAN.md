@@ -176,6 +176,12 @@
 | Swift、Go、Rust、Java、C#、C、C++ | 基础版：当前函数的参数和函数体内的局部声明，作用域由括号确定。 | 只用显式声明的类型：成员来自本文件和工作区索引里同名类型的声明（第 8 节） |
 | Bash、SQL、数据格式 | 只用文档词。 | 无 |
 
+**接口（T17.4 定稿，main）**：
+- 声明只从代码 token 中提取：按语言族手写遍历器，读通用扫描器的代码片段（Python 分析用 `PythonLanguage.analysisProfile`，着色仍用 `PythonTokenizer`）。
+- `DeclarationScan` 保持一次扫描、多处共用：细分声明种类（参数、导入、方法等），映射回旧三类供着色和导航；作用域大纲用紧凑字节流存起止范围与种类，声明归属按位置推出。
+- 查询：`visibleBindings(at:)`（内层优先、同名遮蔽、按语言规则）和 `scopeChain(at:)`。偏移对应快照的版本，编辑后的映射与模块级绑定缓存由 T17.5 负责。
+- `DeclarationScanner` 可分步推进，`DocumentAnalysis` 按 4 ms 分片运行，版本变化即作废。
+
 ### 5.3 排序
 
 1. **按位置过滤**可用的候选。

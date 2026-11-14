@@ -8,6 +8,42 @@ public enum PythonLanguage {
     /// See `JSONLanguage.buildCount`.
     nonisolated(unsafe) public static var buildCount = 0
 
+    /// Python's string and comment structure as a generic `LexicalProfile`,
+    /// for **analysis only** (M17 T17.4a: the declaration scanner reads
+    /// declarations from code segments only). Highlighting keeps
+    /// `PythonTokenizer`: the T17.2 experiment
+    /// (`PythonProfileExperimentTests`) showed the cross-line structure agrees
+    /// with it, but the generic scanner has no notion of f-string format specs
+    /// and conversions, which the tokenizer colours.
+    ///
+    /// Prefixes r / u / b / f and their two-letter combinations, any case;
+    /// single-line quotes (backslash-newline continues), triple quotes over
+    /// lines; f-string `{…}` fields are code (`{{` is an escaped brace). A
+    /// format spec after `:` and `!r` / `!s` / `!a` read as code, which is
+    /// harmless for declarations (no binding form looks like them).
+    public static let analysisProfile: LexicalProfile = {
+        typealias Form = LexicalProfile.StringForm
+        let field = LexicalProfile.InterpolationForm(open: "{", close: "}", escapedOpen: "{{")
+        let formatted = ["f", "fr", "rf"]
+        let other = ["r", "u", "b", "br", "rb"]
+        var forms: [Form] = []
+        for quote in ["\"\"\"", "'''"] {
+            forms.append(Form(prefixes: formatted, prefixRequired: true, prefixCaseInsensitive: true,
+                              delimiter: .fixed(open: quote, close: quote), multiline: true,
+                              interpolations: [field]))
+            forms.append(Form(prefixes: other, prefixCaseInsensitive: true,
+                              delimiter: .fixed(open: quote, close: quote), multiline: true))
+        }
+        for quote in ["\"", "'"] {
+            forms.append(Form(prefixes: formatted, prefixRequired: true, prefixCaseInsensitive: true,
+                              delimiter: .fixed(open: quote, close: quote), multiline: false,
+                              interpolations: [field]))
+            forms.append(Form(prefixes: other, prefixCaseInsensitive: true,
+                              delimiter: .fixed(open: quote, close: quote), multiline: false))
+        }
+        return LexicalProfile(lineComments: ["#"], strings: forms)
+    }()
+
     public static func make() -> LanguageDefinition {
         buildCount += 1
         let keywords = [

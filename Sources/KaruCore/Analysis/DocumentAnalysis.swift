@@ -16,9 +16,14 @@ import AppKit
 ///   analysis-relevant module toggle; stale work is recognised by it.
 /// - **Declarations** are scanned once per version (`DeclarationScan`) and
 ///   published as an immutable snapshot. An edit drops the snapshot and
-///   schedules one debounced rescan through `AnalysisScheduler`; a language
-///   change rescans synchronously so the very next request sees the new
-///   language.
+///   schedules one debounced rescan through `AnalysisScheduler`, which runs
+///   the resumable `DeclarationScanner` in ~4 ms slices (T17.4a) and
+///   publishes only when it completes; the version is checked before every
+///   slice, so the scanner never reads text after an edit (a stale scanner is
+///   dropped). A language change rescans synchronously so the very next
+///   request sees the new language; a synchronous request
+///   (`ensureDeclarations`) finishes the in-flight scanner instead of
+///   starting over.
 /// - **Checkpoints** are invalidated from the edited line on and cleared on a
 ///   language change.
 /// - **Release**: with `highlight`, `completion`, `typeInference` and
@@ -39,6 +44,10 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
 
     /// Edit debounce before a declaration rescan (the highlighter's interval).
     static let declarationDebounce: TimeInterval = 0.07
+
+    /// UTF-16 units the declaration scanner lexes per `step` inside a slice
+    /// (the slice repeats steps until its deadline).
+    nonisolated static let declarationStepUnits = 8_192
 
     /// Modules whose state lives (or will live) here; all off ⇒ release.
     static let analysisModules: [FeatureModule] = [.highlight, .completion, .typeInference, .crossFileIndex]
@@ -61,6 +70,14 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
 
     /// Number of declaration scans performed (tests).
     private(set) var declarationScanCount = 0
+
+    /// The sliced scan in progress and the version it reads.
+    private var inFlightScanner: DeclarationScanner?
+    private var inFlightVersion: UInt64 = 0
+    /// Main-thread time spent in the in-flight scan and its longest slice (ns).
+    private var inFlightElapsed: UInt64 = 0
+    private var inFlightLongestSlice: UInt64 = 0
+    private var inFlightSlices = 0
 
     private struct WeakConsumer {
         weak var consumer: DocumentAnalysisConsumer?
@@ -148,38 +165,89 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         return fresh
     }
 
+    /// The document text read in place (no bridged copy). Only read while
+    /// the version is unchanged since the read started.
+    private var currentText: NSString {
+        textView?.textStorage?.mutableString ?? ((textView?.string ?? "") as NSString)
+    }
+
+    /// Scans the current version to completion, finishing the in-flight
+    /// sliced scanner when it reads this version.
     private func scanDeclarations() -> DeclarationScan {
-        let text = textView?.string ?? ""
+        let text = currentText
         let start = PerfLog.isEnabled ? PerfLog.now() : 0
-        let scan = DeclarationScan.scan(text: text, languageIdentifier: languageIdentifier)
+        var scanner: DeclarationScanner
+        if let inFlight = inFlightScanner, inFlightVersion == version,
+           inFlight.languageIdentifier == languageIdentifier {
+            scanner = inFlight
+        } else {
+            scanner = DeclarationScanner(languageIdentifier: languageIdentifier)
+        }
+        inFlightScanner = nil
+        let scan = scanner.finish(text)
         declarationScanCount += 1
         if PerfLog.isEnabled {
             PerfLog.record("analysis.declarations", since: start,
-                           ["docLen": (text as NSString).length,
+                           ["docLen": text.length,
                             "lang": languageIdentifier,
-                            "version": version])
+                            "version": version,
+                            "sliced": 0])
         }
         return scan
     }
 
-    /// Schedules the debounced rescan for the current version. In T17.1 the
-    /// scan is a single step: the regex pass cannot be split into chunks yet.
-    /// T17.4 replaces it with the token-based declaration scanner, which will
-    /// advance in chunks up to each slice deadline.
+    /// Advances the sliced scan for `jobVersion` until `deadline`; returns
+    /// the scan once complete. The caller has checked the version.
+    private func stepDeclarationScan(jobVersion: UInt64, deadline: UInt64) -> DeclarationScan? {
+        if inFlightScanner == nil || inFlightVersion != jobVersion {
+            inFlightScanner = DeclarationScanner(languageIdentifier: languageIdentifier)
+            inFlightVersion = jobVersion
+            inFlightElapsed = 0
+            inFlightLongestSlice = 0
+            inFlightSlices = 0
+        }
+        let text = currentText
+        let sliceStart = DispatchTime.now().uptimeNanoseconds
+        var done = false
+        repeat {
+            done = inFlightScanner!.step(text, budgetUnits: Self.declarationStepUnits)
+        } while !done && DispatchTime.now().uptimeNanoseconds < deadline
+        let sliceTime = DispatchTime.now().uptimeNanoseconds &- sliceStart
+        inFlightElapsed &+= sliceTime
+        inFlightLongestSlice = max(inFlightLongestSlice, sliceTime)
+        inFlightSlices += 1
+        guard done, let scan = inFlightScanner?.scan else { return nil }
+        inFlightScanner = nil
+        declarationScanCount += 1
+        if PerfLog.isEnabled {
+            PerfLog.record("analysis.declarations", durationSeconds: Double(inFlightElapsed) / 1e9,
+                           ["docLen": text.length,
+                            "lang": languageIdentifier,
+                            "version": jobVersion,
+                            "sliced": 1,
+                            "slices": inFlightSlices,
+                            "maxSliceUs": Int(inFlightLongestSlice / 1000)])
+        }
+        return scan
+    }
+
+    /// Schedules the debounced rescan for the current version: the resumable
+    /// `DeclarationScanner` advances in steps until each slice deadline.
     private func scheduleDeclarationScan() {
         let jobVersion = version
         var result: DeclarationScan?
         let job = AnalysisJob(
             owner: ObjectIdentifier(self),
             version: jobVersion,
-            step: { [weak self] _ in
+            step: { [weak self] deadline in
                 guard let self else { return true }
-                // Skip the scan when the job is already stale or a current
-                // snapshot exists (e.g. completion asked for it synchronously).
-                if self.version == jobVersion, self.declarations == nil, self.hasDeclarationConsumerModule {
-                    result = self.scanDeclarations()
-                }
-                return true
+                // Stop when the job is stale (never read text after an edit)
+                // or a current snapshot exists (e.g. completion asked for it
+                // synchronously).
+                guard self.version == jobVersion, self.declarations == nil,
+                      self.hasDeclarationConsumerModule, self.textView != nil else { return true }
+                result = self.stepDeclarationScan(jobVersion: jobVersion, deadline: deadline)
+                return result != nil
             },
             completion: { [weak self] in
                 guard let self else { return }
@@ -207,6 +275,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
     private func cancelDeclarationJob() {
         scheduler.cancel(owner: ObjectIdentifier(self))
         declarationJobPending = false
+        inFlightScanner = nil
     }
 
     // MARK: - TextStorageObserving
@@ -223,6 +292,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
                                    in: textStorage.mutableString)
         }
         snapshot = nil
+        inFlightScanner = nil
         if hasDeclarationConsumerModule { scheduleDeclarationScan() }
     }
 

@@ -46,7 +46,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.2 | 通用词法扫描器：档案、两种模式、检查点接入，取代从 0 起扫；Python 迁移结论 | T17.1 | main 定接口 + implementer | ✅ 自动化通过；Python 保留原 tokenizer |
 | T17.2b | 超长行分片（方案 §6 第 2 条）：扫描器安全切点、色带行内切片、行内检查点、JSON 接入档案 | T17.2 | main 定接口 + implementer | ✅ 自动化通过；未在真机打开长行实测 |
 | T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | ✅ 自动化通过；除 Python 外全部语言有档案，一致率 39.0% → 77.7% |
-| T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | ⬜ |
+| T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | 🔶 T17.4a ✅（Python、JS/TS）；T17.4b（七种静态语言）进行中 |
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ⬜ |
 | T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | ⬜ |
 | T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ⬜ |
@@ -279,6 +279,57 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **性能**（debug，约 10 MB，冷算到末尾）：bash 779 ms（离 1 s 最近）、yaml 201、markdown 144 ms。
   - **未做**：真机交互、release 耗时；夹具都是 LF，CRLF 只由随机文本和对抗样本覆盖。
   - **T17.3 完成**：除 Python 外，全部语言接入通用扫描器；全部样本一致率由 T17.0 的 39.0% 升到 77.7%。
+
+- T17.4a Python、JS/TS 的声明与作用域（main 定接口，implementer 实现，main 审查 diff，2026-11-14）：
+  - **做法**：两门语言改为由手写的声明遍历器提取声明（`PythonDeclarationWalker`、`JavaScriptDeclarationWalker`）。遍历器读通用扫描器输出的代码 token，字符串、注释不参与。
+    - Python 着色仍用 `PythonTokenizer`；分析专用的 `PythonLanguage.analysisProfile` 由 T17.2 的实验档案转正而来。
+    - 其余语言仍走原正则路径，留 T17.4b。
+  - **快照**（`DeclarationScan`）：
+    - 声明种类细分为函数、方法、类、类型、变量、JS `var`、参数、导入、属性、global、nonlocal，再映射回旧的三类，供着色和导航使用。
+    - 新增作用域大纲：模块、类、函数、lambda/箭头、推导式、块。只存起止范围，用 varint 字节流约 5 B/作用域；声明属于哪个作用域按位置推出，每个声明不额外存储。
+    - 查询：`visibleBindings(at:)` 按「内层优先、同名遮蔽」给出可见绑定；`scopeChain(at:)` 给出外层作用域链。
+  - **作用域规则**（详见代码注释）：
+    - Python：
+      - 按逻辑行缩进划分作用域；名字在整个作用域内可见。
+      - 从方法内部看不到类体里的名字。
+      - `global`/`nonlocal` 把名字绑到外层；增量赋值不产生绑定。
+      - 推导式内的海象赋值绑在推导式作用域。这与 PEP 572 不同，PEP 规定绑在外层函数，入账为妥协。
+    - JS/TS：
+      - 按词法括号划分作用域；`var` 归最近的函数；函数声明属于所在块。
+      - `let`/`const`/`class` 只在声明之后可见，中间隔着函数边界时除外。
+      - 箭头函数必须看到 `=>` 才算函数，修正了 `const total = (a + b)` 被当成函数的问题。
+      - 参数默认值里可以带括号。
+  - **列出与只供作用域**：
+    - 着色表、导航列表和补全符号集保持原来的覆盖面。
+    - Python 的元组目标、普通 import、推导式、lambda、海象变量、`global`/`nonlocal` 和 match 捕获，只能通过 `visibleBindings` 查到。原因是 VS Code 不给 Python 变量着色，多着色会拉低一致率。
+    - 曾试过把这些名字也放进补全，结果 py-mem-16 中 `Path` 排到了 `path` 前面，已撤回。
+  - **分片**：
+    - `DeclarationScanner` 可以分步推进，`DocumentAnalysis` 在约 4 ms 的片内以每步 8192 单元推进，每片开始前核对版本。
+    - `ensureDeclarations()` 接着把进行中的扫描做完，不从头再来。
+    - debug 实测：10 MB Python 共 322 片、合计 1418 ms，最长一片 4.71 ms；10 MB JS 共 114 片、484 ms，最长 4.59 ms。
+    - 新增 PerfLog 字段 `sliced`、`slices`、`maxSliceUs`。
+  - **效果**：
+    - 注释、字符串里的伪声明全部排除，包括 docstring 里每处都出现的伪声明 `Karu`。
+    - 着色一致率：typescript 50.1 → 61.6、component.tsx 45.8 → 62.5、component.jsx 53.4 → 61.1、javascript 94.3 → 94.7，python 逐字节不变；全部样本 **77.7% → 78.8%**，没有样本下降。
+    - 候选基线：作用域 top1 16/32 → 17/32（py-neg-04 的伪声明 `ghost_handler` 消失）；top3 11/11、禁用名 0 不变。
+  - **内存**：
+    - 快照：10 MB Python +179 KB（大纲 298 KB / 59,580 个作用域；声明流因伪声明减少，由 834 KB 降到 715 KB），10 MB JS +137 KB。
+    - mem-benchmark（release、隔离诊断目录、与 HEAD 交替各两轮）：空文档 25/25 对 25/25，中 35/34 对 35/35，大 63/63 对 **61/61** MB，参考轮持平。
+    - implementer 中途发现一次性扫描每步 1 M 单元会缓存约 20 万 token，large 常驻多 3.5 MB；已把每步上限改为 16 K 单元。
+  - **改动的旧测试期望**：`DeclarationScanTests` 与旧正则的等价性检查只保留仍走正则的语言；Python/JS/TS 改为检查着色表、位置和补全符号三者自洽。
+  - **测试**：
+    - 新增 6 个套件、38 个测试，覆盖：
+      - 夹具上无伪声明（经词法核对，含 jsx/tsx）；`cases.json` 全部作用域样本；Python 13 个、JS/TS 11 个结构测试。
+      - 鲁棒性：4000+ 个截断或随机删字的变体，每个都在 1 s 内完成。
+      - 分片等价：预算取 1、7、64、4096 和随机值。
+      - 两步之间文本被改动的防护；`DocumentAnalysis` 分片发布。
+    - 全量 **1083 tests / 58 suites** 通过（main 复跑）；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **已知缺口**：
+    - JS 不带块体的 `for` 循环，循环变量一直可见到下一个 `;` 或换行。
+    - TS：`c ? (a) : b => x` 可能误读为箭头函数；类型字面量返回类型 `(): { … } {` 会读错；类型别名的泛型参数、interface/enum 成员都没有记录。
+    - JSX 子表达式可能产生多余绑定（T17.8 处理）。
+    - **`visibleBindings` 每次调用都解码整份快照**：T17.5 要缓存模块级绑定，才能满足热查询 p95 ≤8 ms。
+    - 偏移量对应快照扫描时的文本版本，编辑之后的映射由 T17.5 处理。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

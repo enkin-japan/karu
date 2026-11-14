@@ -5,6 +5,11 @@ import Testing
 // M17 T17.1 — `DeclarationScan` runs the declaration regexes once and derives
 // the navigator locations, the highlighter's classified table and the
 // completion symbol set. It must reproduce the three pre-T17.1 scans exactly.
+//
+// T17.4a: Python, JavaScript and TypeScript moved to the token-based walkers
+// (code-only declarations, scopes), so the legacy oracle now covers the
+// regex languages only; the walker languages are checked for the products'
+// mutual consistency here and in DeclarationScopeTests.
 
 private enum ScanPaths {
     static let root: URL = URL(fileURLWithPath: #filePath)
@@ -159,6 +164,17 @@ private func equivalenceInputs() throws -> [(label: String, text: String)] {
     for input in inputs {
         for language in allLanguageIdentifiers {
             let scan = DeclarationScan.scan(text: input.text, languageIdentifier: language)
+            if DeclarationScan.usesWalker(language) {
+                // Walker languages: products agree with each other.
+                #expect(scan.languageIdentifier == language)
+                #expect(scan.completionSymbols.isSuperset(of: scan.table.all), "\(input.label) [\(language)]")
+                let listed = Set(scan.locations.map(\.name))
+                #expect(listed.isSubset(of: scan.table.all), "\(input.label) [\(language)]")
+                #expect(scan.locationCount == scan.locations.count)
+                #expect(WordIndex.symbolTable(text: input.text, languageIdentifier: language) == scan.table)
+                compared += 1
+                continue
+            }
             let table = WordIndex.legacySymbolTable(text: input.text, languageIdentifier: language)
             let locations = WordIndex.legacyScanSymbolLocations(text: input.text, languageIdentifier: language)
             let symbols = WordIndex.legacySymbols(text: input.text, languageIdentifier: language)

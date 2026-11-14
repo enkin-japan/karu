@@ -1,73 +1,462 @@
 import Foundation
 
 /// One declaration pass over a document, with every product the editor needs
-/// derived from it (M17 T17.1, plan §3 "声明与作用域").
+/// derived from it (M17 T17.1, plan §3 "声明与作用域"; scopes T17.4a).
 ///
-/// Before T17.1 the highlighter (`symbolTable`), completion (`symbols`) and the
-/// navigator (`scanSymbolLocations`) each re-ran — and recompiled — the same
-/// per-language declaration regexes. `scan` runs them **once** and derives:
-/// - `locations`: every declared name with its capture range, document order
-///   (the navigator's list);
-/// - `table`: the names split into functions / types / variables (the
+/// Products:
+/// - `locations`: every listed declared name with its capture range, document
+///   order (the navigator's list);
+/// - `table`: the listed names split into functions / types / variables (the
 ///   highlighter's colours);
-/// - `completionSymbols`: the flat union (completion ranking).
+/// - `completionSymbols`: the table's union (completion ranking);
+/// - the **scope outline** with `visibleBindings(at:)` / `scopeChain(at:)`
+///   (Python and JS/TS; T17.5 weights candidates with it).
 ///
-/// **Memory**: a scan is held for as long as its document version is current,
-/// so the positional list is stored compactly — interned names plus a
-/// delta/varint byte stream (about 2–4 bytes per declaration instead of a
-/// 40-byte `SymbolLocation`). `locations` materialises the array on demand
-/// (the navigator reads it once per open and drops it on close, as before).
+/// **Two paths.** Python, JavaScript and TypeScript run the token-based,
+/// resumable `DeclarationScanner` (T17.4a): declarations are read from the
+/// lexer's code segments only (never from comments or strings), with a
+/// hand-written walker per family that also records parameters, locals,
+/// destructuring, imports and the scope outline. The other languages keep
+/// the T17.1 regex pass (`WordIndex.declarationPatterns`) unchanged until
+/// T17.4b; they have no outline.
 ///
-/// Pure value code: no AppKit, no shared mutable state, `Sendable` — the same
-/// function can later run on a background queue for workspace indexing
-/// (plan §3 "可移植性约束"). The compiled regexes are immutable statics.
+/// **Listed vs scope-only declarations.** Every declaration carries a rich
+/// `DeclarationKind`. The table, `completionSymbols` and `locations` keep
+/// today's *coverage* (scope-only names reach completion through
+/// `visibleBindings`, T17.5): for
+/// Python only the forms the legacy regexes captured (def / class names,
+/// parameters, a single-name assignment target, the first `for` target, `as`
+/// aliases) are *listed*; tuple / starred / annotated targets, imports without
+/// alias, comprehension, lambda, walrus, `global` / `nonlocal` and `match`
+/// capture names are scope-only (VS Code's Python grammar paints no variable
+/// references, so colouring more names would only add disagreement until
+/// T17.7 classifies by position). JavaScript / TypeScript list everything
+/// (its grammar paints parameters, locals, members and types). Rich kinds map
+/// to the legacy three: function / method → function; class / type → type;
+/// the rest → variable.
+///
+/// **Memory**: interned names plus two varint byte streams: declarations
+/// (`varint(Δlocation)`, `varint(nameIndex << 4 | kindCode)`) and the scope
+/// outline (pre-order records `varint(Δstart)`, `varint(length << 4 | kind <<
+/// 1 | hasName)`, `[varint(nameIndex)]`; parents are implied by nesting). No
+/// per-declaration scope storage: a declaration's scope is the innermost scope
+/// containing its location. Queries decode linearly (O(scopes +
+/// declarations)).
+///
+/// Pure value code: no AppKit, no shared mutable state, `Sendable` (plan §3
+/// "可移植性约束").
 public struct DeclarationScan: Sendable, Equatable {
+    /// Rich declaration kinds (T17.4a).
+    public enum DeclarationKind: UInt8, Sendable, CaseIterable {
+        case function
+        /// A method of a class (Python `def` in a class body, JS class method).
+        case method
+        case `class`
+        /// TS interface / type alias / enum / namespace, generic type parameters.
+        case type
+        /// Python local or global; JS `let` / `const`.
+        case variable
+        /// JS `var` (function-scoped).
+        case functionScopedVariable
+        case parameter
+        case `import`
+        /// Class attribute / field.
+        case property
+        /// Python `global x`: `x` binds in the module scope.
+        case global
+        /// Python `nonlocal x`: `x` binds in the nearest enclosing function.
+        case nonlocal
+
+        /// The highlighter / navigator category.
+        public var symbolKind: WordIndex.SymbolKind {
+            switch self {
+            case .function, .method: return .function
+            case .class, .type: return .type
+            default: return .variable
+            }
+        }
+    }
+
+    /// Scope kinds of the outline.
+    public enum ScopeKind: UInt8, Sendable {
+        case module, `class`, function
+        /// Python `lambda`, JS arrow function.
+        case lambda
+        case comprehension
+        /// JS block / `for` / `catch` / namespace.
+        case block
+    }
+
+    /// One declaration (listed or scope-only) in document order.
+    public struct Declaration: Equatable, Sendable {
+        public let name: String
+        public let kind: DeclarationKind
+        public let location: Int
+        /// In the table and `locations` (see the type comment).
+        public let isListed: Bool
+        public var range: NSRange { NSRange(location: location, length: name.utf16.count) }
+    }
+
+    /// One scope of the outline. `end` is exclusive; a scope ending at the
+    /// document end also contains the document-end offset.
+    public struct Scope: Equatable, Sendable {
+        public let index: Int
+        public let parent: Int?
+        public let kind: ScopeKind
+        public let name: String?
+        public let start: Int
+        public let end: Int
+        public var range: NSRange { NSRange(location: start, length: end - start) }
+    }
+
+    /// A binding visible at an offset (`visibleBindings(at:)`).
+    public struct ScopedBinding: Equatable, Sendable {
+        public let name: String
+        public let kind: DeclarationKind
+        public let location: Int
+        /// 0 = the innermost scope containing the offset, 1 its parent, …
+        public let scopeDepth: Int
+        public var range: NSRange { NSRange(location: location, length: name.utf16.count) }
+    }
+
     public let languageIdentifier: String
     public let table: WordIndex.SymbolTable
     public let completionSymbols: Set<String>
+    /// UTF-16 length of the scanned text; offsets refer to that version.
+    public let documentLength: Int
+    /// Number of scopes in the outline (0 for the regex languages).
+    public let scopeCount: Int
 
-    /// Number of entries in `locations`, without materialising them.
-    public let locationCount: Int
-    /// Distinct declared names referenced by `encodedLocations`.
+    /// Distinct declared names referenced by the streams.
     private let names: [String]
-    /// The locations in document order, each encoded as
-    /// `varint(location − previous location)` then
-    /// `varint(nameIndex << 2 | kindCode)`. The range length is the name's
-    /// UTF-16 length (the range is exactly the name capture).
+    /// Declarations in document order: `varint(Δlocation)`,
+    /// `varint(nameIndex << 4 | kindCode)`; the range length is the name's.
     private let encodedLocations: [UInt8]
+    /// Scope outline (see the type comment).
+    private let outline: [UInt8]
 
-    /// Every declared name with the range of its name capture, in document
-    /// order — exactly what `WordIndex.scanSymbolLocations` returned before
-    /// T17.1. Materialised on each access; callers keep it only transiently.
-    public var locations: [WordIndex.SymbolLocation] {
-        var out: [WordIndex.SymbolLocation] = []
-        out.reserveCapacity(locationCount)
+    init(languageIdentifier: String, table: WordIndex.SymbolTable, completionSymbols: Set<String>,
+         names: [String], encodedLocations: [UInt8], outline: [UInt8], scopeCount: Int, documentLength: Int) {
+        self.languageIdentifier = languageIdentifier
+        self.table = table
+        self.completionSymbols = completionSymbols
+        self.names = names
+        self.encodedLocations = encodedLocations
+        self.outline = outline
+        self.scopeCount = scopeCount
+        self.documentLength = documentLength
+    }
+
+    private static func empty(_ languageIdentifier: String, length: Int) -> DeclarationScan {
+        DeclarationScan(languageIdentifier: languageIdentifier, table: .empty, completionSymbols: [],
+                        names: [], encodedLocations: [], outline: [], scopeCount: 0, documentLength: length)
+    }
+
+    /// Bytes held by the compact storage (names' payload estimate, both
+    /// streams), for memory reports.
+    var compactStorageBytes: (names: Int, declarations: Int, outline: Int) {
+        (names.reduce(0) { $0 + $1.utf8.count + 16 }, encodedLocations.count, outline.count)
+    }
+
+    // MARK: - Kind codes
+
+    /// 4-bit codes: (kind, listed). Combinations not listed here never occur.
+    private static let codeTable: [(DeclarationKind, Bool)] = [
+        (.function, true), (.method, true), (.class, true), (.type, true),
+        (.variable, true), (.variable, false), (.functionScopedVariable, true),
+        (.parameter, true), (.parameter, false), (.import, true), (.import, false),
+        (.property, true), (.property, false), (.global, false), (.nonlocal, false),
+        (.functionScopedVariable, false),
+    ]
+
+    static func code(_ kind: DeclarationKind, listed: Bool) -> Int {
+        if let exact = codeTable.firstIndex(where: { $0.0 == kind && $0.1 == listed }) { return exact }
+        return codeTable.firstIndex { $0.0 == kind } ?? 4
+    }
+
+    private static func decode(code: Int) -> (DeclarationKind, Bool) {
+        codeTable[code & 15]
+    }
+
+    // MARK: - Decoding
+
+    private struct Reader {
+        let bytes: [UInt8]
         var index = 0
-        var location = 0
-        let bytes = encodedLocations
-        func varint() -> Int {
+        init(_ bytes: [UInt8]) { self.bytes = bytes }
+        var atEnd: Bool { index >= bytes.count }
+        @inline(__always)
+        mutating func varint() -> Int {
             var value = 0
             var shift = 0
-            while true {
+            while index < bytes.count {
                 let byte = bytes[index]
                 index += 1
                 value |= Int(byte & 0x7F) << shift
                 if byte & 0x80 == 0 { return value }
                 shift += 7
             }
+            return value
         }
-        while index < bytes.count {
-            location += varint()
-            let nameKind = varint()
-            let name = names[nameKind >> 2]
-            out.append(WordIndex.SymbolLocation(
-                name: name, kind: Self.kind(code: nameKind & 3),
-                range: NSRange(location: location, length: name.utf16.count)))
+    }
+
+    /// Calls `body(location, nameIndex, kind, listed)` for every declaration.
+    private func forEachDeclaration(_ body: (Int, Int, DeclarationKind, Bool) -> Void) {
+        var reader = Reader(encodedLocations)
+        var location = 0
+        while !reader.atEnd {
+            location += reader.varint()
+            let nameKind = reader.varint()
+            let (kind, listed) = Self.decode(code: nameKind & 15)
+            body(location, nameKind >> 4, kind, listed)
+        }
+    }
+
+    private struct ScopeRecord {
+        var index: Int
+        var start: Int
+        var end: Int
+        var kind: ScopeKind
+        var name: Int   // -1: none
+    }
+
+    /// Calls `body(record)` for every scope in pre-order (ascending start).
+    private func forEachScope(_ body: (ScopeRecord) -> Bool) {
+        var reader = Reader(outline)
+        var start = 0
+        var index = 0
+        while !reader.atEnd {
+            start += reader.varint()
+            let packed = reader.varint()
+            let name = packed & 1 != 0 ? reader.varint() : -1
+            let kind = ScopeKind(rawValue: UInt8((packed >> 1) & 7)) ?? .block
+            if !body(ScopeRecord(index: index, start: start, end: start + (packed >> 4), kind: kind, name: name)) {
+                return
+            }
+            index += 1
+        }
+    }
+
+    private func contains(_ scope: ScopeRecord, _ offset: Int) -> Bool {
+        scope.start <= offset && (offset < scope.end || scope.end >= documentLength)
+    }
+
+    // MARK: - Products
+
+    /// Whether a listed declaration appears in the navigator list: the legacy
+    /// subtraction (a variable whose name is also a function / type is not
+    /// listed again; Python `self` / `cls` never).
+    private func isNavigable(_ kind: DeclarationKind, _ name: String) -> Bool {
+        switch kind.symbolKind {
+        case .function, .type: return true
+        case .variable:
+            return !table.functions.contains(name) && !table.types.contains(name)
+                && !WordIndex.nonVariableNames(for: languageIdentifier).contains(name)
+        }
+    }
+
+    /// Every listed declared name with the range of its name, in document
+    /// order (the navigator). Materialised on each access.
+    public var locations: [WordIndex.SymbolLocation] {
+        var out: [WordIndex.SymbolLocation] = []
+        let excluded = WordIndex.nonVariableNames(for: languageIdentifier)
+        forEachDeclaration { location, nameIndex, kind, listed in
+            guard listed else { return }
+            let name = names[nameIndex]
+            let symbolKind = kind.symbolKind
+            if symbolKind == .variable,
+               table.functions.contains(name) || table.types.contains(name) || excluded.contains(name) { return }
+            out.append(WordIndex.SymbolLocation(name: name, kind: symbolKind,
+                                                range: NSRange(location: location, length: name.utf16.count)))
         }
         return out
     }
 
-    // MARK: - Compiled patterns
+    /// Number of entries in `locations`.
+    public var locationCount: Int { locations.count }
+
+    /// Every declaration, listed and scope-only, in document order.
+    public var declarations: [Declaration] {
+        var out: [Declaration] = []
+        forEachDeclaration { location, nameIndex, kind, listed in
+            out.append(Declaration(name: names[nameIndex], kind: kind, location: location, isListed: listed))
+        }
+        return out
+    }
+
+    /// The whole outline in pre-order (index 0 is the module scope).
+    public var scopes: [Scope] {
+        var out: [Scope] = []
+        var stack: [ScopeRecord] = []
+        forEachScope { record in
+            while let top = stack.last,
+                  (record.start >= top.end && top.end < documentLength) || record.end > top.end {
+                stack.removeLast()
+            }
+            out.append(Scope(index: record.index, parent: stack.last?.index, kind: record.kind,
+                             name: record.name >= 0 ? names[record.name] : nil,
+                             start: record.start, end: record.end))
+            stack.append(record)
+            return true
+        }
+        return out
+    }
+
+    /// The scopes containing `offset`, outermost first (decoded linearly).
+    private func chainRecords(at offset: Int) -> [ScopeRecord] {
+        var stack: [ScopeRecord] = []
+        forEachScope { record in
+            guard record.start <= offset else { return false }
+            while let top = stack.last, record.start >= top.end, top.end < documentLength { stack.removeLast() }
+            stack.append(record)
+            return true
+        }
+        while let top = stack.last, !contains(top, offset) { stack.removeLast() }
+        return stack
+    }
+
+    /// The scopes containing `offset`, **innermost first** (for T17.5's
+    /// "current function" weighting). Offsets refer to this scan's text
+    /// version; mapping through later edits is the caller's job.
+    public func scopeChain(at offset: Int) -> [Scope] {
+        let chain = chainRecords(at: offset)
+        var out: [Scope] = []
+        for (position, record) in chain.enumerated().reversed() {
+            out.append(Scope(index: record.index, parent: position > 0 ? chain[position - 1].index : nil,
+                             kind: record.kind, name: record.name >= 0 ? names[record.name] : nil,
+                             start: record.start, end: record.end))
+        }
+        return out
+    }
+
+    /// The bindings visible at `offset`, one per name, nearest scope first
+    /// (sorted by `scopeDepth`, then location).
+    ///
+    /// Walks the scope chain innermost → module; the nearest scope's binding
+    /// of a name shadows outer ones (within one scope the first visible
+    /// declaration wins). Rules:
+    /// - A declaration belongs to the innermost scope containing its location,
+    ///   except JS `var` (nearest function / arrow / module scope), Python
+    ///   `global` (module) and `nonlocal` (the function enclosing its own).
+    /// - **Class scopes**: once the chain has crossed a function, lambda or
+    ///   comprehension, an enclosing class scope's names are skipped (Python's
+    ///   rule; for JS / TS methods and fields likewise, but generic type
+    ///   parameters stay visible).
+    /// - **JS TDZ**: `let` / `const` / `class` are visible only after their
+    ///   declaration when no function boundary lies between the offset and
+    ///   their scope; `var`, functions, parameters, imports and types anywhere
+    ///   in their scope. Python names are visible anywhere in their scope.
+    /// - Regex-path languages (no outline): every declaration, depth 0.
+    ///
+    /// Offsets refer to this scan's text version; mapping through later
+    /// edits is the caller's job (T17.5).
+    public func visibleBindings(at offset: Int) -> [ScopedBinding] {
+        guard scopeCount > 0 else {
+            var seen = Set<Int>()
+            var out: [ScopedBinding] = []
+            forEachDeclaration { location, nameIndex, kind, _ in
+                if seen.insert(nameIndex).inserted {
+                    out.append(ScopedBinding(name: names[nameIndex], kind: kind, location: location, scopeDepth: 0))
+                }
+            }
+            return out
+        }
+        let python = languageIdentifier == "python"
+        let chain = chainRecords(at: offset)
+        guard !chain.isEmpty else { return [] }
+        // Chain position by scope index → depth (0 = innermost).
+        var depthOf: [Int: Int] = [:]
+        for (position, record) in chain.enumerated() { depthOf[record.index] = chain.count - 1 - position }
+        // crossed[d]: a function-like scope lies strictly inside depth d.
+        var crossed = [Bool](repeating: false, count: chain.count)
+        var seenFunction = false
+        for depth in 0..<chain.count {
+            crossed[depth] = seenFunction
+            let kind = chain[chain.count - 1 - depth].kind
+            if kind == .function || kind == .lambda || kind == .comprehension { seenFunction = true }
+        }
+
+        struct Best { var depth: Int; var location: Int; var kind: DeclarationKind }
+        var best: [Int: Best] = [:]
+
+        // Merged sweep: declarations and scopes are both in document order.
+        var stack: [ScopeRecord] = []
+        var reader = Reader(outline)
+        var nextStart = 0
+        var nextIndex = 0
+        var pending: ScopeRecord?
+        func readNext() -> ScopeRecord? {
+            guard !reader.atEnd else { return nil }
+            nextStart += reader.varint()
+            let packed = reader.varint()
+            let name = packed & 1 != 0 ? reader.varint() : -1
+            let record = ScopeRecord(index: nextIndex, start: nextStart, end: nextStart + (packed >> 4),
+                                     kind: ScopeKind(rawValue: UInt8((packed >> 1) & 7)) ?? .block, name: name)
+            nextIndex += 1
+            return record
+        }
+        pending = readNext()
+
+        forEachDeclaration { location, nameIndex, kind, _ in
+            while let record = pending, record.start <= location {
+                while let top = stack.last, record.start >= top.end, top.end < documentLength { stack.removeLast() }
+                stack.append(record)
+                pending = readNext()
+            }
+            while let top = stack.last, !contains(top, location) { stack.removeLast() }
+            guard !stack.isEmpty else { return }
+            // The scope the binding belongs to.
+            var owner = stack.count - 1
+            switch kind {
+            case .functionScopedVariable:
+                while owner > 0, stack[owner].kind != .function, stack[owner].kind != .lambda { owner -= 1 }
+            case .global:
+                owner = 0
+            case .nonlocal:
+                var o = owner
+                while o > 0, stack[o].kind != .function { o -= 1 }
+                o -= 1
+                while o > 0, stack[o].kind != .function { o -= 1 }
+                owner = max(0, o)
+            default:
+                break
+            }
+            guard let depth = depthOf[stack[owner].index] else { return }
+            // Class scope seen from inside a function.
+            if chain[chain.count - 1 - depth].kind == .class, crossed[depth] {
+                if python || kind != .type { return }
+            }
+            // JS temporal dead zone.
+            if !python, location >= offset, !crossed[depth], kind == .variable || kind == .class { return }
+            if let current = best[nameIndex], current.depth <= depth { return }
+            best[nameIndex] = Best(depth: depth, location: location, kind: kind)
+        }
+
+        var out = best.map { ScopedBinding(name: names[$0.key], kind: $0.value.kind,
+                                           location: $0.value.location, scopeDepth: $0.value.depth) }
+        out.sort { ($0.scopeDepth, $0.location) < ($1.scopeDepth, $1.location) }
+        return out
+    }
+
+    // MARK: - Scan
+
+    /// Languages read by the token-based walkers (T17.4a).
+    static func usesWalker(_ languageIdentifier: String) -> Bool {
+        languageIdentifier == "python" || languageIdentifier == "javascript" || languageIdentifier == "typescript"
+    }
+
+    /// Scans `text` for `languageIdentifier`'s declarations to completion.
+    /// Python / JS / TS: the resumable `DeclarationScanner` run in one go
+    /// (the sliced path through `DocumentAnalysis` yields an equal value).
+    /// Other languages: the T17.1 regex pass. Unsupported languages (and
+    /// empty text) yield empty products.
+    public static func scan(text: String, languageIdentifier: String) -> DeclarationScan {
+        let ns = text as NSString
+        var scanner = DeclarationScanner(languageIdentifier: languageIdentifier)
+        return scanner.finish(ns)
+    }
+
+    // MARK: - Regex path (languages without a walker)
 
     /// A declaration pattern with its regexes compiled once per process.
     private struct Compiled: @unchecked Sendable {
@@ -107,42 +496,13 @@ public struct DeclarationScan: Sendable, Equatable {
 
     private static let patternCache = PatternCache()
 
-    private static func compiledPatterns(for languageIdentifier: String) -> [Compiled] {
-        patternCache.patterns(for: languageIdentifier)
-    }
-
-    private static func code(of kind: WordIndex.SymbolKind) -> Int {
+    private static func legacyCode(of kind: WordIndex.SymbolKind) -> Int {
         switch kind {
-        case .function: return 0
-        case .type:     return 1
-        case .variable: return 2
+        case .function: return code(.function, listed: true)
+        case .type:     return code(.type, listed: true)
+        case .variable: return code(.variable, listed: true)
         }
     }
-
-    private static func kind(code: Int) -> WordIndex.SymbolKind {
-        switch code {
-        case 0:  return .function
-        case 1:  return .type
-        default: return .variable
-        }
-    }
-
-    private init(languageIdentifier: String, table: WordIndex.SymbolTable, completionSymbols: Set<String>,
-                 names: [String], encodedLocations: [UInt8], locationCount: Int) {
-        self.languageIdentifier = languageIdentifier
-        self.table = table
-        self.completionSymbols = completionSymbols
-        self.names = names
-        self.encodedLocations = encodedLocations
-        self.locationCount = locationCount
-    }
-
-    private static func empty(_ languageIdentifier: String) -> DeclarationScan {
-        DeclarationScan(languageIdentifier: languageIdentifier, table: .empty, completionSymbols: [],
-                        names: [], encodedLocations: [], locationCount: 0)
-    }
-
-    // MARK: - Scan
 
     /// One raw capture: absolute location of the name and its interned index.
     private struct Hit {
@@ -150,19 +510,25 @@ public struct DeclarationScan: Sendable, Equatable {
         let name: UInt32
     }
 
-    /// Scans `text` for `languageIdentifier`'s declarations — every regex runs
-    /// exactly once — and derives the three products. Unsupported languages
-    /// (and empty text) yield empty products.
-    public static func scan(text: String, languageIdentifier: String) -> DeclarationScan {
-        let patterns = compiledPatterns(for: languageIdentifier)
-        let ns = text as NSString
-        guard !patterns.isEmpty, ns.length > 0 else { return empty(languageIdentifier) }
+    /// The T17.1 single regex pass (every regex runs exactly once), for the
+    /// languages without a walker. Reproduces the legacy scans exactly.
+    static func regexScan(_ ns: NSString, languageIdentifier: String) -> DeclarationScan {
+        let patterns = patternCache.patterns(for: languageIdentifier)
+        guard !patterns.isEmpty, ns.length > 0 else { return empty(languageIdentifier, length: ns.length) }
+        let text = ns as String
 
         // 1. Raw hits per pattern (each list ascending by location), names
         //    interned, plus which kinds each name was captured as.
         var names: [String] = []
         var nameIndex: [String: UInt32] = [:]
         var kindMasks: [UInt8] = []
+        func bit(_ kind: WordIndex.SymbolKind) -> UInt8 {
+            switch kind {
+            case .function: return 1
+            case .type:     return 2
+            case .variable: return 4
+            }
+        }
         func intern(_ name: String, _ kind: WordIndex.SymbolKind) -> UInt32 {
             let index: UInt32
             if let known = nameIndex[name] {
@@ -173,7 +539,7 @@ public struct DeclarationScan: Sendable, Equatable {
                 names.append(name)
                 kindMasks.append(0)
             }
-            kindMasks[Int(index)] |= 1 << UInt8(code(of: kind))
+            kindMasks[Int(index)] |= bit(kind)
             return index
         }
         let full = NSRange(location: 0, length: ns.length)
@@ -207,7 +573,7 @@ public struct DeclarationScan: Sendable, Equatable {
         // 2. Classified sets — the legacy `symbolTable` rules: the `name(`
         //    heuristic never means a control word, and a name that is also a
         //    function/type is not a plain variable.
-        let functionBit: UInt8 = 1 << 0, typeBit: UInt8 = 1 << 1, variableBit: UInt8 = 1 << 2
+        let functionBit: UInt8 = 1, typeBit: UInt8 = 2, variableBit: UInt8 = 4
         let excludedVariables = WordIndex.nonVariableNames(for: languageIdentifier)
         var functions = Set<String>()
         var types = Set<String>()
@@ -229,7 +595,6 @@ public struct DeclarationScan: Sendable, Equatable {
         //    order with ties in pattern order: a k-way merge of the already
         //    ascending per-pattern lists, which is exactly the legacy stable
         //    sort of the deduplicated raw list.
-        // Per interned name: may a function hit / a variable hit be listed?
         let functionOK = names.map { !WordIndex.cLikeNonSymbols.contains($0) }
         let variableOK = names.map {
             !excludedVariables.contains($0) && !functions.contains($0) && !types.contains($0)
@@ -237,7 +602,6 @@ public struct DeclarationScan: Sendable, Equatable {
         let kinds = patterns.map(\.kind)
         var cursors = [Int](repeating: 0, count: hitsByPattern.count)
         var encoded: [UInt8] = []
-        var count = 0
         var previous = 0
         var groupLocation = -1
         var groupSeen: [(name: UInt32, kind: Int)] = []
@@ -250,8 +614,6 @@ public struct DeclarationScan: Sendable, Equatable {
             encoded.append(UInt8(v))
         }
         while true {
-            // The pattern whose next hit has the smallest location (lowest
-            // pattern index on ties).
             var best = -1
             for p in 0..<hitsByPattern.count where cursors[p] < hitsByPattern[p].count {
                 if best < 0 || hitsByPattern[p][cursors[p]].location < hitsByPattern[best][cursors[best]].location {
@@ -268,7 +630,7 @@ public struct DeclarationScan: Sendable, Equatable {
             case .variable: if !variableOK[nameIdx] { continue }
             case .type: break
             }
-            let kindCode = code(of: kind)
+            let kindCode = legacyCode(of: kind)
             if hit.location != groupLocation {
                 groupLocation = hit.location
                 groupSeen.removeAll(keepingCapacity: true)
@@ -276,9 +638,8 @@ public struct DeclarationScan: Sendable, Equatable {
             if groupSeen.contains(where: { $0.name == hit.name && $0.kind == kindCode }) { continue }
             groupSeen.append((hit.name, kindCode))
             appendVarint(hit.location - previous)
-            appendVarint(nameIdx << 2 | kindCode)
+            appendVarint(nameIdx << 4 | kindCode)
             previous = hit.location
-            count += 1
         }
         hitsByPattern.removeAll()
 
@@ -287,6 +648,8 @@ public struct DeclarationScan: Sendable, Equatable {
                                completionSymbols: table.all,
                                names: names,
                                encodedLocations: encoded,
-                               locationCount: count)
+                               outline: [],
+                               scopeCount: 0,
+                               documentLength: ns.length)
     }
 }

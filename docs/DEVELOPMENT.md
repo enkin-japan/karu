@@ -74,7 +74,8 @@
   被强杀时可能丢最后 0.5 s。事件：`completion.request`（按键事件时间戳到弹出/刷新/收起，
   `result`、`count`、`prefixLen`、`lazyIndex`）、`completion.index`、`highlight.pass`
   （`lang`、`painted`、`skipped`、`sliced`：色带落在超长行中间而只着色一段时为 1）、`analysis.declarations`（T17.1 起取代 `highlight.symbols`：每个文档版本一次的
-  共用声明扫描，`docLen`、`lang`、`version`）、`lexical.advance`（T17.2：着色前从最近检查点推进
+  共用声明扫描，`docLen`、`lang`、`version`；T17.4a 起 `sliced`=1 为分片扫描，时长为各片主线程时间之和，
+  另记 `slices` 片数与 `maxSliceUs` 最长一片）、`lexical.advance`（T17.2：着色前从最近检查点推进
   词法状态到色带起点，`lang`、`units` 扫描的 UTF-16 单元数、`resumedAt` 起点、`checkpoints` 现存数量）。用
   `python3 -I scripts/m17/perf-summary.py <日志>` 汇总各事件的 count / p50 / p95 / max。
   M17 基线采集套件（`KARU_M17_BASELINE=1 swift test --filter M17Baseline`）另写

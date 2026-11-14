@@ -52,7 +52,7 @@ public final class AnalysisScheduler {
     public nonisolated static let shared = AnalysisScheduler()
 
     /// Main-thread time per slice before yielding to the run loop.
-    public static let sliceBudget: TimeInterval = 0.004
+    public nonisolated static let sliceBudget: TimeInterval = 0.004
 
     private var ready: [AnalysisJob] = []
     private var delayed: [(job: AnalysisJob, item: DispatchWorkItem)] = []

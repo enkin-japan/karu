@@ -145,7 +145,9 @@ public struct WordIndex {
     }
 
     /// The per-language declaration patterns, in the order they should be scanned.
-    /// Empty for unsupported languages. `DeclarationScan` iterates this list; the
+    /// Empty for unsupported languages. `DeclarationScan`'s regex path iterates
+    /// this list for the languages without a declaration walker (since T17.4a
+    /// the Python and JS/TS entries only feed the legacy oracle below); the
     /// shared classification rules (control-word filtering for the `name(`
     /// heuristic, and demoting a variable name that is also a function/type) are
     /// applied afterwards by whichever scan consumes it.
@@ -233,7 +235,7 @@ public struct WordIndex {
     /// symbol colouring and (via `symbols(text:…)`) the completion ranking.
     /// Unsupported languages return `.empty`. Thin wrapper over
     /// `DeclarationScan.scan`, which derives all three declaration products
-    /// from one regex pass.
+    /// from one pass (token walkers for Python / JS / TS, regexes otherwise).
     public static func symbolTable(text: String, languageIdentifier: String) -> SymbolTable {
         DeclarationScan.scan(text: text, languageIdentifier: languageIdentifier).table
     }

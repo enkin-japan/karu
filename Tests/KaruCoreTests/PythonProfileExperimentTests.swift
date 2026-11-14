@@ -24,26 +24,10 @@ import Testing
 // edit-sensitivity check, which relies on PythonTokenizer keeping an
 // unbalanced field open.)
 
-private func experimentalPythonProfile() -> LexicalProfile {
-    typealias Form = LexicalProfile.StringForm
-    let field = LexicalProfile.InterpolationForm(open: "{", close: "}", escapedOpen: "{{")
-    let formatted = ["f", "fr", "rf"]
-    let other = ["r", "u", "b", "br", "rb"]
-    var forms: [Form] = []
-    for quote in ["\"\"\"", "'''"] {
-        forms.append(Form(prefixes: formatted, prefixRequired: true, prefixCaseInsensitive: true,
-                          delimiter: .fixed(open: quote, close: quote), multiline: true, interpolations: [field]))
-        forms.append(Form(prefixes: other, prefixCaseInsensitive: true,
-                          delimiter: .fixed(open: quote, close: quote), multiline: true))
-    }
-    for quote in ["\"", "'"] {
-        forms.append(Form(prefixes: formatted, prefixRequired: true, prefixCaseInsensitive: true,
-                          delimiter: .fixed(open: quote, close: quote), multiline: false, interpolations: [field]))
-        forms.append(Form(prefixes: other, prefixCaseInsensitive: true,
-                          delimiter: .fixed(open: quote, close: quote), multiline: false))
-    }
-    return LexicalProfile(lineComments: ["#"], strings: forms)
-}
+// T17.4a promoted the profile to `PythonLanguage.analysisProfile`: the
+// declaration scanner reads Python's code segments through it, while
+// highlighting stays on PythonTokenizer for the reason above.
+private func experimentalPythonProfile() -> LexicalProfile { PythonLanguage.analysisProfile }
 
 @Suite("PythonProfileExperiment")
 struct PythonProfileExperimentTests {
