@@ -52,7 +52,7 @@
 | 文本引擎 | **NSTextView + NSLayoutManager（TextKit 1 路径）** | 复用系统文本布局；现有折叠依赖字形代理，高亮依赖临时属性，不自研文本布局 |
 | 构建系统 | **SPM**（executable + 库分离）+ `bundle-macos.sh` 打包脚本 | 本机无完整 Xcode（仅 CLT），且 .xcodeproj 不利于 CLI 驱动开发 |
 | 文档管理 | **自制轻量 DocumentController**（NSOpenPanel/NSSavePanel + 手动 dirty 追踪） | NSDocument 依赖 bundle Info.plist 文档类型注册，在 SPM 流程下别扭，且自制更可控更省 |
-| 语法高亮 | **自写正则 tokenizer**，按语言声明式定义 | tree-sitter 会使 bundle +10–20 MB；当前功能集不需要真 AST。高亮引擎藏在协议后面，未来可换。M17 深层类型推断所需的解析器（手写 vs 仅 Python/TS 语法的 tree-sitter）按内存、时延与容错实测选型（体积上限已于 2026-11-13 取消） |
+| 语法高亮 | **自写正则 tokenizer**，按语言声明式定义 | tree-sitter 会使 bundle +10–20 MB；当前功能集不需要真 AST。高亮引擎藏在协议后面，未来可换。M17 深层类型推断所需的解析器经 T17.9 实测选定**手写解析器**（基于通用词法扫描器的 token、扁平节点数组、按顶层语句增量），不引入 tree-sitter：1000 行文件的语法树常驻约 0.1–0.6 MB、完整解析约 0.3 ms，10 MB 约 34 MB / 90 ms，tree-sitter 分别约 1 MB、1.5 ms、340–360 MB、500 ms，容错样本 58/58 对 57/58（见 LEDGER T17.9） |
 | 代码折叠 | 缩进层级 + 括号配对计算，不依赖 AST | 同上 |
 | 补全 | 关键字表 + 文档分词索引 + 共享词法状态上的声明/作用域分析 + 进程内类型推断、导入解析与项目文件夹跨文件索引（2026-11-13 决策，见 [M17 方案](HIGHLIGHT-AND-COMPLETION-PLAN.md)） | **LSP 明确排除在产品边界外**（单个语言服务器 100 MB–1 GB，定位崩坏）。所有代码理解在 Karu 进程内完成，计入常驻预算；不执行项目代码获取信息 |
 | 排版整理 | **仅内置** JSON / JSONL / XML / plist | C/C++/Java 等外部 formatter（clang-format、prettier）已决策放弃：拖运行时、bundle 膨胀 |

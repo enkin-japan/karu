@@ -30,6 +30,7 @@
   },
   "03-unclosed-jsx-element.tsx": {
     "topLevel": [
+      "Post",
       "Article"
     ],
     "enclosing": [
@@ -57,7 +58,8 @@
     "topLevel": [
       "CardProps",
       "Card",
-      "Footer"
+      "Footer",
+      "VERSION"
     ],
     "enclosing": [
       "Card"

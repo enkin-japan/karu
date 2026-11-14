@@ -252,7 +252,8 @@
   "19-incomplete-import.ts": {
     "topLevel": [
       "readText",
-      "ENCODING"
+      "ENCODING",
+      "sizeOf"
     ],
     "enclosing": [],
     "params": [],
@@ -288,7 +289,8 @@
       "ServerConfig",
       "AppConfig",
       "describe",
-      "hasTls"
+      "hasTls",
+      "portOf"
     ],
     "enclosing": [
       "describe"

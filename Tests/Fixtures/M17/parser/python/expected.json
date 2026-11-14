@@ -279,7 +279,8 @@
   "20-fstring-unterminated.py": {
     "topLevel": [
       "Greeter",
-      "greet_all"
+      "greet_all",
+      "shout_all"
     ],
     "enclosing": [
       "Greeter",
