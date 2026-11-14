@@ -411,7 +411,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             EditorTextView.scrollProbeLog = { lines.append($0) }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self else { return }
-                self.openFromFinder(URL(fileURLWithPath: "/Volumes/enkin/project/TinyEditor/debug/test.md"))
+                // Relative to the working directory (run from the repository root), so
+                // no build-machine path is compiled into the app.
+                self.openFromFinder(URL(fileURLWithPath: "debug/test.md"))
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     guard let controller = self.windowControllers.first,
                           let tv = controller.window?.contentView?.firstSubview(ofType: NSTextView.self),
