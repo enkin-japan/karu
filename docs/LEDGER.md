@@ -53,7 +53,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ✅ T17.8a 子语言、T17.8b JSX/TSX、T17.8c 光标处子语言；一致率深色 97.3%、浅色 94.2% |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ✅ 选手写解析器（内存约 1/10、时延约 1/5，容错 58/58 对 57/58） |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
-| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ⬜ |
+| T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | 🔶 11a 解析器产品化完成；11b–d 待做 |
 | T17.12 | 项目文件夹设置与 SQLite 索引、后台全量/增量、清除与占用显示 | T17.4 | implementer | ⬜ |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ⬜ |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ⬜ |
@@ -705,6 +705,49 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **已知限制**：
     - `lib.es2025.iterator` 模块里只在本文件可见的辅助类型不进表，推断时按未知处理。
     - Python 枚举类只看直接基类判断。
+
+- T17.11a 解析器产品化（main 定拆分和接口，implementer 实现，main 在干净 worktree 里单独复验，2026-11-15）：
+  - **代码**：
+    - `Sources/KaruCore/Parsing/`：
+      - `SyntaxTree`：16 B 节点，后序扁平数组，带查询 API。
+      - `SyntaxLexer`：直接使用 KaruCore 的 `LexicalScanner`。
+      - `SyntaxParserCore`：步数上限和嵌套深度保护。
+      - `PythonSyntaxParser`；`ScriptSyntaxParser`（JS/TS/TSX 共用，`ts` 和 `jsx` 两个开关决定模式）。
+      - `SyntaxBuild`：可续跑，整树或摘要两种模式，按顶层语句做增量。
+      - `ModuleSummary`：每条 24 B；按需解析单条顶层语句，结果进 `SyntaxSubtreeCache`（LRU 上限 2 MiB）。
+    - `Analysis/SyntaxAnalysis.swift`：语法层的调度和发布。`DocumentAnalysis` 只加了挂钩（+24/−2）。
+    - 给 T17.11b 用的接口：`syntax`、`publishedSyntax`、`ensureSyntax()`、`syntaxStatement(at:)`、`syntaxRetainedBytes`。
+  - **策略**：
+    - 不超过 1 MB 的文档保留整棵树；更大的只保留模块摘要，光标所在的顶层语句按需解析。
+    - 只在补全和类型推断都开时保留，切换语言时释放，`isRuntimeStateReleased` 也计入语法层。
+    - 发布语法快照时暂不通知使用者，这一步用户看不到变化。
+  - **补上的语法**：
+    - Python：`match` 的各种模式、海象运算符、f-string 字段和嵌套格式说明（格式说明里的 `#` 在 token 层修正）、PEP 695 `type`。
+    - TS/JS：解构赋值和 for-of 左侧的模式节点；`import type` / `export type`（`SyntaxAux.typeOnly`）、import attributes；JS 模式关掉 TS 专有语法；各种装饰器、`accessor`；async、生成器、`for await`；条件类型和 `infer` 的细节。
+  - **步数上限**：每条顶层语句最多 `65536 + 512 × token 数` 步，超出时在当前位置合成输入结束并跳到下一个干净的行首；总量超过 1M 步时截断。预算只取决于语句自身的文本，所以增量和全量结果一致。嵌套保护上限为 160 帧。
+  - **验收**：
+    - 容错样本 58/58（生产解析器）。
+    - 真实语料全部 0 个错误节点、0 次触及上限：typeshed stdlib 753 个文件、CPython 3.13 lib 630 个、另一次性跑的 site-packages 411 个、TS lib `.d.ts` 110 个、`typescript.js`（9.1M 单元，JS 模式）。
+    - 与参考解析器（Python `ast`、TS 编译器 API）逐项比较顶层语句起始行和全部具名定义：Python 1383 个文件、脚本 111 个文件，0 处不一致。
+    - 增量与全量逐节点相同：默认约 1000 次检查，长模式 50,800 次。变异模糊测试（含孤立代理项）不崩溃、不触及上限。
+    - 分片构建与一次构建相同（预算 1、7、64、4096 和随机值）。3000 层病态嵌套在 512 KB 栈上不溢出。
+    - main 在只含 11a 改动的干净 worktree 里复跑：全量 **1351 tests / 114 suites** 通过，visual-smoke VISUAL OK、FOLD GEOMETRY OK，新文件没有警告。
+    - 补全基线与 HEAD 相同（implementer 用 worktree 做 A/B）。
+  - **性能**（Release，负载 5–8）：
+    - 1000 行完整解析：py 0.31 / 0.34 ms，ts 0.36 / 0.39 ms（中位数 / p95）。
+    - 键入后增量更新：0.024–0.030 ms，通常只重解析 2 条语句。
+    - 10 MB 摘要构建：Python 111 ms（28 片），JS 187 ms（46 片），TS 136 ms（34 片），最长一片 4.15–4.23 ms。
+    - 按需解析单条语句约 0.02 ms。
+  - **内存**：
+    - 1000 行文档的整棵树 98,624 B（0.10 MB）。
+    - 10 MB 摘要：Python 1.08 MB，TS 1.03 MB，JS 4.85 MB（语句密集的极端情况）。另加最多 2 MiB 的 LRU。
+  - **已知缺口**：
+    - 压缩代码里单条巨大的顶层语句无法切开：1 MB 约 10 ms 一片。
+    - 多行 f-string 字段里的 `#` 仍会让扫描器误入注释。
+    - 一次防抖窗口内相距很远的两处编辑，中间部分会整段重解析。
+    - TS 括号大约嵌套 50 层之后的内容变成错误节点。
+  - **发现的旧 bug**：`JavaScriptDeclarationWalker` 遇到 `class R<T extends { id: string }> {}` 时，分片扫描与一次扫描结果不同，还会把 `id` 记成声明。留给 T17.11c 处理（可改用语法树）。
+  - **不稳定测试**：ToolchainManager 和 ToolchainInstaller 的计时测试在全量高负载下仍偶发失败，单独跑通过（T17.8c 已记录）。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

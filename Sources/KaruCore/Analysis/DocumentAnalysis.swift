@@ -36,6 +36,9 @@ import AppKit
 /// - **Release**: with `highlight`, `completion`, `typeInference` and
 ///   `crossFileIndex` all off, the snapshot and checkpoints are dropped
 ///   (`isRuntimeStateReleased`). Nothing is rebuilt eagerly when one comes back.
+/// - **Syntax** (T17.11a): the parser languages' syntax tree / module summary
+///   lives in `syntaxAnalysis` (`SyntaxAnalysis`), held only while completion
+///   and type inference are both on; see `syntax`.
 ///
 /// Register it on the window's `TextStorageObserverHub` **before** the
 /// highlighter, completion and folding so the version bump and checkpoint
@@ -63,6 +66,8 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
     private let moduleSettings: ModuleSettings
     private let moduleCenter: NotificationCenter
     private let scheduler: AnalysisScheduler
+    /// The syntax tree layer (T17.11a).
+    let syntaxAnalysis: SyntaxAnalysis
 
     public private(set) var version: UInt64 = 0
     public private(set) var languageIdentifier: String = ""
@@ -105,7 +110,9 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         self.moduleSettings = moduleSettings
         self.moduleCenter = moduleCenter
         self.scheduler = scheduler
+        syntaxAnalysis = SyntaxAnalysis(scheduler: scheduler)
         super.init()
+        syntaxAnalysis.host = self
         for module in Self.analysisModules { moduleStates[module] = moduleSettings.isEnabled(module) }
         moduleCenter.addObserver(self, selector: #selector(moduleSettingsChanged(_:)),
                                  name: ModuleSettings.didChangeNotification, object: nil)
@@ -142,9 +149,11 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         published == nil ? nil : publishedJournal.mapFromBase(offset)
     }
 
-    /// True when neither a declaration snapshot nor any checkpoint is held.
+    /// True when neither a declaration snapshot, any checkpoint nor syntax
+    /// state is held.
     public var isRuntimeStateReleased: Bool {
         snapshot == nil && published == nil && checkpoints.entries.isEmpty && contextCheckpoints.entries.isEmpty
+            && syntaxAnalysis.isReleased
     }
 
     /// Makes `fresh` the current and the published snapshot.
@@ -200,6 +209,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         if hasDeclarationConsumerModule {
             publish(DeclarationSnapshot(version: version, scan: scanDeclarations()))
         }
+        syntaxAnalysis.languageDidChange()
         notify(.language)
     }
 
@@ -217,7 +227,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
 
     /// The document text read in place (no bridged copy). Only read while
     /// the version is unchanged since the read started.
-    private var currentText: NSString {
+    var currentText: NSString {
         textView?.textStorage?.mutableString ?? ((textView?.string ?? "") as NSString)
     }
 
@@ -320,7 +330,17 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
     /// results stay until the analysis is released with its window.
     public func cancelPendingWork() {
         cancelDeclarationJob()
+        syntaxAnalysis.cancel()
     }
+
+    /// Completion and type inference are both on: the syntax layer is kept.
+    var syntaxModulesEnabled: Bool {
+        moduleSettings.isEnabled(.completion) && moduleSettings.isEnabled(.typeInference)
+    }
+
+    var hasTextView: Bool { textView != nil }
+
+    var isInKeyWindow: Bool { textView?.window?.isKeyWindow == true }
 
     private func cancelDeclarationJob() {
         scheduler.cancel(owner: ObjectIdentifier(self))
@@ -358,6 +378,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         snapshot = nil
         inFlightScanner = nil
         if hasDeclarationConsumerModule { scheduleDeclarationScan() }
+        syntaxAnalysis.textDidChange(editedRange: editedRange, changeInLength: delta)
     }
 
     // MARK: - Module gating
@@ -370,6 +391,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         guard moduleStates[module] != enabled else { return }
         moduleStates[module] = enabled
         version &+= 1
+        syntaxAnalysis.modulesDidChange()
 
         if Self.analysisModules.allSatisfy({ !moduleSettings.isEnabled($0) }) {
             cancelDeclarationJob()
