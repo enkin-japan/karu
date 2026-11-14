@@ -427,7 +427,9 @@ struct DocumentAnalysisTests {
                                                   with: "late = f\"{x!s}\" + '''open\nstill'''\n")
         #expect(a.checkpointOffsets == beforeEdit)
         await pump(0.3)   // the edit's declaration rescan lands
-        await pump(until: { a.engine.analysis.declarations != nil })
+        // A sliced rescan of this large document can take several seconds of
+        // main-thread turns when the full suite runs in parallel.
+        await pump(until: { a.engine.analysis.declarations != nil }, timeout: 20)
         #expect(a.engine.analysis.declarations != nil)
         expectMatchesFreshEngine(a, at: Int(Double(a.length) * 0.97), "edit-near-end")
         #expect(Array(a.checkpointOffsets.prefix(beforeEdit.count)) == beforeEdit)

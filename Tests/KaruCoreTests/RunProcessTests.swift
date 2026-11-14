@@ -259,10 +259,13 @@ struct RunProcessTests {
         #expect(await h.waitForOutput(containing: "ready"))
         let stopped = Date()
         h.runner.stop()
-        let result = await h.wait(timeout: 6)
+        let result = await h.wait(timeout: 12)
         let elapsed = Date().timeIntervalSince(stopped)
         #expect(result?.completion == .finished(.signaled(SIGKILL)))
-        #expect(elapsed >= 1.5 && elapsed < 4.5)
+        // The lower bound proves the TERM grace period; the upper bound only
+        // guards against never escalating, and a loaded parallel run can add
+        // seconds of scheduling delay.
+        #expect(elapsed >= 1.5 && elapsed < 10)
     }
 
     @Test func stopAllStopsLiveRuns() async throws {

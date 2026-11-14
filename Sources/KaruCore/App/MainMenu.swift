@@ -146,6 +146,17 @@ enum MainMenu {
                                            keyEquivalent: "\\")
         jumpBracket.keyEquivalentModifierMask = [.command, .shift]
 
+        // Show Completions (M17 T17.6): the manual completion request. ⌥⎋ is
+        // also AppKit's `complete:` binding, which EditorTextView routes to
+        // the same request, so the key keeps working after a rebind. Never
+        // ⌃Space (the system input-source switch). Targets the first
+        // responder (EditorTextView), which greys it out while the
+        // `completion` module is off.
+        let showCompletions = editMenu.addItem(withTitle: L10n.t(.menuShowCompletions),
+                                               action: #selector(EditorTextView.showCompletions(_:)),
+                                               keyEquivalent: "\u{1b}")
+        showCompletions.keyEquivalentModifierMask = [.option]
+
         // Format menu: targets the first responder (EditorWindowController),
         // which gates the item on the `format` module + supported language via
         // validateMenuItem.

@@ -671,12 +671,21 @@ public final class EditorTextView: NSTextView {
 
     public override func resignFirstResponder() -> Bool {
         shortcutRouter.reset()
-        return super.resignFirstResponder()
+        let resigned = super.resignFirstResponder()
+        // The editor lost focus (find bar, title rename…): close the popup.
+        if resigned { completionKeyHandler?.dismissCompletion() }
+        return resigned
     }
 
     private func handleFoldChord(_ event: NSEvent, preferMenu: Bool = false) -> Bool {
         guard !hasMarkedText() else { return false }
-        return shortcutRouter.handle(event, scope: .editor, sender: self, preferMenu: preferMenu)
+        return shortcutRouter.handle(event, scope: .editor, sender: self, preferMenu: preferMenu) { [weak self] command in
+            // Show Completions is this view's own action (M17 T17.6): run it
+            // here rather than through the responder chain.
+            guard let self, command.action == "showCompletions:" else { return false }
+            self.showCompletions(nil)
+            return true
+        }
     }
 
     /// The chord's second key, ⌘0, doubles as View ▸ Actual Size's menu key
@@ -701,12 +710,83 @@ public final class EditorTextView: NSTextView {
     /// Give an active completion popup first refusal on navigation keys, then
     /// let the normal input path run and notify the popup of the keystroke so it
     /// can open / refilter / dismiss. Zero overhead when no handler is attached.
+    ///
+    /// Input-method composition owns every key (M17 T17.6, plan §5.6): while
+    /// the view has marked text nothing is intercepted — arrows, Return, Tab,
+    /// Esc, Space and digits all reach the input method — and the key that
+    /// commits the composition does not trigger a popup. A key that *starts*
+    /// a composition closes the popup instead of refreshing it.
     public override func keyDown(with event: NSEvent) {
+        if hasMarkedText() {
+            completionKeyHandler?.dismissCompletion()
+            passKeyDownToSuper(event)
+            return
+        }
         if let handler = completionKeyHandler,
            handler.isCompletionActive, handler.handleCompletionKeyDown(event) { return }
         if handleFoldChord(event) { return }
-        super.keyDown(with: event)
-        completionKeyHandler?.textViewDidInsertKey(event)
+        passKeyDownToSuper(event)
+        if hasMarkedText() {
+            completionKeyHandler?.dismissCompletion()
+        } else {
+            completionKeyHandler?.textViewDidInsertKey(event)
+        }
+    }
+
+    /// Tests only: replaces `super.keyDown` (the input-method / key-binding
+    /// path) so a test can observe that a key was passed through, or play
+    /// the input method's part, independent of the machine's input source.
+    var superKeyDownForTesting: ((NSEvent) -> Void)?
+
+    private func passKeyDownToSuper(_ event: NSEvent) {
+        if let hook = superKeyDownForTesting { hook(event) } else { super.keyDown(with: event) }
+    }
+
+    /// Composition started or changed: no completion popup may cover the
+    /// input method's candidate window (plan §1 IME defect).
+    public override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        if hasMarkedText() { completionKeyHandler?.dismissCompletion() }
+    }
+
+    // MARK: Manual completion (M17 T17.6, plan §5.1)
+
+    /// The current event, for telling a plain Esc apart (tests inject one).
+    var currentEventProvider: () -> NSEvent? = { NSApp?.currentEvent }
+
+    /// A key-down of Esc without ⌘ / ⌥ / ⌃ / ⇧.
+    static func isPlainEscape(_ event: NSEvent?) -> Bool {
+        guard let event, event.type == .keyDown, event.keyCode == 53 else { return false }
+        return event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+    }
+
+    /// AppKit's completion action (⌥⎋, F5) opens Karu's list, never the
+    /// system's word list. A plain Esc never becomes a request even where a
+    /// key binding routes it here (plan §14.5): it only closes an open popup.
+    public override func complete(_ sender: Any?) {
+        if Self.isPlainEscape(currentEventProvider()) {
+            completionKeyHandler?.dismissCompletion()
+            return
+        }
+        requestManualCompletion()
+    }
+
+    /// Edit ▸ Show Completions (rebindable in the shortcut settings).
+    @objc public func showCompletions(_ sender: Any?) {
+        requestManualCompletion()
+    }
+
+    private func requestManualCompletion() {
+        // Never during composition: the input method owns the caret area.
+        guard !hasMarkedText(), isEditable else { return }
+        completionKeyHandler?.requestManualCompletion()
+    }
+
+    public override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(showCompletions(_:)) {
+            return isEditable && completionKeyHandler?.isCompletionAvailable == true
+        }
+        return super.validateMenuItem(menuItem)
     }
 
     // MARK: Logical line start / end (⌘← / ⌘→, T14.2)

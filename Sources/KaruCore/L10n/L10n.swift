@@ -77,6 +77,12 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuMoveLineUp, menuMoveLineDown, menuCopyLineUp, menuCopyLineDown, menuDeleteLine
     // Edit menu — jump to matching bracket (⌘⇧\).
     case menuJumpToMatchingBracket
+    // Edit menu — show completions (M17 T17.6, ⌥⎋ by default) and the
+    // completion list's category labels.
+    case menuShowCompletions
+    case completionKindParameter, completionKindLocal, completionKindMember, completionKindFunction
+    case completionKindType, completionKindVariable, completionKindKeyword, completionKindBuiltin
+    case completionKindModule, completionKindFile, completionKindWord
     // Format menu.
     case menuFormat, menuFormatDocument
     // Convert-line-endings submenu.
