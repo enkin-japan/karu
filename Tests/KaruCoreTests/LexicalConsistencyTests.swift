@@ -71,13 +71,17 @@ private func isSafeSplit(_ ns: NSString, _ p: Int, interiors: Set<Int> = []) -> 
 /// (a JS regex literal can contain words; T17.7: `\x7f` is one escape).
 private func tokenInteriors(_ ns: NSString, _ profile: LexicalProfile,
                             segments: [(NSRange, LexicalSegment)]) -> Set<Int> {
-    var delimiters = profile.lineComments
-    for block in profile.blockComments { delimiters += [block.open, block.close] }
-    for form in profile.strings {
-        if case .fixed(let open, let close) = form.delimiter { delimiters += [open, close] }
-        for interpolation in form.interpolations {
-            delimiters.append(interpolation.open)
-            if let escaped = interpolation.escapedOpen { delimiters.append(escaped) }
+    var delimiters: [String] = []
+    // T17.8a: the embedded languages' delimiters too.
+    for form in [profile] + profile.embeds.map(\.profile) {
+        delimiters += form.lineComments
+        for block in form.blockComments { delimiters += [block.open, block.close] }
+        for string in form.strings {
+            if case .fixed(let open, let close) = string.delimiter { delimiters += [open, close] }
+            for interpolation in string.interpolations {
+                delimiters.append(interpolation.open)
+                if let escaped = interpolation.escapedOpen { delimiters.append(escaped) }
+            }
         }
     }
     var out = Set<Int>()
@@ -97,6 +101,15 @@ private func tokenInteriors(_ ns: NSString, _ profile: LexicalProfile,
         default: continue
         }
         for k in 1..<max(1, range.length) { out.insert(range.location + k) }
+    }
+    // T17.8a: raw-text start and end tag tokens (`<script` / `</script`
+    // with their delimiter), any case.
+    for element in profile.rawTextElements {
+        let re = try! NSRegularExpression(pattern: "</?" + element.name + #"[ \t\n\f\r/>]"#,
+                                          options: [.caseInsensitive])
+        for match in re.matches(in: ns as String, range: NSRange(location: 0, length: ns.length)) {
+            for k in 1..<match.range.length { out.insert(match.range.location + k) }
+        }
     }
     return out.union(lineBlockInteriors(ns, profile))
 }
@@ -134,15 +147,15 @@ private func lineBlockInteriors(_ ns: NSString, _ profile: LexicalProfile) -> Se
     return out
 }
 
-/// Merges adjacent runs of the same kind (each call emits maximal runs of
-/// its own range only).
-private func merged(_ segments: [(NSRange, LexicalSegment)]) -> [(NSRange, LexicalSegment)] {
-    var out: [(NSRange, LexicalSegment)] = []
-    for (range, kind) in segments {
-        if let last = out.last, last.1 == kind, NSMaxRange(last.0) == range.location {
+/// Merges adjacent runs of the same kind and language (each call emits
+/// maximal runs of its own range only; T17.8a: language 0 is the host).
+private func merged(_ segments: [(NSRange, LexicalSegment, Int)]) -> [(NSRange, LexicalSegment, Int)] {
+    var out: [(NSRange, LexicalSegment, Int)] = []
+    for (range, kind, language) in segments {
+        if let last = out.last, last.1 == kind, last.2 == language, NSMaxRange(last.0) == range.location {
             out[out.count - 1].0.length += range.length
         } else {
-            out.append((range, kind))
+            out.append((range, kind, language))
         }
     }
     return out
@@ -228,7 +241,7 @@ struct LexicalConsistencyTests {
         ("c.c", "c"), ("cpp.cpp", "cpp"), ("csharp.cs", "csharp"), ("java.java", "java"), ("go.go", "go"),
         ("css.css", "css"), ("sql.sql", "sql"), ("swift.swift", "swift"), ("toml.toml", "toml"),
         ("html.html", "html"), ("xml.xml", "xml"), ("bash.sh", "bash"), ("yaml.yaml", "yaml"),
-        ("markdown.md", "markdown"), ("embedded/fences.md", "markdown"),
+        ("markdown.md", "markdown"), ("embedded/fences.md", "markdown"), ("embedded/page.html", "html"),
     ]
 
     @Test(arguments: pilots)
@@ -240,13 +253,15 @@ struct LexicalConsistencyTests {
         let ns = (text + "\n" + text) as NSString
 
         var oneState = LexicalScanState()
-        var one: [(NSRange, LexicalSegment)] = []
-        scanner.segments(ns, from: 0, to: ns.length, state: &oneState) { one.append(($0, $1)) }
+        var one: [(NSRange, LexicalSegment, Int)] = []
+        scanner.segments(ns, from: 0, to: ns.length, state: &oneState, languages: { one.append(($0, $1, $2)) })
+        one = merged(one)
         #expect(one.contains { $0.1 == .comment } || pilot.file == "embedded/fences.md")
+        #expect(!pilot.file.hasPrefix("embedded/") || one.contains { $0.2 != 0 })
         #expect(scanner.profile.strings.isEmpty || one.contains { $0.1 == .string })
         #expect(scanner.profile.lineBlocks.isEmpty || one.contains { if case .block = $0.1 { true } else { false } })
 
-        let interiors = tokenInteriors(ns, scanner.profile, segments: one)
+        let interiors = tokenInteriors(ns, scanner.profile, segments: one.map { ($0.0, $0.1) })
         let safe = (1..<ns.length).filter { isSafeSplit(ns, $0, interiors: interiors) }
         #expect(safe.count > ns.length / 3, "too few safe split points: \(safe.count)")
         var rng = SplitMix(state: 0x17_2_0_5EED)
@@ -255,32 +270,34 @@ struct LexicalConsistencyTests {
             let points = Set((0..<k).map { _ in safe.randomElement(using: &rng)! }).sorted()
             var state = LexicalScanState()
             var advanced = LexicalScanState()
-            var pieces: [(NSRange, LexicalSegment)] = []
+            var pieces: [(NSRange, LexicalSegment, Int)] = []
             var from = 0
             for to in points + [ns.length] {
-                scanner.segments(ns, from: from, to: to, state: &state) { pieces.append(($0, $1)) }
+                scanner.segments(ns, from: from, to: to, state: &state, languages: { pieces.append(($0, $1, $2)) })
                 scanner.advance(ns, from: from, to: to, state: &advanced)
                 from = to
             }
             #expect(state == oneState, "trial \(trial): end state differs for splits \(points)")
             #expect(advanced == oneState, "trial \(trial): advance end state differs for splits \(points)")
             let joined = merged(pieces)
-            let same = joined.count == one.count && zip(joined, one).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 }
+            let same = joined.count == one.count
+                && zip(joined, one).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 && $0.2 == $1.2 }
             #expect(same, "trial \(trial): segments differ for splits \(points)")
             if !same { break }
         }
 
         // Every line start at once (what checkpoints and the highlighter use).
         var lineState = LexicalScanState()
-        var lines: [(NSRange, LexicalSegment)] = []
+        var lines: [(NSRange, LexicalSegment, Int)] = []
         var loc = 0
         while loc < ns.length {
             let end = NSMaxRange(ns.lineRange(for: NSRange(location: loc, length: 0)))
-            scanner.segments(ns, from: loc, to: end, state: &lineState) { lines.append(($0, $1)) }
+            scanner.segments(ns, from: loc, to: end, state: &lineState, languages: { lines.append(($0, $1, $2)) })
             loc = end
         }
         #expect(lineState == oneState)
         #expect(merged(lines).map(\.0) == one.map(\.0))
+        #expect(merged(lines).map(\.2) == one.map(\.2))
     }
 
     // MARK: - Four-way consistency (pure band path)

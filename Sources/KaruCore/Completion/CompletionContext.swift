@@ -146,7 +146,10 @@ public struct CompletionContext: Sendable, Equatable {
         ["json", "jsonl", "yaml", "toml", "xml"].contains(languageIdentifier)
     }
 
-    /// The position class of `state`, the lexical state at the caret.
+    /// The position class of `state`, the lexical state at the caret. Read
+    /// from the host's frames only: an embedded language's body (an HTML
+    /// `<script>` / `<style>` start tag or body, a fence) is code whatever
+    /// the child's state (T17.8a; T17.8c will ask the child).
     public static func position(of state: LexicalScanState) -> Position {
         switch state.frames.last {
         case nil, .interpolation?: return .code
@@ -154,7 +157,7 @@ public struct CompletionContext: Sendable, Equatable {
         case .string?: return .string
         case .heredoc(_, _, let inBody)?: return inBody ? .string : .code
         case .indentedBlock(_, let inBody)?: return inBody ? .string : .code
-        case .fence?: return .code
+        case .fence?, .rawTextTag?, .rawText?: return .code
         }
     }
 

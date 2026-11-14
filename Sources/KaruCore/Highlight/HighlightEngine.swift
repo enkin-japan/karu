@@ -151,6 +151,11 @@ private extension NSColor {
 ///   languages resume the scanner to a safe point there (checkpoints inside a
 ///   long line too) and paint only that slice; Python and unprofiled
 ///   languages colour the slice with stateless rules.
+/// - **Embedded languages** (T17.8a): HTML `<script>` / `<style>` bodies and
+///   Markdown fences are tokenized by the child's definition
+///   (`LanguageDefinition.embeddedDefinition`); in their ranges the
+///   identifier pass uses the child's policy only — no declaration roles and
+///   no symbol table, both being the host document's.
 @MainActor
 public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnalysisConsumer {
     private weak var textView: NSTextView?
@@ -683,7 +688,8 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         var tokens = band.tokens
         let roles = roleTokens(in: paintChars, ns: ns, language: language)
         let identifiers = Self.identifierTokens(in: ns, range: paintChars, tokens: &tokens, roles: roles,
-                                                table: symbolTable, policy: language.identifierPolicy)
+                                                table: symbolTable, language: language,
+                                                embedded: band.embedded)
         for list in [tokens, identifiers] {
             for token in list {
                 guard let color = theme.color(for: token.kind) else { continue }
@@ -720,7 +726,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     }
 
     /// The tokens of the band `bounds` (absolute, ascending, inside
-    /// `painted`) and the range actually painted.
+    /// `painted`), the range actually painted and the band's embedded-language
+    /// ranges (T17.8a; ascending, inside `painted`, with the index into the
+    /// profile's `embeds` plus one).
     ///
     /// - Profiled languages: the generic scanner's state at the band start
     ///   (resumed from `checkpoints`), then `LanguageDefinition.tokens`. A
@@ -742,18 +750,21 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// boundaries and no long line this is the whole-line pass of T17.2.
     nonisolated static func bandTokens(in ns: NSString, bounds: BandBounds, language: LanguageDefinition,
                                        checkpoints: inout CheckpointStore)
-        -> (tokens: [(range: NSRange, kind: TokenKind)], painted: NSRange) {
+        -> (tokens: [(range: NSRange, kind: TokenKind)], painted: NSRange,
+            embedded: [(range: NSRange, language: Int)]) {
         if let scanner = language.lexicalScanner {
             return profiledBandTokens(in: ns, bounds: bounds, language: language, scanner: scanner,
                                       checkpoints: &checkpoints)
         }
-        return lineBandTokens(in: ns, bounds: bounds, language: language, checkpoints: &checkpoints)
+        let band = lineBandTokens(in: ns, bounds: bounds, language: language, checkpoints: &checkpoints)
+        return (band.tokens, band.painted, [])
     }
 
     private nonisolated static func profiledBandTokens(in ns: NSString, bounds: BandBounds,
                                                        language: LanguageDefinition, scanner: LexicalScanner,
                                                        checkpoints: inout CheckpointStore)
-        -> (tokens: [(range: NSRange, kind: TokenKind)], painted: NSRange) {
+        -> (tokens: [(range: NSRange, kind: TokenKind)], painted: NSRange,
+            embedded: [(range: NSRange, language: Int)]) {
         var from = bounds.start
         var paintStart = bounds.start
         var state: LexicalScanState
@@ -768,19 +779,26 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         } else {
             state = lexicalScanState(at: bounds.start, in: ns, language: language, checkpoints: &checkpoints)
         }
-        var tokens: [(range: NSRange, kind: TokenKind)]
+        var tokens: [(range: NSRange, kind: TokenKind)] = []
+        var embedded: [(range: NSRange, language: Int)] = []
         var end = bounds.end
         if bounds.endMidLine {
-            (tokens, end) = language.tokens(in: ns, range: NSRange(location: from, length: ns.length - from),
-                                            stoppingAtSafePointFrom: max(bounds.end, paintStart), state: &state)
-        } else {
-            tokens = end > from
-                ? language.tokens(in: ns, range: NSRange(location: from, length: end - from), state: &state)
-                : []
+            (tokens, end, embedded) = language.embeddedTokens(in: ns, range: NSRange(location: from,
+                                                                                     length: ns.length - from),
+                                                              stop: max(bounds.end, paintStart), state: &state)
+        } else if end > from {
+            (tokens, _, embedded) = language.embeddedTokens(in: ns, range: NSRange(location: from, length: end - from),
+                                                            stop: nil, state: &state)
         }
         let painted = NSRange(location: paintStart, length: max(0, end - paintStart))
-        if from < paintStart { tokens = clipped(tokens, to: painted) }
-        return (tokens, painted)
+        if from < paintStart {
+            tokens = clipped(tokens, to: painted)
+            embedded = embedded.compactMap { span in
+                let piece = NSIntersectionRange(span.range, painted)
+                return piece.length > 0 ? (piece, span.language) : nil
+            }
+        }
+        return (tokens, painted, embedded)
     }
 
     /// `tokens` (ascending) restricted to `range`.
@@ -1090,6 +1108,56 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             q -= 1
         }
         return false
+    }
+
+    /// The identifier tokens of `range` for `language` (pure, T17.8a): the
+    /// host's pass (`roles`, `table`, its `IdentifierPolicy`) outside the
+    /// `embedded` ranges, and inside each of them the child's pass — the
+    /// child definition's policy with no roles and no symbol table (the
+    /// declaration snapshot and its table are the host's). `tokens` as in
+    /// the single-language pass; ascending output.
+    nonisolated static func identifierTokens(in ns: NSString, range: NSRange,
+                                             tokens: inout [(range: NSRange, kind: TokenKind)],
+                                             roles: [(range: NSRange, kind: TokenKind)],
+                                             table: WordIndex.SymbolTable?, language: LanguageDefinition,
+                                             embedded: [(range: NSRange, language: Int)])
+        -> [(range: NSRange, kind: TokenKind)] {
+        guard !embedded.isEmpty else {
+            return identifierTokens(in: ns, range: range, tokens: &tokens, roles: roles, table: table,
+                                    policy: language.identifierPolicy)
+        }
+        var out: [(range: NSRange, kind: TokenKind)] = []
+        var tokenIndex = 0
+        var roleIndex = 0
+        /// The pass over `piece`, on the tokens inside it (each token lies in
+        /// one segment, so in one piece).
+        func pass(_ piece: NSRange, roles pieceRoles: Bool, table: WordIndex.SymbolTable?, policy: IdentifierPolicy) {
+            guard piece.length > 0 else { return }
+            let first = tokenIndex
+            while tokenIndex < tokens.count, tokens[tokenIndex].range.location < NSMaxRange(piece) { tokenIndex += 1 }
+            var slice = Array(tokens[first..<tokenIndex])
+            var sliceRoles: [(range: NSRange, kind: TokenKind)] = []
+            while roleIndex < roles.count, roles[roleIndex].range.location < NSMaxRange(piece) {
+                if pieceRoles, roles[roleIndex].range.location >= piece.location { sliceRoles.append(roles[roleIndex]) }
+                roleIndex += 1
+            }
+            out += identifierTokens(in: ns, range: piece, tokens: &slice, roles: sliceRoles, table: table,
+                                    policy: policy)
+            tokens.replaceSubrange(first..<tokenIndex, with: slice)
+        }
+        var pos = range.location
+        for span in embedded {
+            let piece = NSIntersectionRange(span.range, range)
+            guard piece.length > 0 else { continue }
+            pass(NSRange(location: pos, length: max(0, piece.location - pos)), roles: true, table: table,
+                 policy: language.identifierPolicy)
+            let child = language.embeddedDefinition(span.language)
+            pass(piece, roles: false, table: nil, policy: child?.identifierPolicy ?? IdentifierPolicy())
+            pos = NSMaxRange(piece)
+        }
+        pass(NSRange(location: pos, length: max(0, NSMaxRange(range) - pos)), roles: true, table: table,
+             policy: language.identifierPolicy)
+        return out
     }
 
     /// The identifier tokens of `range` (pure, T17.7): applies `roles`

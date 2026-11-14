@@ -12,7 +12,15 @@ import Foundation
 /// block comments, then `strings` (in declaration order, so list the more
 /// specific forms first — `r#"…"#` before `"…"`), then `atoms`, then the
 /// `lineBlocks` openers (heredoc, block scalar; a fence only at a line start,
-/// before anything else on it).
+/// before anything else on it), then the `rawTextElements` openers.
+///
+/// **Embedded languages** (M17 T17.8a, plan §7): `embeds` lists the child
+/// languages a host can enter — HTML `<script>` / `<style>` bodies
+/// (`rawTextElements`) and Markdown fenced code blocks (`.fence` with
+/// `EmbeddedLanguage.aliases`). The scanner runs a child's own profile over
+/// the body, carrying the child's state in `LexicalScanState.embedded`; the
+/// host alone decides where the body ends. One level only: a child's own
+/// `embeds` and `rawTextElements` are ignored.
 public struct LexicalProfile: Sendable {
     /// `/* … */`-style comment. `nests`: an inner opener increments a depth
     /// that the closer decrements (Rust, Swift).
@@ -245,8 +253,58 @@ public struct LexicalProfile: Sendable {
         /// of up to 3 spaces, ≥ the opener's run of the same marker and only
         /// spaces / tabs (part of the block, through its line break unit),
         /// or the document end. The info string is not kept in the state:
-        /// embedded languages (T17.8) re-read the opener line.
+        /// when the opener line ends, its first word (up to a blank, `{`,
+        /// `,`, `:`, `?` or a backtick), lowercased, is looked up in the
+        /// `embeds`' `aliases` (T17.8a); the body of a known language is
+        /// scanned by that child, an unknown one stays one `bodyKind` run.
         case fence(bodyKind: TokenKind)
+    }
+
+    /// A child language the host can enter (T17.8a). Its index in a frame
+    /// or a segment is its position in `embeds` plus one (0 is the host).
+    public struct EmbeddedLanguage: Sendable {
+        /// The child's `LanguageDefinition` identifier (rules and categories
+        /// for its segments).
+        public var identifier: String
+        /// The child's profile (compiled on first entry; its own `embeds` and
+        /// `rawTextElements` are ignored).
+        public var profile: LexicalProfile
+        /// Lowercased Markdown info-string words selecting this language.
+        public var aliases: [String]
+
+        public init(identifier: String, profile: LexicalProfile, aliases: [String] = []) {
+            self.identifier = identifier
+            self.profile = profile
+            self.aliases = aliases
+        }
+    }
+
+    /// An HTML raw-text element (`<script>`, `<style>`; T17.8a). In code
+    /// with no open construct, `<` + `name` (ASCII, any case) + a blank, `/`
+    /// or `>` opens its start tag, which may span lines: `>` ends it except
+    /// inside a quoted attribute value (`"…"` / `'…'` after `=`). The body
+    /// then runs to the first `</` + `name` (any case) followed by a blank,
+    /// `/` or `>` — text only, whatever the child's state (browser
+    /// semantics). Start and end tags stay host code.
+    ///
+    /// The body's language comes from the start tag's `type` attribute
+    /// (re-read from the tag's `<` when its `>` is reached, at most
+    /// `LexicalScanner.startTagReach` units): absent → `language`; its
+    /// trimmed, lowercased value in `typeLanguages` → that index; any other
+    /// value → `otherTypesLanguage`. Index 0: the body is one
+    /// `.block(.plain)` run (no rules).
+    public struct RawTextElement: Sendable, Hashable {
+        public var name: String
+        public var language: Int
+        public var typeLanguages: [String: Int]
+        public var otherTypesLanguage: Int
+
+        public init(name: String, language: Int, typeLanguages: [String: Int] = [:], otherTypesLanguage: Int = 0) {
+            self.name = name
+            self.language = language
+            self.typeLanguages = typeLanguages
+            self.otherTypesLanguage = otherTypesLanguage
+        }
     }
 
     public var lineComments: [String]
@@ -277,6 +335,10 @@ public struct LexicalProfile: Sendable {
     /// For `LanguageDefinition`: the token kind of string segments (T17.7).
     /// `.string` by default; XML's CDATA is `.markupValue`.
     public var stringKind: TokenKind
+    /// Child languages (T17.8a), entered by `rawTextElements` and fences.
+    public var embeds: [EmbeddedLanguage]
+    /// HTML raw-text elements whose bodies are child languages or plain.
+    public var rawTextElements: [RawTextElement]
 
     public init(lineComments: [String] = [],
                 lineCommentPrecededBy: String? = nil,
@@ -287,7 +349,9 @@ public struct LexicalProfile: Sendable {
                 keepsStringRules: Bool = false,
                 keepsCommentRules: Bool = false,
                 interpolationDelimiterKind: TokenKind = .interpolationDelimiter,
-                stringKind: TokenKind = .string) {
+                stringKind: TokenKind = .string,
+                embeds: [EmbeddedLanguage] = [],
+                rawTextElements: [RawTextElement] = []) {
         self.lineComments = lineComments
         self.lineCommentPrecededBy = lineCommentPrecededBy
         self.blockComments = blockComments
@@ -298,6 +362,16 @@ public struct LexicalProfile: Sendable {
         self.keepsCommentRules = keepsCommentRules
         self.interpolationDelimiterKind = interpolationDelimiterKind
         self.stringKind = stringKind
+        self.embeds = embeds
+        self.rawTextElements = rawTextElements
+    }
+
+    /// This profile as a child: without its own embedded languages.
+    var withoutEmbeds: LexicalProfile {
+        var copy = self
+        copy.embeds = []
+        copy.rawTextElements = []
+        return copy
     }
 }
 
@@ -323,12 +397,14 @@ public enum LexicalSegment: Sendable, Hashable {
 }
 
 /// Lexical state between two positions: a stack of open constructs, innermost
-/// last, capped at `maximumDepth`. Small, `Hashable` and `Sendable`, so it can
-/// be stored in a checkpoint (`LexicalState.generic`) and compared in tests.
-/// At a line start it holds only multi-line constructs (a line comment or a
-/// single-line string never survives its line end); it is the state *before*
-/// that line's line-start checks (a heredoc terminator, a fence closer or
-/// opener, a block-scalar dedent), which a pass resumed there runs itself.
+/// last, capped at `maximumDepth`, and — inside an embedded language's body —
+/// the child's own state (`embedded`). Small, `Hashable` and `Sendable`, so
+/// it can be stored in a checkpoint (`LexicalState.generic`) and compared in
+/// tests. At a line start it holds only multi-line constructs (a line
+/// comment or a single-line string never survives its line end); it is the
+/// state *before* that line's line-start checks (a heredoc terminator, a
+/// fence closer or opener, a block-scalar dedent), which a pass resumed there
+/// runs itself.
 public struct LexicalScanState: Sendable, Hashable {
     /// Form indices refer to the profile's `blockComments` / `strings` arrays.
     /// T17.3 hooks (heredoc, YAML block scalar, fence) add cases here; the
@@ -358,15 +434,58 @@ public struct LexicalScanState: Sendable, Hashable {
         case indentedBlock(parentIndent: UInt16, inBody: Bool)
         /// `LineBlockForm.fence`: the marker unit (`` ` `` or `~`) and the
         /// opener's run length. While `inBody` is false: the info string.
-        case fence(marker: UInt16, length: UInt16, inBody: Bool)
+        /// `language` (T17.8a): the embedded language of the body (index into
+        /// the profile's `embeds` plus one), 0 for a plain body; set when
+        /// the opener line ends.
+        case fence(marker: UInt16, length: UInt16, inBody: Bool, language: UInt8 = 0)
+        /// Start tag of `RawTextElement` `element` (T17.8a), from the `<` at
+        /// absolute offset `start` (re-read for its `type` at the `>`).
+        /// `phase`: 0 between attributes, 1 after `=`, 2 / 3 inside a `"` /
+        /// `'` value, 4 inside an unquoted value. Context: code.
+        case rawTextTag(element: UInt8, phase: UInt8, start: Int)
+        /// Body of `RawTextElement` `element` (T17.8a): child language
+        /// `language` (index into `embeds` plus one), or plain text (0).
+        case rawText(element: UInt8, language: UInt8)
+    }
+
+    /// The child's state inside an embedded body (T17.8a): `language` is the
+    /// child's index (as in the body frame), `state` the child scanner's own
+    /// state, whose frames refer to the child's profile.
+    public struct EmbeddedState: Sendable, Hashable {
+        public let language: Int
+        public let state: LexicalScanState
+
+        public init(language: Int, state: LexicalScanState) {
+            self.language = language
+            self.state = state
+        }
+    }
+
+    /// Immutable box, so a state with a child stays one reference wide.
+    private final class Box: Sendable, Hashable {
+        let value: EmbeddedState
+        init(_ value: EmbeddedState) { self.value = value }
+        static func == (a: Box, b: Box) -> Bool { a === b || a.value == b.value }
+        func hash(into hasher: inout Hasher) { hasher.combine(value) }
     }
 
     public static let maximumDepth = 64
 
     public internal(set) var frames: [Frame] = []
 
+    private var box: Box?
+
     public init() {}
 
+    /// The child's state while inside an embedded body whose child is not
+    /// in its initial (empty) state; nil otherwise — outside a body, and in
+    /// a body at a point where the child has nothing open (so a body line
+    /// start usually costs no box).
+    public internal(set) var embedded: EmbeddedState? {
+        get { box?.value }
+        set { box = newValue.map(Box.init) }
+    }
+
     /// True outside every construct (plain code).
-    public var isEmpty: Bool { frames.isEmpty }
+    public var isEmpty: Bool { frames.isEmpty && box == nil }
 }

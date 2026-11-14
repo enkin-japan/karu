@@ -532,7 +532,10 @@ struct LexicalProfilesTests {
             ```
             unclosed
             """)
-        #expect(a.kinds(of: "```js\ncode <!-- not a comment\n```\n") == plain)
+        // T17.8a: a `js` fence body is JavaScript (no HTML comment there);
+        // the opener and closer lines stay plain.
+        #expect(a.kinds(of: "```js\n") == plain)
+        #expect(a.kinds(of: "code <!-- not a comment\n") == code)
         #expect(a.kinds(of: "`inline`") == string)
         #expect(a.kinds(of: "~~~\n```\nstill\n~~~~\n") == plain)   // longer closer; ``` does not close
         #expect(a.kinds(of: "**b**") == keyword)

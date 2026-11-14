@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The generic lexical scanner (M17 T17.2, plan §4): executes a
 /// `LexicalProfile` over an `NSString` range, carrying a `LexicalScanState`.
@@ -9,7 +10,19 @@ import Foundation
 ///   `rangeOfCharacter(from:)` marker searches, so the per-unit work is
 ///   limited to the few characters that can start or end a construct.
 /// - `segments` additionally reports maximal runs of `LexicalSegment`s with
-///   absolute ranges.
+///   absolute ranges (with `languages:`, each run's language too).
+///
+/// **Embedded languages** (T17.8a, `LexicalProfile.embeds`): inside an HTML
+/// raw-text body or a Markdown fence of a known language, the host runs the
+/// child's scanner (compiled on first entry, `embeddedScanner`) over the
+/// body through the same emitter, keeping the child's state in
+/// `LexicalScanState.embedded`. The host alone finds the body's end: a
+/// fence closer at each body line start, or the first `</name` end tag
+/// (searched as text) — so the child's state never decides it, and a child
+/// run never reads at or past it. A fence body is handed to the child in
+/// chunks ending at the next line that may close the fence; a raw-text body
+/// up to its end tag. When stopping, one step searches at most
+/// `embedWindow` units past the target. One level only.
 ///
 /// **Ranges.** Both accept any `[from, to)`, not necessarily line-aligned. The
 /// scanner never reads at or beyond `to`; it may read *before* `from`, but
@@ -19,15 +32,19 @@ import Foundation
 /// whitespace, then the unit or word before it), the unit in front of a line
 /// comment opener (`lineCommentPrecededBy`), the unit in front of a position
 /// tested for a line start (line blocks; `from` included), a block-scalar
-/// indicator's line up to `blockScalarLineReach` units back or, when stopping
-/// at a safe point, the unit in front of `from` itself. These reads depend on
-/// the text alone, never on the state, so they cannot break the split
-/// guarantee below.
+/// indicator's line up to `blockScalarLineReach` units back, a fence opener
+/// line up to `fenceInfoReach` units back when it ends (its info string), a
+/// raw-text start tag from its `<` (at most `startTagReach` units) when its
+/// `>` is reached (its `type`), a child's own reads of these kinds (into the
+/// host text before its body too) or, when stopping at a safe point, the
+/// unit in front of `from` itself. These reads depend on the text alone,
+/// never on the state, so they cannot break the split guarantee below.
 ///
 /// **Split guarantee.** For a split point `b` in `[a, c)`, scanning `a..<b`
 /// then `b..<c` gives the same end state as scanning `a..<c`, and the
 /// concatenated segments equal the single pass's after merging adjacent runs
-/// of the same kind (each call emits maximal runs *within its own range*) —
+/// of the same kind and language (each call emits maximal runs *within its
+/// own range*) —
 /// provided `b` does not fall strictly inside a token: an opener (including a
 /// string prefix, lead and hashes), a closer, an escape sequence, an
 /// interpolation delimiter, an atom match or a surrogate pair — or, for line
@@ -35,7 +52,11 @@ import Foundation
 /// with its indicators, a fence opener's leading spaces and marker run, a
 /// heredoc terminator or fence closer line through its first line-break unit,
 /// and in a block-scalar body a line's leading blanks through the first other
-/// unit (the indentation check). Line starts are always safe (no token
+/// unit (the indentation check) — or, for embedded languages (T17.8a), a
+/// raw-text start tag opener (`<script` with its blank, `/` or `>`), an end
+/// tag (`</script` with its delimiter), a CRLF ending a known-language fence's
+/// opener line or inside its body, and inside a body any token of the child
+/// language. Line starts are always safe (no token
 /// crosses a line break: escape + newline counts as one escape; a line
 /// block's line-start checks run at the line start, from the text after it).
 ///
@@ -48,8 +69,13 @@ import Foundation
 /// pass's earlier code start, so this last condition keeps them identical.
 /// A line-block body is treated like string content (no lookback); a line
 /// start in a body or in code is always friendly, and stopping there leaves
-/// its line-start checks to the resumed pass. Checkpoints and the
-/// highlighter split only at line starts and at returned safe points.
+/// its line-start checks to the resumed pass. Inside a start tag every unit
+/// is a step of its own (any friendly point up to the next tag marker, but
+/// not right after the opener's name); a plain raw-text body is like string
+/// content. Inside a child's body a safe point is the child's own safe
+/// point, which lies before the end tag or the next possible closer line,
+/// never inside them. Checkpoints and the highlighter split only at line
+/// starts and at returned safe points.
 ///
 /// **Lines.** CR, LF and CRLF terminate lines. A line comment, and a
 /// single-line string not continued by escape + newline, end at the
@@ -136,6 +162,22 @@ public struct LexicalScanner: Sendable {
         let context: AtomContext?
     }
 
+    /// Compiled `LexicalProfile.RawTextElement` (T17.8a).
+    private struct RawElement: Sendable {
+        /// Lowercase ASCII name.
+        let name: [unichar]
+        let language: UInt8
+        let typeLanguages: [String: UInt8]
+        let otherTypesLanguage: UInt8
+    }
+
+    /// The child scanners, compiled on first entry (T17.8a). Shared by the
+    /// copies of one scanner; the lock keeps the scanner `Sendable`.
+    private final class EmbedCache: Sendable {
+        let slots: OSAllocatedUnfairLock<[LexicalScanner?]>
+        init(count: Int) { slots = OSAllocatedUnfairLock(initialState: Array(repeating: nil, count: count)) }
+    }
+
     private let lineComments: [[unichar]]
     /// `lineCommentPrecededBy`, compiled.
     private let lineCommentContext: Set<unichar>?
@@ -150,7 +192,33 @@ public struct LexicalScanner: Sendable {
     private let heredocKind: TokenKind?
     private let indentedKind: TokenKind?
     private let fenceKind: TokenKind?
+    /// T17.8a: raw-text elements, child profiles (without their own embeds)
+    /// and their compiled scanners, fence info words → language index.
+    private let rawElements: [RawElement]
+    private let embedProfiles: [LexicalProfile]
+    private let embedCache: EmbedCache?
+    private let fenceAliases: [String: UInt8]
+    private var hasEmbeds: Bool { embedCache != nil }
     private static let lineBreaks = CharacterSet(charactersIn: "\r\n")
+    /// Start-tag scanning (T17.8a): `>` or `=` between attributes; anything
+    /// but a blank after `=`; the closing quote; the end of an unquoted value.
+    private static let tagSeparators = CharacterSet(charactersIn: ">=")
+    private static let tagBlanks = CharacterSet(charactersIn: " \t\n\u{0C}\r")
+    private static let tagNonBlank = tagBlanks.inverted
+    private static let doubleQuote = CharacterSet(charactersIn: "\"")
+    private static let singleQuote = CharacterSet(charactersIn: "'")
+    private static let unquotedValueEnd = tagBlanks.union(CharacterSet(charactersIn: ">"))
+
+    /// What ends a start-tag phase (see `LexicalScanState.Frame.rawTextTag`).
+    private static func tagMarkers(phase: UInt8) -> CharacterSet {
+        switch phase {
+        case 0: return tagSeparators
+        case 1: return tagNonBlank
+        case 2: return doubleQuote
+        case 3: return singleQuote
+        default: return unquotedValueEnd
+        }
+    }
     /// Anything but a space or tab (the rest of a block-scalar opener line).
     private static let nonBlank = CharacterSet(charactersIn: " \t").inverted
     /// A backtick fence's info string: a backtick drops the fence.
@@ -170,8 +238,22 @@ public struct LexicalScanner: Sendable {
     /// How far back a block-scalar indicator looks for its line start (the
     /// parent indentation); beyond it, any non-blank body line ends the scalar.
     static let blockScalarLineReach = 4_096
+    /// How far a raw-text start tag is re-read from its `<` for its `type`
+    /// (T17.8a); attributes beyond are ignored.
+    public static let startTagReach = 4_096
+    /// How far back a fence's info string is re-read when its line ends
+    /// (T17.8a); a longer opener line has no language.
+    public static let fenceInfoReach = 4_096
+    /// How far past the target (or the position, past it) an embedded body's
+    /// end is searched in one step when stopping at a safe point (T17.8a).
+    /// Far beyond any child token's look-ahead (≤ `atomWindow` +
+    /// `safePointWindow`), so the child never reads near a step end before
+    /// it stops; without a target the search runs to the range end.
+    static let embedWindow = 16_384
 
     public init(profile: LexicalProfile) {
+        precondition(profile.embeds.count < 256, "LexicalProfile: at most 255 embedded languages")
+        precondition(profile.rawTextElements.count < 256, "LexicalProfile: at most 255 raw-text elements")
         precondition(profile.blockComments.count < 256 && profile.strings.count < 256
                          && profile.strings.allSatisfy { $0.interpolations.count < 256 },
                      "LexicalProfile: at most 255 block comment / string / interpolation forms")
@@ -286,12 +368,38 @@ public struct LexicalScanner: Sendable {
         indentedKind = indented
         fenceKind = fence
 
+        let embedCount = profile.embeds.count
+        func embedIndex(_ index: Int) -> UInt8 {
+            precondition(index >= 0 && index <= embedCount, "LexicalProfile: embed index \(index) out of range")
+            return UInt8(index)
+        }
+        rawElements = profile.rawTextElements.map { element in
+            let name = Array(element.name.lowercased().utf16)
+            precondition(!name.isEmpty && name.allSatisfy { (97...122).contains($0) },
+                         "LexicalProfile: raw-text element names are ASCII letters")
+            return RawElement(name: name, language: embedIndex(element.language),
+                              typeLanguages: element.typeLanguages.mapValues(embedIndex),
+                              otherTypesLanguage: embedIndex(element.otherTypesLanguage))
+        }
+        embedProfiles = profile.embeds.map(\.profile.withoutEmbeds)
+        embedCache = embedCount > 0 ? EmbedCache(count: embedCount) : nil
+        var aliases: [String: UInt8] = [:]
+        if fence != nil {
+            for (index, embed) in profile.embeds.enumerated() {
+                for alias in embed.aliases where aliases[alias.lowercased()] == nil {
+                    aliases[alias.lowercased()] = UInt8(index + 1)
+                }
+            }
+        }
+        fenceAliases = aliases
+
         var code: [unichar] = lineComments.map { $0[0] } + blocks.map { $0.open[0] } + strings.map(\.anchor)
         for atom in atoms { code += atom.first }
         if heredoc != nil { code.append(60) }               // <
         if indented != nil { code += [124, 62] }            // | >
         // Line breaks end a heredoc opener line and lead to line starts.
         if !profile.lineBlocks.isEmpty { code += [Self.cr, Self.lf] }
+        if !profile.rawTextElements.isEmpty { code.append(60) }   // <
         codeMarkers = set(code)
         var interp = code + [Self.cr, Self.lf] + Array("()[]{}".utf16)
         for spec in strings { interp += spec.interpolations.map(\.close) }
@@ -335,11 +443,25 @@ public struct LexicalScanner: Sendable {
 
     /// Advances `state` over `text[from..<to]` and reports the maximal
     /// segment runs in ascending, non-overlapping, gap-free absolute ranges
-    /// covering exactly `[from, to)`.
+    /// covering exactly `[from, to)`. Runs of an embedded language are
+    /// reported like the host's (adjacent runs of one kind merge across
+    /// languages); see `segments(_:from:to:state:languages:)`.
     public func segments(_ text: NSString, from: Int, to: Int, state: inout LexicalScanState,
                          emit: (NSRange, LexicalSegment) -> Void) {
         withoutActuallyEscaping(emit) { escapable in
-            var emitter = Emitter(emit: escapable)
+            var emitter = Emitter(emit: { range, kind, _ in escapable(range, kind) }, tracksLanguage: false)
+            run(text, from: from, to: to, state: &state, emitter: &emitter)
+        }
+    }
+
+    /// Like `segments(_:from:to:state:emit:)`, also reporting each run's
+    /// language (T17.8a): 0 for the host, else the index into the profile's
+    /// `embeds` plus one. A run is maximal for its kind *and* language.
+    public func segments(_ text: NSString, from: Int, to: Int, state: inout LexicalScanState,
+                         languages emit: (NSRange, LexicalSegment, Int) -> Void) {
+        withoutActuallyEscaping(emit) { escapable in
+            var emitter = Emitter(emit: { range, kind, language in escapable(range, kind, Int(language)) },
+                                  tracksLanguage: true)
             run(text, from: from, to: to, state: &state, emitter: &emitter)
         }
     }
@@ -363,49 +485,88 @@ public struct LexicalScanner: Sendable {
                          stoppingAtSafePointFrom target: Int, state: inout LexicalScanState,
                          emit: (NSRange, LexicalSegment) -> Void) -> Int {
         withoutActuallyEscaping(emit) { escapable in
-            var emitter = Emitter(emit: escapable)
+            var emitter = Emitter(emit: { range, kind, _ in escapable(range, kind) }, tracksLanguage: false)
             return run(text, from: from, to: to, stop: target, state: &state, emitter: &emitter)
+        }
+    }
+
+    /// Same, with each run's language (see `segments(_:from:to:state:languages:)`).
+    @discardableResult
+    public func segments(_ text: NSString, from: Int, to: Int,
+                         stoppingAtSafePointFrom target: Int, state: inout LexicalScanState,
+                         languages emit: (NSRange, LexicalSegment, Int) -> Void) -> Int {
+        withoutActuallyEscaping(emit) { escapable in
+            var emitter = Emitter(emit: { range, kind, language in escapable(range, kind, Int(language)) },
+                                  tracksLanguage: true)
+            return run(text, from: from, to: to, stop: target, state: &state, emitter: &emitter)
+        }
+    }
+
+    /// The scanner of embedded language `language` (index into the
+    /// profile's `embeds` plus one), compiled on first use; nil for 0 or an
+    /// index out of range.
+    public func embeddedScanner(_ language: Int) -> LexicalScanner? {
+        guard let embedCache, language >= 1, language <= embedProfiles.count else { return nil }
+        if let cached = embedCache.slots.withLock({ $0[language - 1] }) { return cached }
+        // Compiled outside the lock; a concurrent first use keeps the first one stored.
+        let built = LexicalScanner(profile: embedProfiles[language - 1])
+        return embedCache.slots.withLock { slots in
+            if let stored = slots[language - 1] { return stored }
+            slots[language - 1] = built
+            return built
         }
     }
 
     // MARK: - Emission
 
     /// Coalesces marks into maximal runs. A no-op shell in `advance` mode.
+    /// `language` is the language of the marks being made (T17.8a: the host
+    /// sets it around a child's run, which marks through the same emitter);
+    /// it splits runs only when `tracksLanguage`.
     private struct Emitter {
-        let emit: ((NSRange, LexicalSegment) -> Void)?
+        let emit: ((NSRange, LexicalSegment, UInt8) -> Void)?
+        let tracksLanguage: Bool
+        var language: UInt8 = 0
         private var runStart = 0
         private var runKind: LexicalSegment?
-        private var pending: (range: NSRange, kind: LexicalSegment)?
+        private var runLanguage: UInt8 = 0
+        private var pending: (range: NSRange, kind: LexicalSegment, language: UInt8)?
 
-        init(emit: ((NSRange, LexicalSegment) -> Void)?) { self.emit = emit }
+        init(emit: ((NSRange, LexicalSegment, UInt8) -> Void)?, tracksLanguage: Bool = false) {
+            self.emit = emit
+            self.tracksLanguage = tracksLanguage
+        }
 
         /// From `at` on, text is `kind` (until the next mark).
         @inline(__always)
         mutating func mark(_ at: Int, _ kind: LexicalSegment) {
-            guard emit != nil, runKind != kind else { return }
+            guard emit != nil else { return }
+            let markLanguage = tracksLanguage ? language : 0
+            guard runKind != kind || runLanguage != markLanguage else { return }
             if let current = runKind, at > runStart {
-                push(NSRange(location: runStart, length: at - runStart), current)
+                push(NSRange(location: runStart, length: at - runStart), current, runLanguage)
             }
             runStart = at
             runKind = kind
+            runLanguage = markLanguage
         }
 
         mutating func finish(at end: Int) {
             guard emit != nil else { return }
             if let current = runKind, end > runStart {
-                push(NSRange(location: runStart, length: end - runStart), current)
+                push(NSRange(location: runStart, length: end - runStart), current, runLanguage)
             }
-            if let pending { emit?(pending.range, pending.kind) }
+            if let pending { emit?(pending.range, pending.kind, pending.language) }
             pending = nil
         }
 
-        private mutating func push(_ range: NSRange, _ kind: LexicalSegment) {
-            if let p = pending, p.kind == kind, NSMaxRange(p.range) == range.location {
-                pending = (NSRange(location: p.range.location, length: p.range.length + range.length), kind)
+        private mutating func push(_ range: NSRange, _ kind: LexicalSegment, _ language: UInt8) {
+            if let p = pending, p.kind == kind, p.language == language, NSMaxRange(p.range) == range.location {
+                pending = (NSRange(location: p.range.location, length: p.range.length + range.length), kind, language)
                 return
             }
-            if let pending { emit?(pending.range, pending.kind) }
-            pending = (range, kind)
+            if let pending { emit?(pending.range, pending.kind, pending.language) }
+            pending = (range, kind, language)
         }
     }
 
@@ -419,6 +580,9 @@ public struct LexicalScanner: Sendable {
         case .heredoc(_, _, let inBody)?: return inBody ? .block(heredocKind ?? .string) : .code
         case .indentedBlock(_, let inBody)?: return inBody ? .block(indentedKind ?? .string) : .code
         case .fence?: return .block(fenceKind ?? .plain)
+        case .rawTextTag?: return .code
+        // A child body is marked by the child's own run.
+        case .rawText(_, let language)?: return language == 0 ? .block(.plain) : .code
         }
     }
 
@@ -466,7 +630,7 @@ public struct LexicalScanner: Sendable {
     // swiftlint:disable:next function_body_length cyclomatic_complexity
     @discardableResult
     private func run(_ text: NSString, from rawFrom: Int, to rawTo: Int, stop: Int? = nil,
-                     state: inout LexicalScanState, emitter: inout Emitter) -> Int {
+                     state: inout LexicalScanState, emitter: inout Emitter, nested: Bool = false) -> Int {
         let length = text.length
         let to = min(max(rawTo, 0), length)
         var pos = min(max(rawFrom, 0), to)
@@ -504,7 +668,35 @@ public struct LexicalScanner: Sendable {
 
         /// Start of the current code context: prefix lookback never crosses it.
         var codeStart = from
-        emitter.mark(from, contextKind(state))
+
+        // Embedded language (T17.8a): the active child's state, unboxed for
+        // the run and stored back on return (nil when empty).
+        var child = LexicalScanState()
+        if hasEmbeds, Self.childLanguage(state.frames.last) != 0, let saved = state.embedded {
+            child = saved.state
+        }
+        var childScanner: (language: UInt8, scanner: LexicalScanner)?
+        func storeChild() {
+            guard hasEmbeds else { return }
+            let language = Self.childLanguage(state.frames.last)
+            if language != 0, !child.isEmpty {
+                let embedded = LexicalScanState.EmbeddedState(language: Int(language), state: child)
+                if state.embedded != embedded { state.embedded = embedded }
+            } else if state.embedded != nil {
+                state.embedded = nil
+            }
+        }
+        /// Ends the run at `end`: flushes the segments (not in a child's run,
+        /// whose host goes on emitting) and stores the child's state.
+        func finish(at end: Int) -> Int {
+            if !nested { emitter.finish(at: end) }
+            storeChild()
+            return end
+        }
+        // A child's own run marks a child body.
+        if !(hasEmbeds && Self.childLanguage(state.frames.last) != 0) {
+            emitter.mark(from, contextKind(state))
+        }
 
         /// `i` is the second unit of a surrogate pair.
         func isLowSurrogate(_ i: Int) -> Bool {
@@ -620,11 +812,25 @@ public struct LexicalScanner: Sendable {
             case .string(let form, _, _)?: markers = strings[Int(form)].contentMarkers; code = false
             case .heredoc(_, _, false)?: markers = codeMarkers; code = true
             // A body is like string content: only line breaks matter.
-            case .heredoc(_, _, true)?, .indentedBlock(_, true)?, .fence(_, _, true)?:
+            case .heredoc(_, _, true)?, .indentedBlock(_, true)?, .fence(_, _, true, _)?, .rawText?:
                 markers = Self.lineBreaks; code = false
             case .indentedBlock(_, false)?: markers = Self.nonBlank; code = false
-            case .fence(let marker, _, false)?:
+            case .fence(let marker, _, false, _)?:
                 markers = marker == 96 ? Self.backtickInfoMarkers : Self.lineBreaks; code = false
+            // Each unit of a start tag is a step of its own; only the opener
+            // (`<script` + its delimiter) is one token.
+            case .rawTextTag(let element, let phase, let start)?:
+                let afterName = start + 1 + rawElements[Int(element)].name.count
+                let windowEnd = min(to, pos + Self.safePointWindow)
+                let hit = text.rangeOfCharacter(from: Self.tagMarkers(phase: phase), options: [],
+                                                range: NSRange(location: pos, length: windowEnd - pos))
+                let bound = hit.location == NSNotFound ? windowEnd : hit.location
+                var q = pos
+                while q <= bound {
+                    if q != afterName, friendly(q, code: false) { return q }
+                    q += 1
+                }
+                return nil
             }
             let windowEnd = min(to, pos + Self.safePointWindow)
             // A forward search starting on a low surrogate skips the next
@@ -641,11 +847,119 @@ public struct LexicalScanner: Sendable {
             return nil
         }
 
+        // MARK: Embedded bodies (T17.8a)
+
+        /// End of one step through an embedded body: the range end, or
+        /// `embedWindow` past the target (past `pos` beyond it) when stopping;
+        /// never inside a surrogate pair.
+        func embedStepEnd() -> Int {
+            let base = target.map { max(pos, $0) } ?? to
+            var end = min(to, base + Self.embedWindow)
+            if end < to, isLowSurrogate(end) { end += 1 }
+            return end
+        }
+        /// Start of the first end tag of `raw` (`</name` + blank, `/` or `>`)
+        /// starting in `[pos, before)`, read up to `to`.
+        func rawTextEnd(_ raw: RawElement, before: Int) -> Int? {
+            var s = pos > from && isLowSurrogate(pos) ? pos - 1 : pos
+            let length = raw.name.count
+            while s < before {
+                let hit = text.range(of: "</", options: .literal,
+                                     range: NSRange(location: s, length: min(to, before + 1) - s))
+                guard hit.location != NSNotFound, hit.location < before else { return nil }
+                let p = hit.location
+                if p + 2 + length < to, Self.matchesName(raw.name, in: text, at: p + 2),
+                   Self.isTagDelimiter(at(p + 2 + length)) {
+                    return p
+                }
+                s = p + 1
+            }
+            return nil
+        }
+        /// The first line start in `(pos, before)` followed by up to 3 spaces
+        /// and `marker` — where a fence closer may stand.
+        func nextFenceCandidate(_ marker: unichar, before: Int) -> Int? {
+            let markers = marker == 96 ? Self.backtick : Self.tilde
+            var s = pos
+            while s < before {
+                let hit = text.rangeOfCharacter(from: markers, options: [],
+                                                range: NSRange(location: s, length: before - s))
+                guard hit.location != NSNotFound else { return nil }
+                let m = hit.location
+                var ls = m
+                while ls > pos, m - ls < 3, at(ls - 1) == 32 { ls -= 1 }
+                if ls > pos, startsLine(ls) { return ls }
+                var e = m + 1
+                while e < before, at(e) == marker { e += 1 }
+                s = e
+            }
+            return nil
+        }
+        /// Runs the child `language` from `pos` to `end` (stopping like this
+        /// run) through the same emitter; its position.
+        func runChild(_ language: UInt8, to end: Int) -> Int {
+            if childScanner?.language != language, let scanner = embeddedScanner(Int(language)) {
+                childScanner = (language, scanner)
+            }
+            guard let scanner = childScanner?.scanner else { return end }
+            emitter.language = language
+            let q = scanner.run(text, from: pos, to: end, stop: target, state: &child, emitter: &emitter, nested: true)
+            emitter.language = 0
+            return q
+        }
+
         while pos < to {
+            if hasEmbeds, let top = state.frames.last {
+                if case .rawText(let element, let language) = top {
+                    let raw = rawElements[Int(element)]
+                    let stepEnd = embedStepEnd()
+                    let end = rawTextEnd(raw, before: stepEnd)
+                    let bodyEnd = end ?? stepEnd
+                    if bodyEnd > pos {
+                        if language == 0 {
+                            // Plain text: like string content.
+                            if let target {
+                                var q = max(pos, target)
+                                while q < bodyEnd, !friendly(q, code: false) { q += 1 }
+                                if q < bodyEnd { return finish(at: q) }
+                            }
+                        } else {
+                            let q = runChild(language, to: bodyEnd)
+                            if target != nil, q < bodyEnd { return finish(at: q) }
+                        }
+                        pos = bodyEnd
+                    }
+                    if let end, pos == end {
+                        // The end tag is host code, its delimiter included.
+                        state.frames.removeLast()
+                        child = LexicalScanState()
+                        emitter.mark(end, .code)
+                        pos = end + raw.name.count + 3
+                        codeStart = pos
+                    }
+                    continue
+                }
+                if case .fence(let marker, let length, true, let language) = top, language != 0 {
+                    if startsLine(pos), let end = fenceCloserEnd(pos, marker: unichar(marker), length: Int(length)) {
+                        state.frames.removeLast()
+                        child = LexicalScanState()
+                        emitter.mark(pos, .block(fenceKind ?? .plain))
+                        pos = end
+                        codeStart = end
+                        emitter.mark(end, contextKind(state))
+                        continue
+                    }
+                    let stepEnd = embedStepEnd()
+                    let chunkEnd = nextFenceCandidate(unichar(marker), before: stepEnd) ?? stepEnd
+                    let q = runChild(language, to: chunkEnd)
+                    if target != nil, q < chunkEnd { return finish(at: q) }
+                    pos = chunkEnd
+                    continue
+                }
+            }
             // Phase B: past the target, stop at the first safe point.
             if let target, pos >= target, let q = safePoint() {
-                emitter.finish(at: q)
-                return q
+                return finish(at: q)
             }
             // Phase A: before the target, marker searches end there.
             let limit = target.map { pos < $0 ? $0 : to } ?? to
@@ -664,6 +978,33 @@ public struct LexicalScanner: Sendable {
                 continue
             }
             switch top {
+            case .rawTextTag(let element, let phase, let start):
+                let hit = text.rangeOfCharacter(from: Self.tagMarkers(phase: phase), options: [],
+                                                range: NSRange(location: pos, length: limit - pos))
+                guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
+                let p = hit.location
+                let c = at(p)
+                var next: UInt8 = 0
+                switch phase {
+                case 0: next = c == 61 ? 1 : 0                              // =
+                case 1: next = c == 34 ? 2 : c == 39 ? 3 : c == 62 ? 0 : 4  // " ' >
+                case 2, 3: next = 0
+                default: next = 0
+                }
+                if c == 62, phase != 2, phase != 3 {                        // > ends the tag
+                    pos = enterRawTextBody(text, element: element, start: start, gt: p,
+                                           state: &state, emitter: &emitter)
+                    child = LexicalScanState()
+                    codeStart = pos
+                    break
+                }
+                state.frames[state.frames.count - 1] = .rawTextTag(element: element, phase: next, start: start)
+                pos = p + 1
+
+            case .rawText:
+                // Handled above (embedded bodies).
+                pos = to
+
             case .heredoc(_, _, false):
                 // The rest of the opener line: code; its line break starts the body.
                 pos = scanCode(text, pos, to, limit, &state, &emitter, &codeStart, inInterpolation: false,
@@ -681,15 +1022,22 @@ public struct LexicalScanner: Sendable {
                 }
                 pos = skipBodyLine(limit)
 
-            case .fence(let marker, let length, false):
+            case .fence(let marker, let length, false, _):
                 let markers = marker == 96 ? Self.backtickInfoMarkers : Self.lineBreaks
                 let hit = text.rangeOfCharacter(from: markers, options: [],
                                                 range: NSRange(location: pos, length: limit - pos))
                 guard hit.location != NSNotFound else { pos = afterPlainRun(limit); break }
                 let p = hit.location
                 if Self.isLineBreak(at(p)) {
-                    state.frames[state.frames.count - 1] = .fence(marker: marker, length: length, inBody: true)
+                    let language = fenceLanguage(text, lineBreak: p)
+                    state.frames[state.frames.count - 1] = .fence(marker: marker, length: length, inBody: true,
+                                                                  language: language)
                     pos = p + 1
+                    if language != 0 {
+                        // The opener line's CRLF stays the host's.
+                        child = LexicalScanState()
+                        if at(p) == Self.cr, p + 1 < to, at(p + 1) == Self.lf { pos = p + 2 }
+                    }
                 } else {
                     // A backtick in a backtick fence's info string: no fence.
                     state.frames.removeLast()
@@ -698,7 +1046,7 @@ public struct LexicalScanner: Sendable {
                     codeStart = p
                 }
 
-            case .fence(let marker, let length, true):
+            case .fence(let marker, let length, true, _):
                 if startsLine(pos), let end = fenceCloserEnd(pos, marker: unichar(marker), length: Int(length)) {
                     state.frames.removeLast()
                     pos = end
@@ -928,8 +1276,149 @@ public struct LexicalScanner: Sendable {
                 if !handled { pos = p + 1 }
             }
         }
-        emitter.finish(at: to)
-        return to
+        return finish(at: to)
+    }
+
+    @inline(__always)
+    private static func childLanguage(_ frame: LexicalScanState.Frame?) -> UInt8 {
+        switch frame {
+        case .rawText(_, let language)?: return language
+        case .fence(_, _, true, let language)?: return language
+        default: return 0
+        }
+    }
+
+    /// A unit that may follow a raw-text element's name in its start or end
+    /// tag: a blank, `/` or `>`.
+    @inline(__always)
+    private static func isTagDelimiter(_ u: unichar) -> Bool {
+        u == 32 || u == 9 || u == 10 || u == 12 || u == 13 || u == 47 || u == 62
+    }
+
+    private static let backtick = CharacterSet(charactersIn: "`")
+    private static let tilde = CharacterSet(charactersIn: "~")
+
+    /// A raw-text start tag opener at `p` (a `<`): the element and the
+    /// position after the name and its delimiter — or, when the delimiter
+    /// is `>`, at the `>` (the tag machine ends the tag there). Reads
+    /// forward only, before `to`.
+    private func rawTextOpener(_ text: NSString, at p: Int, to: Int) -> (element: Int, end: Int)? {
+        guard p + 1 < to else { return nil }
+        let first = text.character(at: p + 1) | 0x20   // ASCII lowercase
+        for index in 0..<rawElements.count where rawElements[index].name[0] == first {
+            let name = rawElements[index].name
+            let n = name.count
+            guard p + 1 + n < to, Self.matchesName(name, in: text, at: p + 1) else { continue }
+            let delimiter = text.character(at: p + 1 + n)
+            guard Self.isTagDelimiter(delimiter) else { continue }
+            return (index, delimiter == 62 ? p + 1 + n : p + 2 + n)
+        }
+        return nil
+    }
+
+    /// `name` (lowercase ASCII letters) at `at`, in any case; the caller
+    /// checks that it fits before the range end.
+    @inline(__always)
+    private static func matchesName(_ name: [unichar], in text: NSString, at: Int) -> Bool {
+        var k = 0
+        while k < name.count {
+            if text.character(at: at + k) | 0x20 != name[k] { return false }
+            k += 1
+        }
+        return true
+    }
+
+    /// The start tag of raw-text element `element` from the `<` at `start`
+    /// ends with the `>` at `gt`: replaces its frame (or pushes) the body's,
+    /// marks a plain body, and returns the body start.
+    // swiftlint:disable:next function_parameter_count
+    private func enterRawTextBody(_ text: NSString, element: UInt8, start: Int, gt: Int,
+                                  state: inout LexicalScanState, emitter: inout Emitter) -> Int {
+        let language = rawTextLanguage(text, element: Int(element), start: start, gt: gt)
+        let frame = LexicalScanState.Frame.rawText(element: element, language: language)
+        if case .rawTextTag? = state.frames.last {
+            state.frames[state.frames.count - 1] = frame
+        } else {
+            _ = Self.push(frame, &state)
+        }
+        if language == 0 { emitter.mark(gt + 1, .block(.plain)) }
+        return gt + 1
+    }
+
+    /// The body language of a raw-text start tag from `start` (its `<`) to
+    /// `gt` (its `>`): the first `type` attribute's value, trimmed and
+    /// lowercased, through the element's table. Reads `text[start, gt)`, at
+    /// most `startTagReach` units (text only).
+    private func rawTextLanguage(_ text: NSString, element: Int, start: Int, gt: Int) -> UInt8 {
+        let raw = rawElements[element]
+        let end = min(gt, start + Self.startTagReach)
+        @inline(__always) func at(_ i: Int) -> unichar { text.character(at: i) }
+        func blank(_ u: unichar) -> Bool { u == 32 || u == 9 || u == 10 || u == 12 || u == 13 }
+        func lowered(_ from: Int, _ to: Int) -> String {
+            text.substring(with: NSRange(location: from, length: to - from)).lowercased()
+        }
+        var q = start + 1 + raw.name.count
+        while q < end {
+            while q < end, blank(at(q)) || at(q) == 47 { q += 1 }    // /
+            guard q < end else { break }
+            let nameStart = q
+            while q < end, !blank(at(q)), at(q) != 47, at(q) != 61, at(q) != 62 { q += 1 }
+            if q == nameStart { q += 1; continue }                   // a stray `=`
+            let name = lowered(nameStart, q)
+            var r = q
+            while r < end, blank(at(r)) { r += 1 }
+            var value: String?
+            if r < end, at(r) == 61 {                                 // =
+                r += 1
+                while r < end, blank(at(r)) { r += 1 }
+                if r < end, at(r) == 34 || at(r) == 39 {
+                    let quote = at(r)
+                    let valueStart = r + 1
+                    r = valueStart
+                    while r < end, at(r) != quote { r += 1 }
+                    value = lowered(valueStart, r)
+                    if r < end { r += 1 }
+                } else {
+                    let valueStart = r
+                    while r < end, !blank(at(r)), at(r) != 62 { r += 1 }
+                    value = lowered(valueStart, r)
+                }
+                q = r
+            }
+            if name == "type" {
+                let key = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return raw.typeLanguages[key] ?? raw.otherTypesLanguage
+            }
+        }
+        return raw.language
+    }
+
+    /// The embedded language of a fence whose opener line ends with the line
+    /// break at `lineBreak`: the info string's first word through
+    /// `fenceAliases`, or 0. Reads the opener line back from `lineBreak`, at
+    /// most `fenceInfoReach` units (text only).
+    private func fenceLanguage(_ text: NSString, lineBreak p: Int) -> UInt8 {
+        guard !fenceAliases.isEmpty else { return 0 }
+        @inline(__always) func at(_ i: Int) -> unichar { text.character(at: i) }
+        let floor = max(0, p - Self.fenceInfoReach)
+        var ls = p
+        while ls > floor, !Self.isLineBreak(at(ls - 1)) { ls -= 1 }
+        if ls == floor, floor > 0, !Self.isLineBreak(at(floor - 1)) { return 0 }
+        var q = ls
+        while q < p, at(q) == 32 { q += 1 }
+        let marker = at(q)
+        while q < p, at(q) == marker { q += 1 }
+        while q < p, at(q) == 32 || at(q) == 9 { q += 1 }
+        let wordStart = q
+        while q < p {
+            let u = at(q)
+            // blank { , : ? `
+            if u == 32 || u == 9 || u == 123 || u == 44 || u == 58 || u == 63 || u == 96 { break }
+            q += 1
+        }
+        guard q > wordStart, q - wordStart <= 32 else { return 0 }
+        let word = text.substring(with: NSRange(location: wordStart, length: q - wordStart)).lowercased()
+        return fenceAliases[word] ?? 0
     }
 
     /// End of a long escape whose escaped character is at `q` (`escapeForms`),
@@ -1048,6 +1537,13 @@ public struct LexicalScanner: Sendable {
             return p + block.open.count
         }
 
+        // A raw-text element's start tag (T17.8a), only outside every construct.
+        if c == 60, !rawElements.isEmpty, !inInterpolation, state.frames.isEmpty,
+           let opener = rawTextOpener(text, at: p, to: to),
+           Self.push(.rawTextTag(element: UInt8(opener.element), phase: 0, start: p), &state) {
+            return opener.end
+        }
+
         for (index, spec) in strings.enumerated() where spec.anchor == c {
             guard let open = openString(spec, at: p, to: to, codeStart: codeStart, text: text,
                                         matches: matches, prefixStart: prefixStart, boundary: boundary)
@@ -1117,7 +1613,7 @@ public struct LexicalScanner: Sendable {
             case .string(let form, _, _):
                 if strings[Int(form)].multiline { return cut }
                 cut = index
-            case .blockComment, .heredoc, .indentedBlock, .fence:
+            case .blockComment, .heredoc, .indentedBlock, .fence, .rawTextTag, .rawText:
                 return cut
             case .interpolation, .lineComment:
                 continue

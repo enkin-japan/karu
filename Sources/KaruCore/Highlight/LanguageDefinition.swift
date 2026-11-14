@@ -202,8 +202,17 @@ struct RuleSet: @unchecked Sendable {   // NSRegularExpression is immutable and 
 /// context), and a profiled range may stop at a scanner safe point
 /// (`tokens(in:range:stoppingAtSafePointFrom:state:)`).
 ///
+/// **Embedded languages** (T17.8a, plan §7): segments the scanner reports
+/// for a child language (an HTML `<script>` / `<style>` body, a Markdown
+/// fence) are tokenized with the child's definition — its code rules, string
+/// rules, regex split, key detection, string and interpolation-delimiter
+/// kinds — built on first use (`embeddedDefinition`). The host's rules never
+/// run there.
+///
 /// Python keeps its own `PythonTokenizer` (string prefixes, f-string fields);
-/// every other registered language is profiled.
+/// every other registered language is profiled. As an embedded language,
+/// Python is scanned with `PythonLanguage.analysisProfile` and coloured with
+/// its code rules.
 public struct LanguageDefinition {
     /// Lines longer than this (UTF-16 units) are sliced: the highlighter
     /// colours only the part of them near the viewport, and the rules see a
@@ -266,6 +275,25 @@ public struct LanguageDefinition {
     /// How identifiers outside rule tokens are coloured (T17.7).
     public let identifierPolicy: IdentifierPolicy
 
+    /// Child definitions by embed index − 1 (T17.8a), built on first use.
+    private final class EmbeddedDefinitions: @unchecked Sendable {   // guarded by `lock`
+        private let lock = NSLock()
+        private var slots: [LanguageDefinition??]
+
+        init(count: Int) { slots = Array(repeating: nil, count: count) }
+
+        func definition(_ index: Int, identifier: String) -> LanguageDefinition? {
+            lock.lock()
+            defer { lock.unlock() }
+            if let built = slots[index] { return built }
+            let built = LanguageRegistry.definition(forIdentifier: identifier)
+            slots[index] = .some(built)
+            return built
+        }
+    }
+
+    private let embeddedDefinitions: EmbeddedDefinitions?
+
     public init(identifier: String,
                 fileExtensions: [String],
                 rules: [LanguageRule],
@@ -293,6 +321,45 @@ public struct LanguageDefinition {
             !($0.kind == .comment && !keepsComments) && !($0.kind == .string && !keepsStrings)
         })
         self.stringRuleSet = RuleSet(stringRules)
+        let embedCount = lexicalProfile?.embeds.count ?? 0
+        self.embeddedDefinitions = embedCount > 0 ? EmbeddedDefinitions(count: embedCount) : nil
+    }
+
+    /// The definition of embedded language `language` (the index into the
+    /// profile's `embeds` plus one, as in `LexicalScanner.segments(…languages:)`),
+    /// built on first use and kept; nil for 0, an index out of range or an
+    /// unregistered identifier.
+    public func embeddedDefinition(_ language: Int) -> LanguageDefinition? {
+        guard let embeddedDefinitions, let embeds = lexicalProfile?.embeds,
+              language >= 1, language <= embeds.count else { return nil }
+        return embeddedDefinitions.definition(language - 1, identifier: embeds[language - 1].identifier)
+    }
+
+    /// What tokenizes the segments of one language: its code rules (a child
+    /// always runs its code-segment rules, the profile owning strings and
+    /// comments), string rules, key follower and the profile's kinds.
+    private struct SegmentRules {
+        let codeRules: RuleSet
+        let stringRules: RuleSet
+        let follower: NSRegularExpression?
+        let stringKind: TokenKind
+        let interpolationKind: TokenKind
+    }
+
+    private func segmentRules(_ language: Int) -> SegmentRules {
+        if language != 0, let profile = lexicalProfile, language <= profile.embeds.count {
+            let childProfile = profile.embeds[language - 1].profile
+            let child = embeddedDefinition(language)
+            return SegmentRules(codeRules: child?.codeRuleSet ?? RuleSet([]),
+                                stringRules: child?.stringRuleSet ?? RuleSet([]),
+                                follower: child?.propertyFollower,
+                                stringKind: childProfile.stringKind,
+                                interpolationKind: childProfile.interpolationDelimiterKind)
+        }
+        return SegmentRules(codeRules: lexicalScanner != nil ? codeRuleSet : allRuleSet, stringRules: stringRuleSet,
+                            follower: propertyFollower,
+                            stringKind: lexicalProfile?.stringKind ?? .string,
+                            interpolationKind: lexicalProfile?.interpolationDelimiterKind ?? .interpolationDelimiter)
     }
 
     /// Tokenizes a single line into a list of `(range, kind)` spans.
@@ -381,13 +448,23 @@ public struct LanguageDefinition {
         return out
     }
 
-    // swiftlint:disable:next function_body_length cyclomatic_complexity
     private func tokens(in text: NSString, range: NSRange, stop: Int?,
                         state: inout LexicalScanState) -> (tokens: [(range: NSRange, kind: TokenKind)], end: Int) {
+        let result = embeddedTokens(in: text, range: range, stop: stop, state: &state)
+        return (result.tokens, result.end)
+    }
+
+    /// The tokens of `tokens(in:range:…)` and the ranges of embedded-language
+    /// segments (T17.8a: ascending, adjacent runs of one language merged,
+    /// with the language index), for the highlighter's identifier pass.
+    // swiftlint:disable:next function_body_length cyclomatic_complexity
+    func embeddedTokens(in text: NSString, range: NSRange, stop: Int?, state: inout LexicalScanState)
+        -> (tokens: [(range: NSRange, kind: TokenKind)], end: Int, languages: [(range: NSRange, language: Int)]) {
         let start = min(max(range.location, 0), text.length)
         let end = min(max(NSMaxRange(range), start), text.length)
         var out: [(range: NSRange, kind: TokenKind)] = []
-        guard end > start else { return (out, end) }
+        var languages: [(range: NSRange, language: Int)] = []
+        guard end > start else { return (out, end, languages) }
 
         // One line at a time: its range, cached across the code segments that
         // share it, and (short lines only) its text.
@@ -413,7 +490,7 @@ public struct LanguageDefinition {
         }
         /// Rule tokens of `segment`; with `continuation`, the rules match as
         /// if the code went on to it and tokens are clipped to the segment.
-        func ruleTokens(_ segment: NSRange, continuation: Int? = nil) {
+        func ruleTokens(_ segment: NSRange, continuation: Int? = nil, ruleSet: RuleSet) {
             var loc = segment.location
             let limit = NSMaxRange(segment)
             let matchLimit = max(limit, continuation ?? limit)
@@ -422,8 +499,7 @@ public struct LanguageDefinition {
                 let upTo = min(limit, NSMaxRange(lr))
                 let matchUpTo = upTo == limit ? min(matchLimit, NSMaxRange(lr)) : upTo
                 let (ls, base) = ruleWindow(lr, from: loc, to: matchUpTo)
-                applyRules(in: ls, from: loc - base, to: matchUpTo - base, offset: base,
-                           ruleSet: lexicalScanner != nil ? codeRuleSet : allRuleSet) { token in
+                applyRules(in: ls, from: loc - base, to: matchUpTo - base, offset: base, ruleSet: ruleSet) { token in
                     if matchUpTo > upTo {
                         let clipped = NSIntersectionRange(token.range, NSRange(location: loc, length: upTo - loc))
                         if clipped.length > 0 { out.append((clipped, token.kind)) }
@@ -436,44 +512,53 @@ public struct LanguageDefinition {
         }
 
         guard let scanner = lexicalScanner else {
-            ruleTokens(NSRange(location: start, length: end - start))
-            return (out, end)
+            ruleTokens(NSRange(location: start, length: end - start), ruleSet: allRuleSet)
+            return (out, end, languages)
         }
-        var segments: [(NSRange, LexicalSegment)] = []
+        var segments: [(NSRange, LexicalSegment, Int)] = []
         var stopped = end
         if let stop {
             stopped = scanner.segments(text, from: start, to: end, stoppingAtSafePointFrom: stop,
-                                       state: &state) { segments.append(($0, $1)) }
+                                       state: &state, languages: { segments.append(($0, $1, $2)) })
         } else {
-            scanner.segments(text, from: start, to: end, state: &state) { segments.append(($0, $1)) }
+            scanner.segments(text, from: start, to: end, state: &state, languages: { segments.append(($0, $1, $2)) })
+        }
+
+        // Rules per language (the host's, or a child's on first use).
+        var rulesCache: [Int: SegmentRules] = [:]
+        func rules(_ language: Int) -> SegmentRules {
+            if let cached = rulesCache[language] { return cached }
+            let built = segmentRules(language)
+            rulesCache[language] = built
+            return built
         }
 
         // A range cut inside a line: the segment that goes on past `stopped`,
         // from a short look-ahead scan on a copy of the state, so a cut code
         // segment's rules and a cut key string see what follows the cut.
         // `complete`: that segment ends inside the look-ahead window.
-        var next: (range: NSRange, kind: LexicalSegment, complete: Bool)?
-        if let last = segments.last?.1, stopped < text.length,
-           last == .code || (last == .string && propertyFollower != nil) {
+        var next: (range: NSRange, kind: LexicalSegment, language: Int, complete: Bool)?
+        if let last = segments.last, stopped < text.length,
+           last.1 == .code || (last.1 == .string && rules(last.2).follower != nil) {
             let lr = currentLine(containing: stopped - 1)
-            let window = last == .code ? Self.ruleContext : Self.longLineThreshold
+            let window = last.1 == .code ? Self.ruleContext : Self.longLineThreshold
             let windowEnd = min(NSMaxRange(lr), stopped + window)
             if windowEnd > stopped {
                 var probe = state
-                var first: (NSRange, LexicalSegment)?
+                var first: (NSRange, LexicalSegment, Int)?
                 var count = 0
-                scanner.segments(text, from: stopped, to: windowEnd, state: &probe) { range, kind in
-                    if first == nil { first = (range, kind) }
+                scanner.segments(text, from: stopped, to: windowEnd, state: &probe, languages: { range, kind, language in
+                    if first == nil { first = (range, kind, language) }
                     count += 1
-                }
-                if let first { next = (first.0, first.1, count > 1) }
+                })
+                if let first { next = (first.0, first.1, first.2, count > 1) }
             }
         }
 
-        /// A string ending at `stringEnd` is a key when the follower matches
+        /// A string ending at `stringEnd` is a key when `follower` matches
         /// right after it on the same line.
-        func isKey(_ stringEnd: Int) -> Bool {
-            guard let follower = propertyFollower, stringEnd > 0 else { return false }
+        func isKey(_ stringEnd: Int, follower: NSRegularExpression) -> Bool {
+            guard stringEnd > 0 else { return false }
             let lr = currentLine(containing: stringEnd - 1)
             let lineEnd = NSMaxRange(lr)
             guard stringEnd < lineEnd else { return false }
@@ -490,53 +575,63 @@ public struct LanguageDefinition {
                                        range: NSRange(location: stringEnd - base, length: to - stringEnd)) != nil
         }
 
-        for (segment, kind) in segments {
+        for (segment, kind, language) in segments {
             let isLast = NSMaxRange(segment) == stopped
+            let segmentRules = rules(language)
+            if language != 0 {
+                if let lastSpan = languages.last, lastSpan.language == language,
+                   NSMaxRange(lastSpan.range) == segment.location {
+                    languages[languages.count - 1].range.length += segment.length
+                } else {
+                    languages.append((segment, language))
+                }
+            }
             switch kind {
             case .code:
                 var continuation: Int?
-                if isLast, let next, next.kind == .code, next.range.location == stopped {
+                if isLast, let next, next.kind == .code, next.language == language, next.range.location == stopped {
                     continuation = NSMaxRange(next.range)
                 }
-                ruleTokens(segment, continuation: continuation)
+                ruleTokens(segment, continuation: continuation, ruleSet: segmentRules.codeRules)
             case .string:
                 var key = false
-                if propertyFollower != nil {
-                    if isLast, case .string? = state.frames.last {
+                if let follower = segmentRules.follower {
+                    let innermost = language == 0 ? state.frames.last : state.embedded?.state.frames.last
+                    if isLast, case .string? = innermost {
                         // Cut inside the string: its real end must lie in the look-ahead.
-                        if let next, next.kind == .string, next.complete, next.range.location == stopped {
-                            key = isKey(NSMaxRange(next.range))
+                        if let next, next.kind == .string, next.language == language, next.complete,
+                           next.range.location == stopped {
+                            key = isKey(NSMaxRange(next.range), follower: follower)
                         }
                     } else {
-                        key = isKey(NSMaxRange(segment))
+                        key = isKey(NSMaxRange(segment), follower: follower)
                     }
                 }
                 if key {
                     out.append((segment, .property))
-                } else if stringRules.isEmpty {
-                    out.append((segment, lexicalProfile?.stringKind ?? .string))
+                } else if segmentRules.stringRules.isEmpty {
+                    out.append((segment, segmentRules.stringKind))
                 } else {
-                    stringRuleTokens(in: text, segment: segment, into: &out)
+                    stringRuleTokens(in: text, segment: segment, ruleSet: segmentRules.stringRules, into: &out)
                 }
             case .comment: out.append((segment, .comment))
             case .escape: out.append((segment, .escape))
-            case .interpolationDelimiter:
-                out.append((segment, lexicalProfile?.interpolationDelimiterKind ?? .interpolationDelimiter))
+            case .interpolationDelimiter: out.append((segment, segmentRules.interpolationKind))
             case .atom(.regex): Self.regexTokens(in: text, atom: segment, into: &out)
             case .atom(let atomKind): out.append((segment, atomKind))
             case .block(let blockKind): out.append((segment, blockKind))
             }
         }
-        return (out, stopped)
+        return (out, stopped, languages)
     }
 
     /// `segment` (a string) as `stringRules` matches with `.string` around
     /// them.
-    private func stringRuleTokens(in text: NSString, segment: NSRange,
+    private func stringRuleTokens(in text: NSString, segment: NSRange, ruleSet: RuleSet,
                                   into out: inout [(range: NSRange, kind: TokenKind)]) {
         let body = text.substring(with: segment)
         var last = 0
-        applyRules(in: body, from: 0, to: segment.length, offset: 0, ruleSet: stringRuleSet) { token in
+        applyRules(in: body, from: 0, to: segment.length, offset: 0, ruleSet: ruleSet) { token in
             if token.range.location > last {
                 out.append((NSRange(location: segment.location + last, length: token.range.location - last), .string))
             }

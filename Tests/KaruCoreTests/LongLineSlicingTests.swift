@@ -22,21 +22,22 @@ private struct SplitMix: RandomNumberGenerator {
     }
 }
 
-/// Merges adjacent runs of the same kind.
-private func merged(_ segments: [(NSRange, LexicalSegment)]) -> [(NSRange, LexicalSegment)] {
-    var out: [(NSRange, LexicalSegment)] = []
-    for (range, kind) in segments {
-        if let last = out.last, last.1 == kind, NSMaxRange(last.0) == range.location {
+/// Merges adjacent runs of the same kind and language (T17.8a: the
+/// language index of `segments(…languages:)`, 0 for the host).
+private func merged(_ segments: [(NSRange, LexicalSegment, Int)]) -> [(NSRange, LexicalSegment, Int)] {
+    var out: [(NSRange, LexicalSegment, Int)] = []
+    for (range, kind, language) in segments {
+        if let last = out.last, last.1 == kind, last.2 == language, NSMaxRange(last.0) == range.location {
             out[out.count - 1].0.length += range.length
         } else {
-            out.append((range, kind))
+            out.append((range, kind, language))
         }
     }
     return out
 }
 
-private func sameSegments(_ a: [(NSRange, LexicalSegment)], _ b: [(NSRange, LexicalSegment)]) -> Bool {
-    a.count == b.count && zip(a, b).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 }
+private func sameSegments(_ a: [(NSRange, LexicalSegment, Int)], _ b: [(NSRange, LexicalSegment, Int)]) -> Bool {
+    a.count == b.count && zip(a, b).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 && $0.2 == $1.2 }
 }
 
 /// An independent statement of the safe-point conditions (`LexicalScanner`
@@ -97,16 +98,15 @@ private func checkStops(_ scanner: LexicalScanner, _ ns: NSString, from: Int = 0
     let to = ns.length
     let oracle = SafePointOracle(scanner.profile)
     var oneState = initial
-    var one: [(NSRange, LexicalSegment)] = []
-    scanner.segments(ns, from: from, to: to, state: &oneState) { one.append(($0, $1)) }
+    var one: [(NSRange, LexicalSegment, Int)] = []
+    scanner.segments(ns, from: from, to: to, state: &oneState, languages: { one.append(($0, $1, $2)) })
     one = merged(one)
 
     for target in targets {
         var state = initial
-        var pieces: [(NSRange, LexicalSegment)] = []
-        let p = scanner.segments(ns, from: from, to: to, stoppingAtSafePointFrom: target, state: &state) {
-            pieces.append(($0, $1))
-        }
+        var pieces: [(NSRange, LexicalSegment, Int)] = []
+        let p = scanner.segments(ns, from: from, to: to, stoppingAtSafePointFrom: target, state: &state,
+                                 languages: { pieces.append(($0, $1, $2)) })
         var advanced = initial
         let pAdvanced = scanner.advance(ns, from: from, to: to, stoppingAtSafePointFrom: target, state: &advanced)
         let clamped = min(max(target, from), to)
@@ -114,7 +114,7 @@ private func checkStops(_ scanner: LexicalScanner, _ ns: NSString, from: Int = 0
             : pieces.first!.0.location == from && NSMaxRange(pieces.last!.0) == p
         let friendly = oracle.isFriendly(ns, p, to: to, state: state)
         var rest = state
-        scanner.segments(ns, from: p, to: to, state: &rest) { pieces.append(($0, $1)) }
+        scanner.segments(ns, from: p, to: to, state: &rest, languages: { pieces.append(($0, $1, $2)) })
         let joined = merged(pieces)
         let ok = p == pAdvanced && state == advanced && clamped <= p && p <= to && covered && friendly
             && rest == oneState && sameSegments(joined, one)
@@ -206,6 +206,16 @@ private let fragments: [String: [String]] = [
              ": |\n  ", "\n- |\n", "\n  ", "\n    "],
     "markdown": ["```", "````", "~~~", "~~~~", "`", "~", "   ", " ", "    ", "\n", "\r\n", "\r", "<!--", "-->", "--",
                  "<", "a", "js", "😀", "#", "*", "\t", "\n```\n", "\n~~~~\n", "\n   ```js\n"],
+    // T17.8a: `<script>` / `<style>` start tags (types, quotes, `>` in a
+    // value), end tags in any case, and JS / CSS inside the bodies.
+    "htmlEmbedded": markupFragments + ["<script>", "<script ", "<SCRIPT\n", "</script>", "</Script ", "</script",
+                                       "<style>", "</style>", "</STYLE\n", "type=", "\"module\"", "'text/x'",
+                                       "=", ">", "`", "${", "}", "/*", "*/", "//", "/re/", "\\", "'", "a=1;"],
+    // T17.8a: fences of known languages around code with their constructs.
+    "markdownEmbedded": ["```", "````", "~~~", "\n```js\n", "\n```python\n", "\n~~~ts {x}\n", "\n```json\n",
+                         "\n```bash\n", "\n```markdown\n", "\n```\n", "\n~~~\n", "\r\n", "\n", " ", "`", "${",
+                         "}", "/*", "*/", "//", "#", "\"", "'", "\"\"\"", "'''", "<<EOF\n", "\nEOF\n", "<!--",
+                         "-->", "abc", "😀", "\\", "f'", "{"],
     "synthetic": ["\"", "r\"", "r#\"", "\"#", "rb##\"", "\"##", "R\"d(", ")d\"", "R\"(", ")\"", "#\"", "\\(", "\\#(",
                   ")", "(", "\\", "#", "'''", "''''", "'", "'x'", "b'x'", "`", "f`", "F`", "${", "{", "{{", "}",
                   "%", "%%", "//", "/*", "*/", "(*", "*)", "\n", "\r\n", "\r", " ", "abc", "x1", "😀", "R", "b",
@@ -232,6 +242,7 @@ struct LongLineSlicingScannerTests {
         ("synthetic", "synthetic"), ("c", "c"), ("cpp", "cpp"), ("csharp", "csharp"), ("java", "java"),
         ("go", "go"), ("css", "css"), ("sql", "sql"), ("swift", "swift"), ("toml", "toml"), ("html", "html"),
         ("xml", "xml"), ("bash", "bash"), ("yaml", "yaml"), ("markdown", "markdown"),
+        ("html", "htmlEmbedded"), ("markdown", "markdownEmbedded"),
     ]
 
     @Test(arguments: languages)
@@ -293,6 +304,14 @@ struct LongLineSlicingScannerTests {
         ("swift", "let s = \"\\u{1F600}\\u{\" + #\"\\u{41}\\#u{41}\\#n\"# + \"\\(x)\\t\""),
         ("bash", "echo \"$x$1$@$$${y}$(z)$\" '$q' \"\\$a $abc_1\""),
         ("yaml", "a: 'it''s ''x'''\nb: \"\\x41\\u00e9\\U0001F600\\q\""),
+        // T17.8a: targets inside start and end tags (a multi-line start tag
+        // with `>` in a quoted value), in bodies, at a closing tag inside a
+        // JS string, and around fence openers, info strings and closers.
+        ("html", "<p a=\"<b>\">x</p><SCRIPT\r\n type='module' data-x=\"a > b\">let s = \"</scRipt >\"; t`${u}`"
+            + "</script>\r\n<style type=text/css>.a{b:\"}\"}/* </style */</style><script type=\"text/x\">a<b</script/>"
+            + "<!-- <script> --><script>😀`x\r\n</script"),
+        ("markdown", "```python {x}\r\ns = '''\r\n```\r\nt = \"😀\"\n~~~ts\n`a${b}\n~~~\n```json\n{\"k\": 1}\n````"
+            + "\n```markdown\n```py\nx\n```\n```\n```js\nlet a = 1 /* open"),
         ("synthetic", "x = R\"d(a)\"b)d\" + R\"(z)\" + rb##\"q\"#r\"## + #\"a\\(b)c\\#(d)e\"# + \"p\\(f(1))q\"\r\n"
             + "''' a '' b '''' c ''' + ''''x'''' + b'x' + '\\u{1F600}' + F`a${b}c{d}{{e` + %a%%b%\r"
             + "/* a /* b */ c */ (* d /* e *) f😀g // end\nabc_def"),

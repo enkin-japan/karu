@@ -50,7 +50,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ✅ 自动化通过；作用域 top1 24/24，误弹 0 |
 | T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | 🔶 自动化通过；真实窗口与真实输入法实测待做 |
 | T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ✅ 自动化通过；一致率深色 94.9%、浅色 91.6% |
-| T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ⬜ |
+| T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | 🔶 T17.8a（HTML/Markdown 子语言）完成；T17.8b JSX/TSX、T17.8c 光标处子语言待做 |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ⬜ |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ⬜ |
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ⬜ |
@@ -496,6 +496,48 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **截图**：implementer 渲染了深浅两种外观、中英两种语言的弹窗截图（重新生成：`KARU_T176_SHOTS=<dir> swift test --filter CompletionScreenshots`），main 看过深色中文版本：标签、加粗匹配部分、选中色都正常。
   - **性能**（debug、10 MB 多样名字 Python、负载 4–10，与 HEAD 交替）：从按键到面板，p50 3.5–4.0 → 4.2–5.0 ms，p95 10.5–11.7 → 13.1–17.3 ms，目标 ≤50。多出的约 1 ms 来自测量宽度和设置面板 frame。新进程里第一次测量标签宽度约 55 ms（冷加载字体）。
   - **真实窗口与真实输入法实测：待做**。`interaction-checklist.md` 中已有自动化测试覆盖的：ACC-01、02、04、08、11、15、16，SAFE-01、04、05、06、07、08，MOD-07；IME 各项只做了模拟。需要真实窗口的：ACC-03、05、06、07、09、10、12、13、14 的确认部分，SAFE-02/03 撤销后的光标位置，SAFE-09–13，MOD-01–06、08、09；需要真实输入法的：IME-01 到 IME-10。由 main 在用户在场时用真实中文、日文输入法逐项执行，结果填进清单。
+
+- T17.8a HTML `<script>`/`<style>` 与 Markdown 围栏进入子语言（main 定接口，implementer 实现，main 审查 diff，2026-11-15）：
+  - **做法**：嵌入由通用扫描器原生处理。
+    - `LexicalProfile.embeds` 列出子语言（标识符、档案、围栏别名）；`rawTextElements` 声明 HTML 的原始文本元素。
+    - 子扫描器在第一次进入时编译，缓存在宿主扫描器的锁保护盒子里；子定义同样在第一次用到时构建并缓存。
+    - `LexicalScanState.embedded` 用不可变盒子保存子状态，子语言无打开结构时为 nil，所以正文里的多数检查点不带盒子。检查点格式仍是 `LexicalState.generic`。
+    - 只嵌一层：子档案的 `embeds` 不生效。新增带语言下标的 `segments(…languages:)`，原签名保留。
+  - **HTML**：
+    - 开始标签用 `rawTextTag` 帧跟踪，可以跨行，引号里的 `>` 不算结束。读到 `>` 时从 `<` 回读 `type`，最多回读 4096 个单位。
+    - 正文到第一个大小写不敏感的 `</script` / `</style`（后接空白、`/` 或 `>`）结束，按浏览器语义，与子语言状态无关。开始和结束标签仍走 HTML 规则。
+    - script 不写 `type`、写 JS 类 MIME、`module`、Babel/JSX 类型时进入 JS。其他类型按纯文本处理，包括 `application/json`、`importmap`、`ld+json`（VS Code 也不给这几种着色）。style 一律进入 CSS。
+  - **Markdown**：
+    - 围栏信息串的第一个词，转小写后查别名表。表里有规格列出的全部别名，另加 py3、node、mts/cts、shellscript/console、json5、ndjson、xhtml、hh。
+    - 查不到的语言，正文仍是 `.block(.plain)`。结束行仍由宿主判定。Python 子语言用 `analysisProfile` 和 Python 的代码规则。
+  - **着色**：子语言片段使用子定义的规则和类别。标识符只按子语言的默认类别着色，不用宿主的声明角色和符号表。
+  - **补全**：本步不变。`CompletionContext.position(of:)` 对新帧返回 `.code`，重新生成的补全基线与 HEAD 逐字节相同。光标处子语言留给 T17.8c。
+  - **一致率**（HEAD 现跑 → 本次）：
+    - 深色：page.html 54.3 → **88.0**，fences.md 64.2 → **89.4**，markdown.md 91.0 → 97.2，总体 94.9 → **96.5**。
+    - 浅色：page.html 39.2 → 69.3，fences.md 51.0 → 74.4，markdown.md 79.4 → 85.6，总体 91.6 → **93.1**。
+    - 其余 20 个样本在两种主题下都没有变化。
+    - 两个嵌入样本都没达到验收设的 90%。差距来自 main 定死的规格，main 认可：
+      - page.html 第 26–27 行，71 个单位：夹具里 JS 块注释中写了 `</script>`，按浏览器语义它会结束元素，VS Code 则把注释延续下去。去掉这一处是 93.7%。
+      - page.html 第 39–40 行，28 个单位：`text/template` 正文按纯文本处理，VS Code 会给里面的 HTML 标签着色。
+      - fences.md 第 45 行，50 个单位：markdown 围栏里的第二层围栏，按规格只嵌一层。去掉这一处是 94.5%。
+      - 子语言不用声明角色：page.html 24 个单位，fences.md 50 个单位（const 常量、def 名和参数、TS 类型引用）。留给 T17.8c。
+      - 原有近似：CSS 选择器 27 个单位，heredoc 里的 `$HOME` 5 个单位。
+  - **已知近似**：其他标签属性值里写的 `<script>` 会打开 script，因为属性值只走规则。
+  - **测试**：
+    - 新增 `EmbeddedLanguageTests`：HTML 和 Markdown 的全部规定场景、CRLF、非 BMP 字符，按行首和随机安全切点分段，冷、热检查点续扫，200 KB 以上单行 HTML 的长行。
+    - 扩展 `LexicalConsistencyTests` 和 `LongLineSlicingTests`：比较时带上语言下标，加入嵌入的对抗样本。
+    - `LexicalProfilesTests` 改了一处旧断言：js 围栏正文现在是 JS 代码。
+    - 新增可选基准 `EmbeddedBenchmarkTests`（`KARU_T178_BENCH=1`）。
+    - 全量 **1250 tests / 93 suites 通过（main 复跑）**；visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+  - **性能**（debug、800×600、跳到文档中间，与 HEAD 交替跑，负载 3–5）：
+    - 10 MB HTML：首次跳转 110 → 260 ms；附近重绘中位数 / p95 从 4.0 / 5.0 变为 4.7 / 6.4 ms。
+    - 10 MB Markdown（由 fences.md 重复拼成，围栏密集）：首次跳转 90 → 300 ms；附近重绘从 1.0 / 1.5 变为 3.4 / 5.1 ms。
+    - 10 MB JS 和 Python 没有变化。
+    - 首次跳转变慢主要是子语言真正扫描正文的成本（以前正文按行直接跳过），属于功能本身。附近重绘 p95 仍在 8 ms 之内。首次跳转在第 11 节只报告、不设上限，T17.15 复测 Release。
+  - **内存**：
+    - 检查点每条从 24 B 增加到 32 B（`LexicalScanState` 多了一个引用），对所有使用通用扫描器的语言都成立，10 MB 文档多 0.6–1.3 KB。
+    - 带盒子的子状态约 112 B。实测 10 MB HTML 的 80 个检查点里 0 个带盒子；10 MB Markdown 的 80 个里有 23 个，合计约 2.6 KB。
+    - 子扫描器和子定义只在进入时构建。mem-benchmark 的单项对照留到 T17.15。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 
