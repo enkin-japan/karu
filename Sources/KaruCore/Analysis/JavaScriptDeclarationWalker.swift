@@ -19,7 +19,8 @@ import Foundation
 ///   with multiple declarators and destructuring (object incl. renames,
 ///   defaults, rest, nesting; arrays with holes); `catch (e)`; `for (… of /
 ///   in / ;)` bindings; `class` names, methods and fields (`#private`
-///   included); `import x, { a as b }`, `import * as ns`, TS `import x =`;
+///   included) and — scope-only, T17.5 — `this.name = …` statements inside
+///   class bodies; `import x, { a as b }`, `import * as ns`, TS `import x =`;
 ///   TS `interface` / `type` / `enum` / `namespace` names and generic type
 ///   parameters as `.type`. TS type annotations (parameters, declarators,
 ///   fields, return types, `as` / `satisfies`) are skipped, never bindings;
@@ -812,6 +813,19 @@ struct JavaScriptDeclarationWalker: Sendable {
         case .namespace where typescript, .module where typescript:
             guard let n1, Self.isBindable(n1) || n1.kind == .literal else { return nil }
             return namespaceDeclaration(buf, final, text, &b)
+        case .this:
+            // T17.5: `this.name = …` inside a class body's methods declares an
+            // instance field — scope-only, so `visibleBindings` ignores it and
+            // completion reads it as a member of the class (`this.`). The
+            // statement itself is then read as an ordinary expression.
+            guard frames.contains(where: { $0.role == .classBody }) else { return nil }
+            guard let n1 else { return final ? nil : 0 }
+            guard n1.kind == .dot, n1.end - n1.start == 1 else { return nil }
+            guard let n2 = buf.peek(2) else { return final ? nil : 0 }
+            guard n2.kind == .ident, !n2.isPrivateName else { return nil }
+            guard let n3 = buf.peek(3) else { return final ? nil : 0 }
+            if n3.kind == .assign { b.declare(text, n2, kind: .property, listed: false) }
+            return nil
         default:
             if Self.isBindable(t), n1?.kind == .colon { return 2 }    // label
             return nil

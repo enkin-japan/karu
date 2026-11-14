@@ -72,7 +72,8 @@
   未设置时每个埋点只多一次分支、不建文件。开启后以 TSV 追加
   `uptime_ns  event  duration_us  key=value…`，后台队列至多每 0.5 s 写一次，正常退出时补写；
   被强杀时可能丢最后 0.5 s。事件：`completion.request`（按键事件时间戳到弹出/刷新/收起，
-  `result`、`count`、`prefixLen`、`lazyIndex`）、`completion.index`、`highlight.pass`
+  `result`、`count`、`prefixLen`、`lazyIndex`；T17.5 起另记 `reused`=1 表示前缀增长时复用了上次的匹配集）、
+  `completion.index`（文档词索引重建；T17.5 起 `sliced`=1 为编辑停顿后的分片重建，时长为各片之和，另记 `slices`、`maxSliceUs`）、`highlight.pass`
   （`lang`、`painted`、`skipped`、`sliced`：色带落在超长行中间而只着色一段时为 1）、`analysis.declarations`（T17.1 起取代 `highlight.symbols`：每个文档版本一次的
   共用声明扫描，`docLen`、`lang`、`version`；T17.4a 起 `sliced`=1 为分片扫描，时长为各片主线程时间之和，
   另记 `slices` 片数与 `maxSliceUs` 最长一片）、`lexical.advance`（T17.2：着色前从最近检查点推进

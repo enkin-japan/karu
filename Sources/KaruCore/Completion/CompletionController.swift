@@ -24,28 +24,45 @@ public protocol CompletionKeyHandler: AnyObject {
     func dismissCompletion()
 }
 
-/// Prefix-completion module: builds a document word index (debounced), takes
-/// declaration symbols from the document analysis, and drives a floating
-/// suggestion popup.
+/// Completion module: drives the candidate engine and the floating
+/// suggestion popup for one editor window.
 ///
-/// Symbols (M17 T17.1) come from the shared `DocumentAnalysis` snapshot — one
-/// declaration scan per document version, shared with the highlighter and the
-/// navigator. A language change reaches this controller synchronously through
-/// the analysis, so the very next request already ranks the new language's
-/// declarations. Constructed without an analysis (unit tests, probes) it owns
-/// a private one and forwards its edits to it.
+/// - **Candidates** (M17 T17.5) come from `CandidateEngine`: scope bindings,
+///   class members, receiver usage and module-level declarations from the
+///   shared `DocumentAnalysis` snapshot (the last *published* one, mapped
+///   through its edit journal while a rescan is pending), the language's
+///   keywords / builtins, and the document word index. A language change
+///   reaches this controller synchronously through the analysis, so the
+///   very next request already ranks the new language's declarations.
+///   Constructed without an analysis (unit tests, probes) it owns a private
+///   one and forwards its edits to it.
+/// - **Word index**: built synchronously on first use / `indexDocument()`,
+///   and after an edit pause (0.15 s) rebuilt by a sliced `AnalysisScheduler`
+///   job (4 ms slices, dropped on the next edit); words typed since are found
+///   by the engine's nearby-line scan.
+/// - **Requests**: a typed letter / `_` / (JS / TS) `$` or `.` opens the
+///   popup when the engine's trigger rules allow it (plan §5.1);
+///   `requestCompletion(manual:)` is the manual entry for T17.6. While open,
+///   every keystroke refilters or dismisses — an automatic popup closes when
+///   the caret moves into a string or comment.
+/// - **Accept** re-checks that the caret, the document version and the
+///   identifier around the caret are unchanged (else it recomputes and does
+///   not insert), then replaces the **whole identifier** through
+///   `insertText(_:replacementRange:)` as its own undo step and records the
+///   candidate in the window's recent-accept list.
 ///
 /// Gating (ARCHITECTURE.md §2.5), mirroring `HighlightEngine`: gated on
 /// `module.completion`. Switching the module off dismisses the popup and drops
-/// the word index and symbol set, so a disabled controller's resident cost
-/// returns to ≈ 0 (`isRuntimeStateReleased == true`); switching it back on
-/// rebuilds from the current document.
+/// the word index, the engine caches and the recent accepts, so a disabled
+/// controller's resident cost returns to ≈ 0 (`isRuntimeStateReleased ==
+/// true`); switching it back on rebuilds from the current document.
 @MainActor
 public final class CompletionController: NSObject, TextStorageObserving, CompletionKeyHandler,
                                           DocumentAnalysisConsumer {
     private weak var textView: NSTextView?
     private let moduleSettings: ModuleSettings
     private let moduleCenter: NotificationCenter
+    private let scheduler: AnalysisScheduler
 
     /// The document analysis owning the language and declaration snapshot.
     let analysis: DocumentAnalysis
@@ -55,31 +72,43 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     /// Releasable runtime state: the document word index. `nil` when the module
     /// is disabled or nothing has been indexed yet.
     private var wordIndex: WordIndex?
+    private var wordsGeneration: UInt64 = 0
+    /// Edits since `wordIndex` was built.
+    private var wordsJournal = EditJournal()
+    /// Character edits seen (word-index jobs are dropped when it moves).
+    private var editCount: UInt64 = 0
+    private var wordJobPending = false
 
-    /// Releasable runtime state: the declaration symbols of the analysis's
-    /// latest snapshot (kept while a post-edit rescan is pending).
-    private var symbols: Set<String> = []
+    /// Releasable runtime state: the candidate engine's caches.
+    private var engine = CandidateEngine()
+    /// Recently accepted candidates (this window only, ≤ 32).
+    private var recent = RecentAccepts()
 
     /// Always-retained, cheap config resolved from the file's language.
     private var languageIdentifier: String = ""
     private var languageKeywords: [String] = []
+    private var languageBuiltins: [String] = []
+    private var contextScanner: LexicalScanner?
 
     private var moduleEnabled: Bool
 
-    /// Debounced full rebuild of the word index / symbols.
-    private var pendingRebuild: DispatchWorkItem?
+    /// Debounce before the word index is rebuilt after an edit.
     private let debounceInterval: TimeInterval = 0.15
-
-    /// Minimum prefix length before a popup is offered.
-    private let minPrefixLength = 2
+    /// UTF-16 units the word-index builder reads per step inside a slice.
+    private static let wordStepUnits = 4_096
 
     // MARK: Popup UI state
 
     private var panel: NSPanel?
     private var tableView: NSTableView?
-    private var suggestions: [String] = []
-    /// Document range of the prefix currently being completed.
-    private var prefixRange: NSRange?
+    private var suggestions: [Candidate] = []
+    /// The context the shown suggestions were computed for.
+    private var shownContext: CompletionContext?
+    /// `analysis.version` / `editCount` when they were computed.
+    private var shownVersion: UInt64 = 0
+    private var shownEditCount: UInt64 = 0
+    /// The popup was opened by a manual request.
+    private var shownManual = false
     /// Guards our own completion insertion from being treated as a user action.
     private var isApplyingCompletion = false
 
@@ -87,17 +116,32 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     /// True when no runtime index state is held — guaranteed after the module is
     /// switched off (the acceptance-criteria "released" state).
-    public var isRuntimeStateReleased: Bool { wordIndex == nil }
+    public var isRuntimeStateReleased: Bool { wordIndex == nil && !engine.holdsState && recent.entries.isEmpty }
 
     /// Whether the `completion` module is enabled.
     public var isModuleEnabled: Bool { moduleEnabled }
 
     /// The suggestion list the popup is currently showing (empty when no popup
     /// is up). Read-only window for the M17 baseline capture suite.
-    var currentSuggestionsForTesting: [String] { panel == nil ? [] : suggestions }
+    var currentSuggestionsForTesting: [String] { panel == nil ? [] : suggestions.map(\.name) }
 
-    /// The declaration symbols the next request will rank (tests).
-    var currentSymbolsForTesting: Set<String> { symbols }
+    /// The candidates the popup is showing (tests).
+    var currentCandidatesForTesting: [Candidate] { panel == nil ? [] : suggestions }
+
+    /// The context of the shown popup (tests).
+    var currentContextForTesting: CompletionContext? { panel == nil ? nil : shownContext }
+
+    /// The declaration names of the snapshot the next request reads (tests).
+    var currentSymbolsForTesting: Set<String> {
+        guard moduleEnabled, wordIndex != nil else { return [] }
+        return analysis.publishedDeclarations?.snapshot.scan.completionSymbols ?? []
+    }
+
+    /// The recent-accept list (tests).
+    var recentAcceptsForTesting: RecentAccepts { recent }
+
+    /// The word index (tests, benchmarks).
+    var wordIndexForTesting: WordIndex? { wordIndex }
 
     // MARK: - Init
 
@@ -106,14 +150,17 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     public init(textView: NSTextView,
                 moduleSettings: ModuleSettings = ModuleSettings(),
                 moduleCenter: NotificationCenter = .default,
-                analysis: DocumentAnalysis? = nil) {
+                analysis: DocumentAnalysis? = nil,
+                scheduler: AnalysisScheduler = .shared) {
         self.textView = textView
         self.moduleSettings = moduleSettings
         self.moduleCenter = moduleCenter
+        self.scheduler = scheduler
         self.moduleEnabled = moduleSettings.isEnabled(.completion)
         self.analysis = analysis ?? DocumentAnalysis(textView: textView,
                                                      moduleSettings: moduleSettings,
-                                                     moduleCenter: moduleCenter)
+                                                     moduleCenter: moduleCenter,
+                                                     scheduler: scheduler)
         self.ownsAnalysis = analysis == nil
         super.init()
         self.analysis.addConsumer(self)
@@ -127,36 +174,39 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     deinit {
         moduleCenter.removeObserver(self)
-        pendingRebuild?.cancel()
     }
 
     // MARK: - Language wiring
 
     /// Points the document at the language owning `ext` via the analysis (in
     /// an editor window that also re-points the highlighter). The analysis
-    /// calls back synchronously, which loads the keywords and symbols.
+    /// calls back synchronously, which loads the keywords.
     public func setLanguage(fileExtension ext: String?) {
         analysis.setLanguage(identifier: ext.flatMap { LanguageRegistry.identifier(forExtension: $0) })
     }
 
     /// Points the document at the language whose stable `identifier` is `id`
     /// (e.g. `"python"`) via the analysis. An empty / unknown identifier drops
-    /// back to no language keywords.
+    /// back to plain text.
     public func setLanguage(identifier id: String?) {
         analysis.setLanguage(identifier: id)
     }
 
-    /// Loads the keywords + builtins of the analysis's language (always-retained
-    /// cheap config, independent of module state).
+    /// Loads the keywords, builtins and context scanner of the analysis's
+    /// language (always-retained cheap config, independent of module state).
     private func applyLanguageKeywords() {
         let id = analysis.languageIdentifier
         guard !id.isEmpty, let def = LanguageRegistry.definition(forIdentifier: id) else {
             languageIdentifier = ""
             languageKeywords = []
+            languageBuiltins = []
+            contextScanner = nil
             return
         }
         languageIdentifier = def.identifier
-        languageKeywords = def.keywords + def.builtins
+        languageKeywords = def.keywords
+        languageBuiltins = def.builtins
+        contextScanner = CandidateEngine.contextScanner(for: def.identifier, definition: def)
     }
 
     // MARK: - DocumentAnalysisConsumer
@@ -165,56 +215,90 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
                                           reason: DocumentAnalysis.ChangeReason) {
         switch reason {
         case .language:
+            let dollar = wordIndex?.allowsDollar
             applyLanguageKeywords()
-            // Fixes the pre-T17.1 defect: the first request after a switch
-            // used the previous language's symbols until the next rebuild.
-            if moduleEnabled, wordIndex != nil {
-                symbols = analysis.ensureDeclarations().scan.completionSymbols
+            engine.reset()
+            // `$` is a word character in JS / TS only: re-tokenize when that flips.
+            if moduleEnabled, let dollar, dollar != IdentifierText.allowsDollar(languageIdentifier) {
+                scheduleWordIndexBuild(after: 0)
             }
         case .declarations:
-            if moduleEnabled, wordIndex != nil, let snapshot = analysis.declarations {
-                symbols = snapshot.scan.completionSymbols
-            }
+            engine.dropIndex(unlessVersion: analysis.publishedDeclarations?.snapshot.version)
         case .released:
-            break
+            engine.reset()
         }
     }
 
     // MARK: - Indexing
 
     /// Synchronously (re)builds the word index from the current document and
-    /// takes the symbol set from the analysis (scanning only if it holds no
-    /// current snapshot) — but only while the module is enabled. Safe to call
-    /// after a file loads and used by the debounced edit path.
+    /// makes sure the analysis holds a declaration snapshot (scanning only if
+    /// it has none) — but only while the module is enabled. Safe to call
+    /// after a file loads.
     public func indexDocument() {
-        indexDocument(scanDeclarationsIfMissing: true)
-    }
-
-    /// `scanDeclarationsIfMissing: false` is the debounced edit path: it only
-    /// adopts a current snapshot and otherwise keeps the previous symbols until
-    /// the analysis publishes (`.declarations`), so a scheduling race between
-    /// the two debounces can never cause a second synchronous full scan.
-    private func indexDocument(scanDeclarationsIfMissing: Bool) {
-        guard moduleEnabled, let text = textView?.string else { return }
+        guard moduleEnabled, let textView else { return }
+        let text = textView.textStorage?.mutableString ?? (textView.string as NSString)
         let start = PerfLog.isEnabled ? PerfLog.now() : 0
-        wordIndex = WordIndex(text: text)
-        if scanDeclarationsIfMissing {
-            symbols = analysis.ensureDeclarations().scan.completionSymbols
-        } else if let snapshot = analysis.declarations {
-            symbols = snapshot.scan.completionSymbols
-        }
+        scheduler.cancel(owner: ObjectIdentifier(self))
+        wordJobPending = false
+        var builder = WordIndexBuilder(dollar: IdentifierText.allowsDollar(languageIdentifier))
+        installWordIndex(builder.finish(text))
+        if analysis.publishedDeclarations == nil { _ = analysis.ensureDeclarations() }
         if PerfLog.isEnabled {
             PerfLog.record("completion.index", since: start,
-                           ["docLen": (text as NSString).length, "lang": languageIdentifier])
+                           ["docLen": text.length, "lang": languageIdentifier, "sliced": 0])
         }
     }
 
-    private func scheduleRebuild() {
+    private func installWordIndex(_ index: WordIndex) {
+        wordIndex = index
+        wordsGeneration &+= 1
+        wordsJournal.reset()
+    }
+
+    /// Schedules the sliced word-index rebuild for the current text.
+    private func scheduleWordIndexBuild(after delay: TimeInterval) {
         guard moduleEnabled else { return }
-        pendingRebuild?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.indexDocument(scanDeclarationsIfMissing: false) }
-        pendingRebuild = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: item)
+        let jobEdits = editCount
+        let dollar = IdentifierText.allowsDollar(languageIdentifier)
+        var builder: WordIndexBuilder?
+        var elapsed: UInt64 = 0
+        var slices = 0
+        var longest: UInt64 = 0
+        let job = AnalysisJob(
+            owner: ObjectIdentifier(self),
+            version: jobEdits,
+            step: { [weak self] deadline in
+                guard let self, self.moduleEnabled, self.editCount == jobEdits,
+                      let text = self.textView?.textStorage?.mutableString else { return true }
+                if builder == nil { builder = WordIndexBuilder(dollar: dollar) }
+                let sliceStart = DispatchTime.now().uptimeNanoseconds
+                var done = false
+                repeat {
+                    done = builder!.step(text, budgetUnits: Self.wordStepUnits)
+                } while !done && DispatchTime.now().uptimeNanoseconds < deadline
+                let sliceTime = DispatchTime.now().uptimeNanoseconds &- sliceStart
+                elapsed &+= sliceTime
+                longest = max(longest, sliceTime)
+                slices += 1
+                return done
+            },
+            completion: { [weak self] in
+                guard let self else { return }
+                self.wordJobPending = false
+                guard self.moduleEnabled, self.editCount == jobEdits, let index = builder?.index else { return }
+                self.installWordIndex(index)
+                if PerfLog.isEnabled {
+                    PerfLog.record("completion.index", durationSeconds: Double(elapsed) / 1e9,
+                                   ["docLen": self.textView?.textStorage?.length ?? 0,
+                                    "lang": self.languageIdentifier, "sliced": 1, "slices": slices,
+                                    "maxSliceUs": Int(longest / 1000)])
+                }
+            },
+            isInKeyWindow: { [weak textView] in textView?.window?.isKeyWindow == true }
+        )
+        wordJobPending = true
+        scheduler.schedule(job, after: delay)
     }
 
     // MARK: - Module gating
@@ -233,10 +317,12 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     /// Releases all runtime state and closes the popup.
     private func tearDown() {
-        pendingRebuild?.cancel()
-        pendingRebuild = nil
+        scheduler.cancel(owner: ObjectIdentifier(self))
+        wordJobPending = false
         wordIndex = nil
-        symbols = []
+        wordsJournal.reset()
+        engine.reset()
+        recent.removeAll()
         dismiss()
     }
 
@@ -251,7 +337,10 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             analysis.textStorageDidProcessEditing(editedMask: editedMask, editedRange: editedRange,
                                                   changeInLength: delta, textStorage: textStorage)
         }
-        scheduleRebuild()
+        editCount &+= 1
+        guard moduleEnabled, wordIndex != nil else { return }
+        wordsJournal.record(editedRange: editedRange, changeInLength: delta)
+        scheduleWordIndexBuild(after: debounceInterval)
     }
 
     // MARK: - CompletionKeyHandler
@@ -285,85 +374,84 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         if lazyIndex { indexDocument() }
 
         if isCompletionActive {
-            updatePopup()
+            updatePopup(manual: shownManual)
         } else {
             guard let chars = event.charactersIgnoringModifiers,
                   let first = chars.first,
-                  first.isLetter || first == "_" else { return }
-            updatePopup()
+                  first.isLetter || first == "_" || first == "."
+                    || (first == "$" && IdentifierText.allowsDollar(languageIdentifier)) else { return }
+            updatePopup(manual: false)
         }
         if PerfLog.isEnabled { logRequest(event, lazyIndex: lazyIndex) }
+    }
+
+    /// Opens (or refreshes) the popup at the caret. `manual`: the user asked
+    /// for it (T17.6 `complete(_:)`): any position, empty prefix allowed.
+    public func requestCompletion(manual: Bool) {
+        guard moduleEnabled else { return }
+        if wordIndex == nil { indexDocument() }
+        updatePopup(manual: manual)
     }
 
     /// `completion.request`: from the triggering key event to the popup being
     /// shown / refiltered or dismissed. Only called while `KARU_PERFLOG` is on.
     private func logRequest(_ event: NSEvent, lazyIndex: Bool) {
         let shown = panel != nil && !suggestions.isEmpty
-        let prefixLen = prefixRange?.length ?? (prefixRun()?.length ?? 0)
         PerfLog.record("completion.request",
                        durationSeconds: ProcessInfo.processInfo.systemUptime - event.timestamp,
                        ["result": shown ? "shown" : "dismissed",
                         "count": shown ? suggestions.count : 0,
-                        "prefixLen": prefixLen,
-                        "lazyIndex": lazyIndex ? 1 : 0])
+                        "prefixLen": shownContext?.prefixRange.length ?? 0,
+                        "lazyIndex": lazyIndex ? 1 : 0,
+                        "reused": engine.lastReusedMatches ? 1 : 0])
     }
 
     public func dismissCompletion() { dismiss() }
 
     // MARK: - Popup driving
 
-    /// Recomputes the current prefix and suggestions, then shows / refilters /
-    /// dismisses the popup accordingly.
-    private func updatePopup() {
-        guard let index = wordIndex, let prefix = currentPrefix() else {
-            dismiss()
-            return
-        }
-        let lowerPrefix = prefix.text.lowercased()
-        let hits = index.suggestions(prefix: prefix.text,
-                                     language: languageKeywords,
-                                     symbols: symbols)
-            // Drop the token the user is literally typing (it matches its own
-            // prefix once the index catches up).
-            .filter { $0.lowercased() != lowerPrefix }
-
-        guard !hits.isEmpty else {
-            dismiss()
-            return
-        }
-
-        suggestions = hits
-        prefixRange = prefix.range
-        showOrUpdatePanel(anchorRange: prefix.range)
-    }
-
-    /// The `\w+`-run immediately before the caret, if it is at least
-    /// `minPrefixLength` long and the selection is a plain caret.
-    private func currentPrefix() -> (text: String, range: NSRange)? {
-        guard let textView, let range = prefixRun(),
-              range.length >= minPrefixLength else { return nil }
-        return ((textView.string as NSString).substring(with: range), range)
-    }
-
-    /// The word-character run ending at a plain caret (possibly empty), or
-    /// `nil` when there is a non-empty selection.
-    private func prefixRun() -> NSRange? {
+    /// The engine request for the current caret, or nil without a plain caret.
+    private func makeRequest(manual: Bool) -> CompletionRequest? {
         guard let textView else { return nil }
         let selection = textView.selectedRange()
         guard selection.length == 0 else { return nil }
-
-        let ns = textView.string as NSString
-        var start = selection.location
-        while start > 0 {
-            let ch = ns.substring(with: NSRange(location: start - 1, length: 1))
-            if isWordCharacter(ch) { start -= 1 } else { break }
+        let text: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
+        var request = CompletionRequest(text: text, caret: selection.location,
+                                        languageIdentifier: languageIdentifier)
+        request.manual = manual
+        request.keywords = languageKeywords
+        request.builtins = languageBuiltins
+        if let published = analysis.publishedDeclarations {
+            request.snapshot = published.snapshot.scan
+            request.snapshotVersion = published.snapshot.version
+            request.snapshotJournal = published.journal
         }
-        return NSRange(location: start, length: selection.location - start)
+        request.words = wordIndex
+        request.wordsGeneration = wordsGeneration
+        request.wordsJournal = wordsJournal
+        request.recent = recent
+        request.scanner = contextScanner
+        return request
     }
 
-    private func isWordCharacter(_ ch: String) -> Bool {
-        guard let scalar = ch.unicodeScalars.first, ch.unicodeScalars.count == 1 else { return false }
-        return CharacterSet.alphanumerics.contains(scalar) || ch == "_"
+    /// Recomputes the candidates at the caret, then shows / refilters /
+    /// dismisses the popup accordingly.
+    private func updatePopup(manual: Bool) {
+        guard let request = makeRequest(manual: manual),
+              let result = engine.complete(request, checkpoints: &analysis.contextCheckpoints) else {
+            dismiss()
+            return
+        }
+        // Keep the selected candidate selected (by identity) across refreshes.
+        let selected = tableView.flatMap { table in
+            table.selectedRow >= 0 && table.selectedRow < suggestions.count ? suggestions[table.selectedRow].identity : nil
+        }
+        suggestions = result.candidates
+        shownContext = result.context
+        shownVersion = analysis.version
+        shownEditCount = editCount
+        shownManual = manual
+        showOrUpdatePanel(anchorRange: result.context.prefixRange, keeping: selected)
     }
 
     private func moveSelection(_ delta: Int) {
@@ -375,30 +463,42 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     }
 
     private func acceptSelection() {
-        guard let table = tableView,
-              let range = prefixRange,
+        guard let table = tableView, let textView, let context = shownContext,
               table.selectedRow >= 0, table.selectedRow < suggestions.count else {
             dismiss()
             return
         }
-        let word = suggestions[table.selectedRow]
+        let candidate = suggestions[table.selectedRow]
+        // The popup may be stale (an edit, a caret move or a programmatic
+        // change since it was computed): never write into a moved range.
+        let text = textView.textStorage?.mutableString ?? (textView.string as NSString)
+        let selection = textView.selectedRange()
+        let range = context.replacementRange
+        guard selection == NSRange(location: context.caret, length: 0),
+              analysis.version == shownVersion, editCount == shownEditCount,
+              NSMaxRange(range) <= text.length, text.substring(with: range) == context.identifier else {
+            updatePopup(manual: shownManual)
+            return
+        }
         isApplyingCompletion = true
-        // Route through the standard input path so the replacement joins the
-        // undo stack and fires the usual change notifications.
-        textView?.insertText(word, replacementRange: range)
+        // Its own undo step (not merged with the preceding typing), through
+        // the standard input path so the change notifications fire.
+        textView.breakUndoCoalescing()
+        textView.insertText(candidate.insertText, replacementRange: range)
+        textView.breakUndoCoalescing()
         isApplyingCompletion = false
+        recent.record(candidate.identity)
         dismiss()
     }
 
     // MARK: - Panel construction / placement
 
-    private func showOrUpdatePanel(anchorRange: NSRange) {
+    private func showOrUpdatePanel(anchorRange: NSRange, keeping selected: CandidateIdentity?) {
         let panel = self.panel ?? makePanel()
         self.panel = panel
         tableView?.reloadData()
-        if tableView?.selectedRow ?? -1 < 0 || tableView?.selectedRow ?? 0 >= suggestions.count {
-            tableView?.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        }
+        let row = selected.flatMap { identity in suggestions.firstIndex { $0.identity == identity } } ?? 0
+        tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         positionPanel(panel, anchorRange: anchorRange)
         if !panel.isVisible {
             panel.orderFront(nil)
@@ -494,7 +594,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         self.panel = nil
         tableView = nil
         suggestions = []
-        prefixRange = nil
+        shownContext = nil
+        shownManual = false
     }
 
     @objc private func tableDoubleClicked() { acceptSelection() }
@@ -518,7 +619,7 @@ extension CompletionController: NSTableViewDataSource, NSTableViewDelegate {
             field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
             field.lineBreakMode = .byTruncatingTail
         }
-        field.stringValue = row < suggestions.count ? suggestions[row] : ""
+        field.stringValue = row < suggestions.count ? suggestions[row].name : ""
         return field
     }
 }

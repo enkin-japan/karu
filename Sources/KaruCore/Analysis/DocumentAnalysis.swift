@@ -24,8 +24,15 @@ import AppKit
 ///   request sees the new language; a synchronous request
 ///   (`ensureDeclarations`) finishes the in-flight scanner instead of
 ///   starting over.
+/// - **Published snapshot** (T17.5): the last published snapshot stays
+///   readable through edits together with an `EditJournal` of the edits since
+///   (`publishedDeclarations`), so completion can still query scopes while a
+///   rescan is pending; `declarations` keeps returning only a current one.
 /// - **Checkpoints** are invalidated from the edited line on and cleared on a
-///   language change.
+///   language change. `contextCheckpoints` (T17.5) hold the analysis
+///   scanner's states for completion's caret context, separately from the
+///   highlighter's (Python highlights with `PythonTokenizer` but analyses
+///   with `PythonLanguage.analysisProfile`).
 /// - **Release**: with `highlight`, `completion`, `typeInference` and
 ///   `crossFileIndex` all off, the snapshot and checkpoints are dropped
 ///   (`isRuntimeStateReleased`). Nothing is rebuilt eagerly when one comes back.
@@ -60,8 +67,15 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
     public private(set) var version: UInt64 = 0
     public private(set) var languageIdentifier: String = ""
     public var checkpoints = CheckpointStore()
+    /// Generic-scanner states of the analysis profile at line starts / safe
+    /// points, for completion's caret context (T17.5).
+    public var contextCheckpoints = CheckpointStore()
 
     private var snapshot: DeclarationSnapshot?
+    /// The last published snapshot (possibly older than `version`) and the
+    /// edits applied since it was published.
+    private var published: DeclarationSnapshot?
+    private var publishedJournal = EditJournal()
     private var declarationJobPending = false
     private var consumers: [WeakConsumer] = []
     /// Last observed on/off state of `analysisModules`, to ignore broadcasts
@@ -109,8 +123,43 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         return snapshot
     }
 
+    /// The last published snapshot — current or older — with the edits made
+    /// since it was published (T17.5). Offsets in the snapshot map to the
+    /// live text through the journal; an unmappable journal means only
+    /// offset-free data (names) may be used. Nil when none is held.
+    public var publishedDeclarations: (snapshot: DeclarationSnapshot, journal: EditJournal)? {
+        published.map { ($0, publishedJournal) }
+    }
+
+    /// The published snapshot's offset of live offset `offset` (nil: no
+    /// snapshot, or the journal is unmappable).
+    public func mapToSnapshot(offset: Int) -> Int? {
+        published == nil ? nil : publishedJournal.mapToBase(offset)
+    }
+
+    /// The live offset of the published snapshot's offset `offset`.
+    public func mapFromSnapshot(offset: Int) -> Int? {
+        published == nil ? nil : publishedJournal.mapFromBase(offset)
+    }
+
     /// True when neither a declaration snapshot nor any checkpoint is held.
-    public var isRuntimeStateReleased: Bool { snapshot == nil && checkpoints.entries.isEmpty }
+    public var isRuntimeStateReleased: Bool {
+        snapshot == nil && published == nil && checkpoints.entries.isEmpty && contextCheckpoints.entries.isEmpty
+    }
+
+    /// Makes `fresh` the current and the published snapshot.
+    private func publish(_ fresh: DeclarationSnapshot) {
+        snapshot = fresh
+        published = fresh
+        publishedJournal.reset()
+    }
+
+    /// Drops the current and the published snapshot.
+    private func dropSnapshots() {
+        snapshot = nil
+        published = nil
+        publishedJournal.reset()
+    }
 
     /// Whether a module that consumes declarations is on (highlight or
     /// completion). Read live so it is right regardless of the order in which
@@ -146,9 +195,10 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         version &+= 1
         cancelDeclarationJob()
         checkpoints.removeAll()
-        snapshot = nil
+        contextCheckpoints.removeAll()
+        dropSnapshots()
         if hasDeclarationConsumerModule {
-            snapshot = DeclarationSnapshot(version: version, scan: scanDeclarations())
+            publish(DeclarationSnapshot(version: version, scan: scanDeclarations()))
         }
         notify(.language)
     }
@@ -161,7 +211,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
     public func ensureDeclarations() -> DeclarationSnapshot {
         if let current = declarations { return current }
         let fresh = DeclarationSnapshot(version: version, scan: scanDeclarations())
-        if hasDeclarationConsumerModule { snapshot = fresh }
+        if hasDeclarationConsumerModule { publish(fresh) }
         return fresh
     }
 
@@ -255,7 +305,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
                 // A completed job for a superseded version is discarded.
                 guard self.version == jobVersion else { return }
                 if let result, self.declarations == nil {
-                    self.snapshot = DeclarationSnapshot(version: jobVersion, scan: result)
+                    self.publish(DeclarationSnapshot(version: jobVersion, scan: result))
                 }
                 guard self.declarations != nil else { return }
                 self.notify(.declarations)
@@ -291,6 +341,20 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
             checkpoints.invalidate(editedRange: editedRange, changeInLength: delta,
                                    in: textStorage.mutableString)
         }
+        if !contextCheckpoints.entries.isEmpty {
+            contextCheckpoints.invalidate(editedRange: editedRange, changeInLength: delta,
+                                          in: textStorage.mutableString)
+        }
+        if published != nil {
+            // Only completion reads a superseded snapshot; without it the old
+            // one is released at once, as before T17.5.
+            if moduleSettings.isEnabled(.completion) {
+                publishedJournal.record(editedRange: editedRange, changeInLength: delta)
+            } else {
+                published = nil
+                publishedJournal.reset()
+            }
+        }
         snapshot = nil
         inFlightScanner = nil
         if hasDeclarationConsumerModule { scheduleDeclarationScan() }
@@ -309,25 +373,32 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
 
         if Self.analysisModules.allSatisfy({ !moduleSettings.isEnabled($0) }) {
             cancelDeclarationJob()
-            snapshot = nil
+            dropSnapshots()
             checkpoints.removeAll()
+            contextCheckpoints.removeAll()
             notify(.released)
             return
         }
         if !moduleSettings.isEnabled(.highlight) {
-            // The highlighter is the only checkpoint user so far.
+            // The highlighter is the only user of these checkpoints.
             checkpoints.removeAll()
+        }
+        if !moduleSettings.isEnabled(.completion) {
+            // Completion is the only user of the context checkpoints.
+            contextCheckpoints.removeAll()
         }
         guard hasDeclarationConsumerModule else {
             // Nobody reads declarations: drop them (navigator use stays transient).
             cancelDeclarationJob()
-            snapshot = nil
+            dropSnapshots()
             return
         }
         if let held = snapshot {
             // The text did not change, so the held scan is still exact; carry
             // it to the new version instead of rescanning.
-            snapshot = DeclarationSnapshot(version: version, scan: held.scan)
+            let carried = DeclarationSnapshot(version: version, scan: held.scan)
+            snapshot = carried
+            if published?.version == held.version { published = carried }
         } else if declarationJobPending {
             // The pending job now carries a stale version; replace it.
             scheduleDeclarationScan()

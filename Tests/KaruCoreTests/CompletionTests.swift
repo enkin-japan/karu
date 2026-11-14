@@ -128,11 +128,13 @@ private func isolatedDefaults() -> UserDefaults {
 }
 
 @Test func suggestionsSortDictionaryOrderWithinGroup() {
-    // Mixed-case document words sharing the prefix "ba" come back in
-    // case-insensitive dictionary order (Bard < basic < Batch).
+    // T17.5 (plan §5.3): the exact-case prefix match `basic` ranks first;
+    // the case-insensitive matches follow in case-insensitive dictionary
+    // order (Bard < Batch). Before T17.5 all three were one group.
     let index = WordIndex(text: "Batch basic Bard")
     let hits = index.suggestions(prefix: "ba", language: [], symbols: [])
-    #expect(hits == ["Bard", "basic", "Batch"])
+    #expect(hits == ["basic", "Bard", "Batch"])
+    #expect(index.suggestions(prefix: "Ba", language: [], symbols: []) == ["Bard", "Batch", "basic"])
 }
 
 @Test func suggestionsDeduplicateAcrossGroupsByPriority() {

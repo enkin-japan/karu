@@ -27,6 +27,11 @@ import Foundation
 ///   parameters, `global` / `nonlocal` names (kinds `.global` / `.nonlocal`;
 ///   later assignments to them in that function are not local bindings) and
 ///   `match` / `case` capture names. Class-body assignments are `.property`.
+/// - **Instance attributes** (T17.5): `self.x = …` / `cls.x = …` (also
+///   annotated, chained and tuple targets) directly in a method of a class
+///   declare `x` as a scope-only `.property`. `visibleBindings` never treats
+///   these as bindings of the method; completion reads them as members of the
+///   enclosing class (`self.`).
 /// - **Augmented assignment** (`x += 1`) never creates a binding (Python
 ///   requires an earlier one; for a global it needs `global x`).
 /// - Walrus targets bind by location (inside a comprehension: in the
@@ -182,6 +187,36 @@ struct PythonDeclarationWalker: Sendable {
     }
 
     private var inClass: Bool { blocks.last?.isClass ?? false }
+
+    /// Directly inside a method: the innermost block is a function whose
+    /// enclosing block is a class.
+    private var inMethod: Bool {
+        blocks.count >= 2 && !blocks[blocks.count - 1].isClass && blocks[blocks.count - 2].isClass
+    }
+
+    /// `self . name` / `cls . name` spanning exactly `lo..<hi`: index of `name`.
+    private func instanceAttribute(_ lo: Int, _ hi: Int, _ text: NSString) -> Int? {
+        guard hi - lo == 3, line[lo].kind == .ident, line[lo].keyword == .none,
+              line[lo + 1].kind == .dot, isName(lo + 2) else { return nil }
+        let t = line[lo]
+        guard t.length == 4 || t.length == 3 else { return nil }
+        let receiver = text.substring(with: NSRange(location: t.start, length: t.length))
+        return receiver == "self" || receiver == "cls" ? lo + 2 : nil
+    }
+
+    /// Marks the instance attributes among the targets `lo..<hi` (T17.5).
+    private mutating func markInstanceAttributes(_ lo: Int, _ hi: Int, _ text: NSString, depth: Int = 0) {
+        guard inMethod, depth < 8 else { return }
+        for (a, z) in items(lo, hi) {
+            var s = a
+            while s < z, line[s].kind == .star { s += 1 }
+            if let name = instanceAttribute(s, z, text) {
+                mark(name, .property, listed: false)
+            } else if s < z, line[s].kind == .lparen || line[s].kind == .lbracket, closer(s, z) == z - 1 {
+                markInstanceAttributes(s + 1, z - 1, text, depth: depth + 1)
+            }
+        }
+    }
     private var localKind: DeclarationScan.DeclarationKind { inClass ? .property : .variable }
 
     private mutating func mark(_ i: Int, _ kind: DeclarationScan.DeclarationKind, listed: Bool) {
@@ -449,6 +484,7 @@ struct PythonDeclarationWalker: Sendable {
         if annotation >= 0 {
             // `x: T` / `x: T = value` (an attribute / subscript target binds nothing).
             if annotation - lo == 1, isName(lo) { mark(lo, localKind, listed: false) }
+            if inMethod, let name = instanceAttribute(lo, annotation, text) { mark(name, .property, listed: false) }
             scan(lo, annotation, text, &b)
             if let eq = assigns.first(where: { $0 > annotation }) { scan(eq + 1, hi, text, &b) }
             return
@@ -457,6 +493,7 @@ struct PythonDeclarationWalker: Sendable {
             var segment = lo
             for (n, eq) in assigns.enumerated() {
                 markTargets(segment, eq, localKind, listedIndex: n == 0 && eq - segment == 1 ? segment : -1)
+                markInstanceAttributes(segment, eq, text)
                 segment = eq + 1
             }
         }

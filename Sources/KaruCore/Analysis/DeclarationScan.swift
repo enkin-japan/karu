@@ -137,12 +137,12 @@ public struct DeclarationScan: Sendable, Equatable {
     public let scopeCount: Int
 
     /// Distinct declared names referenced by the streams.
-    private let names: [String]
+    let names: [String]
     /// Declarations in document order: `varint(Δlocation)`,
     /// `varint(nameIndex << 4 | kindCode)`; the range length is the name's.
-    private let encodedLocations: [UInt8]
+    let encodedLocations: [UInt8]
     /// Scope outline (see the type comment).
-    private let outline: [UInt8]
+    let outline: [UInt8]
 
     init(languageIdentifier: String, table: WordIndex.SymbolTable, completionSymbols: Set<String>,
          names: [String], encodedLocations: [UInt8], outline: [UInt8], scopeCount: Int, documentLength: Int) {
@@ -183,13 +183,13 @@ public struct DeclarationScan: Sendable, Equatable {
         return codeTable.firstIndex { $0.0 == kind } ?? 4
     }
 
-    private static func decode(code: Int) -> (DeclarationKind, Bool) {
+    static func decode(code: Int) -> (DeclarationKind, Bool) {
         codeTable[code & 15]
     }
 
     // MARK: - Decoding
 
-    private struct Reader {
+    struct Reader {
         let bytes: [UInt8]
         var index = 0
         init(_ bytes: [UInt8]) { self.bytes = bytes }
@@ -221,7 +221,7 @@ public struct DeclarationScan: Sendable, Equatable {
         }
     }
 
-    private struct ScopeRecord {
+    struct ScopeRecord {
         var index: Int
         var start: Int
         var end: Int
@@ -246,7 +246,7 @@ public struct DeclarationScan: Sendable, Equatable {
         }
     }
 
-    private func contains(_ scope: ScopeRecord, _ offset: Int) -> Bool {
+    func contains(_ scope: ScopeRecord, _ offset: Int) -> Bool {
         scope.start <= offset && (offset < scope.end || scope.end >= documentLength)
     }
 
@@ -312,7 +312,7 @@ public struct DeclarationScan: Sendable, Equatable {
     }
 
     /// The scopes containing `offset`, outermost first (decoded linearly).
-    private func chainRecords(at offset: Int) -> [ScopeRecord] {
+    func chainRecords(at offset: Int) -> [ScopeRecord] {
         var stack: [ScopeRecord] = []
         forEachScope { record in
             guard record.start <= offset else { return false }
@@ -364,10 +364,15 @@ public struct DeclarationScan: Sendable, Equatable {
     ///   in their scope. The brace languages apply the same rule to their
     ///   locals / file-level variables (`.variable`): a local is visible after
     ///   its declaration only. Python names are visible anywhere in their scope.
+    /// - **Instance attributes** (T17.5): a `.property` owned by a function,
+    ///   lambda, comprehension or block scope (Python `self.x = …`, JS
+    ///   `this.x = …` inside a method) is a class member, not a binding.
     /// - Languages without an outline: every declaration, depth 0.
     ///
     /// Offsets refer to this scan's text version; mapping through later
-    /// edits is the caller's job (T17.5).
+    /// edits is the caller's job (T17.5: `DocumentAnalysis.publishedDeclarations`
+    /// and `DeclarationQueryIndex`, which also serves the same result without
+    /// decoding the whole snapshot).
     public func visibleBindings(at offset: Int) -> [ScopedBinding] {
         guard scopeCount > 0 else {
             var seen = Set<Int>()
@@ -379,11 +384,34 @@ public struct DeclarationScan: Sendable, Equatable {
             }
             return out
         }
+        let chain = chainRecords(at: offset)
+        guard !chain.isEmpty else { return [] }
+        return sweepBindings(at: offset, chain: chain, start: SweepStart(), includeModule: true)
+    }
+
+    /// Where a binding sweep starts reading (T17.5): byte offsets and running
+    /// bases of both streams, the scopes already open there, and the
+    /// declaration window `[from, until)`. The default reads everything.
+    struct SweepStart {
+        var declarationByte = 0
+        var declarationBase = 0
+        var outlineByte = 0
+        var outlineBase = 0
+        var outlineIndex = 0
+        var stack: [ScopeRecord] = []
+        var from = 0
+        var until = Int.max
+    }
+
+    /// The `visibleBindings` rules applied to the declarations of
+    /// `start`'s window, for the scope `chain` (outermost first) at
+    /// `offset`. `includeModule: false` drops bindings owned by the module
+    /// scope (served from `DeclarationQueryIndex.moduleBindings`).
+    func sweepBindings(at offset: Int, chain: [ScopeRecord], start: SweepStart,
+                       includeModule: Bool) -> [ScopedBinding] {
         let python = languageIdentifier == "python"
         let brace = BraceLanguage(identifier: languageIdentifier)
         let implicitMembers = brace?.implicitMembers ?? false
-        let chain = chainRecords(at: offset)
-        guard !chain.isEmpty else { return [] }
         // Chain position by scope index → depth (0 = innermost).
         var depthOf: [Int: Int] = [:]
         for (position, record) in chain.enumerated() { depthOf[record.index] = chain.count - 1 - position }
@@ -400,10 +428,11 @@ public struct DeclarationScan: Sendable, Equatable {
         var best: [Int: Best] = [:]
 
         // Merged sweep: declarations and scopes are both in document order.
-        var stack: [ScopeRecord] = []
+        var stack = start.stack
         var reader = Reader(outline)
-        var nextStart = 0
-        var nextIndex = 0
+        reader.index = start.outlineByte
+        var nextStart = start.outlineBase
+        var nextIndex = start.outlineIndex
         var pending: ScopeRecord?
         func readNext() -> ScopeRecord? {
             guard !reader.atEnd else { return nil }
@@ -417,14 +446,23 @@ public struct DeclarationScan: Sendable, Equatable {
         }
         pending = readNext()
 
-        forEachDeclaration { location, nameIndex, kind, _ in
+        var declarations = Reader(encodedLocations)
+        declarations.index = start.declarationByte
+        var location = start.declarationBase
+        while !declarations.atEnd {
+            location += declarations.varint()
+            let nameKind = declarations.varint()
+            if location < start.from { continue }
+            if location >= start.until { break }
+            let nameIndex = nameKind >> 4
+            let (kind, _) = Self.decode(code: nameKind & 15)
             while let record = pending, record.start <= location {
                 while let top = stack.last, record.start >= top.end, top.end < documentLength { stack.removeLast() }
                 stack.append(record)
                 pending = readNext()
             }
             while let top = stack.last, !contains(top, location) { stack.removeLast() }
-            guard !stack.isEmpty else { return }
+            guard !stack.isEmpty else { continue }
             // The scope the binding belongs to.
             var owner = stack.count - 1
             switch kind {
@@ -438,21 +476,30 @@ public struct DeclarationScan: Sendable, Equatable {
                 o -= 1
                 while o > 0, stack[o].kind != .function { o -= 1 }
                 owner = max(0, o)
+            case .property:
+                // An instance attribute assigned inside a method (Python
+                // `self.x = …`, JS `this.x = …`; T17.5) is a member of the
+                // class, never a binding of the method or block.
+                switch stack[owner].kind {
+                case .function, .lambda, .comprehension, .block: continue
+                default: break
+                }
             default:
                 break
             }
-            guard let depth = depthOf[stack[owner].index] else { return }
+            if !includeModule, stack[owner].index == 0 { continue }
+            guard let depth = depthOf[stack[owner].index] else { continue }
             // Class scope seen from inside a function.
             if chain[chain.count - 1 - depth].kind == .class, crossed[depth], !implicitMembers {
-                if python { return }
-                if brace == nil ? kind != .type : kind != .type && kind != .class { return }
+                if python { continue }
+                if brace == nil ? kind != .type : kind != .type && kind != .class { continue }
             }
             // JS temporal dead zone; brace-language locals after their declaration.
             if !python, location >= offset, !crossed[depth],
-               kind == .variable || kind == .class && brace == nil { return }
+               kind == .variable || kind == .class && brace == nil { continue }
             if let current = best[nameIndex] {
-                if current.depth < depth { return }
-                if current.depth == depth, brace == nil || location >= offset { return }
+                if current.depth < depth { continue }
+                if current.depth == depth, brace == nil || location >= offset { continue }
             }
             best[nameIndex] = Best(depth: depth, location: location, kind: kind)
         }

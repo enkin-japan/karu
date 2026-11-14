@@ -1,49 +1,141 @@
 import Foundation
 
-/// Pure, AppKit-independent completion data source.
+/// The document word index (M17 T17.5, plan §5.3; `WordIndex` also hosts
+/// the declaration-pattern helpers below).
 ///
-/// `WordIndex` owns the document's word set and knows how to merge it with a
-/// language's keywords and a lightweight symbol scan into a ranked suggestion
-/// list. It has no notion of a text view, so it is trivially unit-testable and
-/// carries the completion module's only significant heap state (the word set),
-/// which the `CompletionController` drops when the module is switched off.
-public struct WordIndex {
-    /// Every `\w{2,}` token in the document, original case preserved.
-    public private(set) var words: Set<String>
+/// Every identifier-like word of at least two UTF-16 units in the document
+/// (comments and strings included; Unicode letters / digits / `_`, `$` for
+/// JS / TS — `IdentifierText`), case preserved, once per spelling, with a
+/// saturating occurrence count and its first location. Replaces the
+/// pre-T17.5 `Set<String>` that every keystroke filtered with `lowercased()`
+/// (141–300 ms on the 10 MB distinct-name probe):
+/// - words live in one UTF-16 buffer, ordered by case-folded spelling with
+///   an exact-spelling tie-break, so a prefix is a contiguous range found by
+///   binary search (`prefixMatches`) and the range is already in dictionary
+///   order;
+/// - multi-part words are also ordered by their folded initials
+///   (`initialsMatches`: `udn` → `userDisplayName`, `user_display_name`).
+///
+/// Built by `WordIndexBuilder` — in one go (`init(text:)`, small documents,
+/// tests) or in bounded steps from a sliced `AnalysisScheduler` job. A full
+/// rebuild, never an incremental diff: the controller rebuilds after an
+/// edit pause and covers words typed since with its nearby-line scan.
+public struct WordIndex: Sendable {
+    var storage: WordStorage
+    /// Word ids in (folded, exact) order.
+    var sorted: [UInt32]
+    /// Ids of words with two or more parts, in (folded initials, `sorted`
+    /// position) order.
+    var initials: [UInt32]
+    /// Whether `$` counted as a word character.
+    public let allowsDollar: Bool
 
-    /// A single compiled `\w{2,}` matcher, reused across builds. Word tokens of
-    /// length 1 are excluded (they are never worth completing).
-    // swiftlint:disable:next force_try
-    private static let wordRegex = try! NSRegularExpression(pattern: #"\w{2,}"#)
-
-    /// Builds the full word set from `text`.
-    public init(text: String) {
-        words = Self.tokenize(text)
+    /// Builds the index of `text` synchronously.
+    public init(text: String, languageIdentifier: String = "") {
+        var builder = WordIndexBuilder(dollar: IdentifierText.allowsDollar(languageIdentifier))
+        self = builder.finish(text as NSString)
     }
 
-    /// Rebuilds the word set from scratch.
-    ///
-    /// v1 decision: this is a **full** rebuild, not an incremental diff. Keeping
-    /// an incrementally-maintained word set correct across arbitrary edits (a
-    /// removed occurrence must only drop the word when *no* other occurrence
-    /// remains) needs per-word occurrence counts and range bookkeeping whose
-    /// complexity is not justified — a full rebuild of a 1 MB document scans in
-    /// well under 10 ms. The `CompletionController` calls this **debounced**
-    /// (0.15 s), so bursts of keystrokes collapse into one rebuild.
+    init(storage: WordStorage, sorted: [UInt32], initials: [UInt32], allowsDollar: Bool) {
+        self.storage = storage
+        self.sorted = sorted
+        self.initials = initials
+        self.allowsDollar = allowsDollar
+    }
+
+    /// Rebuilds from scratch (see the type comment).
     public mutating func update(text: String) {
-        words = Self.tokenize(text)
+        var builder = WordIndexBuilder(dollar: allowsDollar)
+        self = builder.finish(text as NSString)
     }
 
-    private static func tokenize(_ text: String) -> Set<String> {
-        let ns = text as NSString
-        guard ns.length > 0 else { return [] }
-        var set = Set<String>()
-        wordRegex.enumerateMatches(in: text,
-                                   range: NSRange(location: 0, length: ns.length)) { match, _, _ in
-            guard let range = match?.range else { return }
-            set.insert(ns.substring(with: range))
+    /// Number of distinct words.
+    public var count: Int { sorted.count }
+
+    /// Every word (materialised; tests and diagnostics).
+    public var words: Set<String> { Set((0..<storage.count).map { storage.string(UInt32($0)) }) }
+
+    /// Approximate resident bytes (memory reports).
+    public var residentBytes: Int {
+        storage.units.count * 2 + storage.starts.count * 4 + storage.counts.count
+            + storage.firstLocations.count * 4 + sorted.count * 4 + initials.count * 4
+    }
+
+    // MARK: - Queries
+
+    public func word(_ id: UInt32) -> String { storage.string(id) }
+
+    /// Occurrences counted at build time (saturating at 255) and the first
+    /// location (index-time offsets).
+    public func occurrences(of id: UInt32) -> (count: Int, firstLocation: Int) {
+        (Int(storage.counts[Int(id)]), Int(storage.firstLocations[Int(id)]))
+    }
+
+    /// The id of the word spelled exactly `units`.
+    public func lookup(_ units: [UInt16]) -> UInt32? {
+        var lo = 0
+        var hi = sorted.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if storage.compare(sorted[mid], units) < 0 { lo = mid + 1 } else { hi = mid }
         }
-        return set
+        guard lo < sorted.count, storage.equals(sorted[lo], units) else { return nil }
+        return sorted[lo]
+    }
+
+    /// Words starting with `query` ignoring case, in dictionary order: up to
+    /// `limit` exact-case and `limit` other-case matches among the first
+    /// `scanLimit` of the range. `truncated`: the range held more.
+    public func prefixMatches(_ query: [UInt16], limit: Int, scanLimit: Int = 4096)
+        -> (exact: [UInt32], folded: [UInt32], truncated: Bool) {
+        let folded = query.map(CaseFold.fold)
+        var lo = 0
+        var hi = sorted.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if storage.comparePrefix(sorted[mid], folded) < 0 { lo = mid + 1 } else { hi = mid }
+        }
+        var exact: [UInt32] = []
+        var other: [UInt32] = []
+        var position = lo
+        var scanned = 0
+        while position < sorted.count, storage.comparePrefix(sorted[position], folded) == 0 {
+            if scanned >= scanLimit || (exact.count >= limit && other.count >= limit) {
+                return (exact, other, true)
+            }
+            let id = sorted[position]
+            if storage.hasExactPrefix(id, query) {
+                if exact.count < limit { exact.append(id) }
+            } else if other.count < limit {
+                other.append(id)
+            }
+            position += 1
+            scanned += 1
+        }
+        return (exact, other, false)
+    }
+
+    /// Multi-part words whose folded initials start with `foldedQuery`, in
+    /// dictionary order within equal initials (at most `limit`).
+    public func initialsMatches(_ foldedQuery: [UInt16], limit: Int) -> (ids: [UInt32], truncated: Bool) {
+        guard foldedQuery.count >= 2 else { return ([], false) }
+        var lo = 0
+        var hi = initials.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if WordStorage.comparePrefix(storage.initials(initials[mid]), foldedQuery) < 0 {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        var out: [UInt32] = []
+        while lo < initials.count, WordStorage.comparePrefix(storage.initials(initials[lo]), foldedQuery) == 0 {
+            if out.count >= limit { return (out, true) }
+            out.append(initials[lo])
+            lo += 1
+        }
+        return (out, false)
     }
 
     // MARK: - Lightweight symbol scan
@@ -424,48 +516,488 @@ public struct WordIndex {
         return out
     }
 
-    // MARK: - Suggestions
+    // MARK: - Suggestions (context-free)
 
     /// Maximum number of suggestions returned. A completion popup showing more
     /// than this is noise, and capping bounds the work the UI has to do.
     public static let maxSuggestions = 50
 
-    /// Ranked, prefix-matched suggestions for `prefix`.
-    ///
-    /// Candidates come from three sources — the scanned `symbols`, the language
-    /// `keywords`, and the document word set — matched **case-insensitively** on
-    /// their prefix while the original casing is preserved in the result.
-    /// Ordering is symbols > keywords > document words, each group sorted in
-    /// dictionary (case-insensitive) order, deduplicated case-insensitively
-    /// across groups by the above priority, and truncated to `maxSuggestions`.
+    /// Context-free ranked suggestions for `prefix`: `symbols` as file
+    /// declarations, `keywords` as keywords, this index's words as document
+    /// words, ranked by `CandidateEngine`'s rules without scope or nearby
+    /// information (match tier, then source, then dictionary order).
+    /// Duplicate spellings merge; an empty prefix yields nothing.
     public func suggestions(prefix: String,
                             language keywords: [String],
                             symbols: Set<String>) -> [String] {
-        let lower = prefix.lowercased()
-        guard !lower.isEmpty else { return [] }
+        guard !prefix.isEmpty else { return [] }
+        return CandidateEngine.contextFreeRanking(prefix: prefix, symbols: symbols, keywords: keywords,
+                                                  words: self).map(\.name)
+    }
+}
 
-        func matches(_ word: String) -> Bool { word.lowercased().hasPrefix(lower) }
+// MARK: - Storage and builder
 
-        let symbolHits = dictSorted(symbols.filter(matches))
-        var used = Set(symbolHits.map { $0.lowercased() })
+/// Interned words: one UTF-16 buffer plus per-word bookkeeping.
+struct WordStorage: Sendable {
+    var units: [UInt16] = []
+    /// Word `i` is `units[starts[i] ..< starts[i + 1]]`.
+    var starts: [UInt32] = [0]
+    var counts: [UInt8] = []
+    var firstLocations: [UInt32] = []
 
-        let keywordHits = dictSorted(keywords.filter { matches($0) && !used.contains($0.lowercased()) })
-        used.formUnion(keywordHits.map { $0.lowercased() })
+    var count: Int { counts.count }
 
-        let wordHits = dictSorted(words.filter { matches($0) && !used.contains($0.lowercased()) })
-
-        return Array((symbolHits + keywordHits + wordHits).prefix(Self.maxSuggestions))
+    @inline(__always) func range(_ id: UInt32) -> Range<Int> {
+        Int(starts[Int(id)])..<Int(starts[Int(id) + 1])
     }
 
-    /// Case-insensitive dictionary sort, with exact-string tie-break so the
-    /// order is deterministic when two entries differ only in case.
-    private func dictSorted(_ array: [String]) -> [String] {
-        array.sorted { lhs, rhs in
-            switch lhs.lowercased().compare(rhs.lowercased()) {
-            case .orderedSame:       return lhs < rhs
-            case .orderedAscending:  return true
-            case .orderedDescending: return false
+    func string(_ id: UInt32) -> String {
+        String(utf16CodeUnits: Array(units[range(id)]), count: range(id).count)
+    }
+
+    /// Folded order, exact tie-break: −1, 0, 1.
+    func compare(_ a: UInt32, _ b: UInt32) -> Int {
+        let ra = range(a)
+        let rb = range(b)
+        let n = min(ra.count, rb.count)
+        var exact = 0
+        var i = 0
+        while i < n {
+            let ua = units[ra.lowerBound + i]
+            let ub = units[rb.lowerBound + i]
+            if ua != ub {
+                let fa = CaseFold.fold(ua)
+                let fb = CaseFold.fold(ub)
+                if fa != fb { return fa < fb ? -1 : 1 }
+                if exact == 0 { exact = ua < ub ? -1 : 1 }
             }
+            i += 1
+        }
+        if ra.count != rb.count { return ra.count < rb.count ? -1 : 1 }
+        return exact
+    }
+
+    /// Word `a` against exact `units`, in the same order as `compare`.
+    func compare(_ a: UInt32, _ other: [UInt16]) -> Int {
+        let ra = range(a)
+        let n = min(ra.count, other.count)
+        var exact = 0
+        var i = 0
+        while i < n {
+            let ua = units[ra.lowerBound + i]
+            let ub = other[i]
+            if ua != ub {
+                let fa = CaseFold.fold(ua)
+                let fb = CaseFold.fold(ub)
+                if fa != fb { return fa < fb ? -1 : 1 }
+                if exact == 0 { exact = ua < ub ? -1 : 1 }
+            }
+            i += 1
+        }
+        if ra.count != other.count { return ra.count < other.count ? -1 : 1 }
+        return exact
+    }
+
+    func equals(_ a: UInt32, _ other: [UInt16]) -> Bool {
+        let ra = range(a)
+        guard ra.count == other.count else { return false }
+        var i = 0
+        while i < other.count {
+            if units[ra.lowerBound + i] != other[i] { return false }
+            i += 1
+        }
+        return true
+    }
+
+    /// −1: the folded word sorts before every word with prefix `folded`;
+    /// 0: it starts with it; 1: after.
+    func comparePrefix(_ a: UInt32, _ folded: [UInt16]) -> Int {
+        let ra = range(a)
+        var i = 0
+        while i < folded.count {
+            guard i < ra.count else { return -1 }
+            let f = CaseFold.fold(units[ra.lowerBound + i])
+            if f != folded[i] { return f < folded[i] ? -1 : 1 }
+            i += 1
+        }
+        return 0
+    }
+
+    static func comparePrefix(_ key: [UInt16], _ folded: [UInt16]) -> Int {
+        var i = 0
+        while i < folded.count {
+            guard i < key.count else { return -1 }
+            if key[i] != folded[i] { return key[i] < folded[i] ? -1 : 1 }
+            i += 1
+        }
+        return 0
+    }
+
+    func hasExactPrefix(_ a: UInt32, _ query: [UInt16]) -> Bool {
+        let ra = range(a)
+        guard ra.count >= query.count else { return false }
+        var i = 0
+        while i < query.count {
+            if units[ra.lowerBound + i] != query[i] { return false }
+            i += 1
+        }
+        return true
+    }
+
+    /// Folded first units of the word's parts (`CandidateMatcher.partStarts`).
+    func initials(_ a: UInt32) -> [UInt16] {
+        let word = Array(units[range(a)])
+        return CandidateMatcher.partStarts(word).map { CaseFold.fold(word[$0]) }
+    }
+}
+
+/// Bottom-up merge sort of ids that can stop after any number of element
+/// moves and resume (sliced index builds).
+struct ResumableSort: Sendable {
+    private(set) var items: [UInt32]
+    private var scratch: [UInt32]
+    private var width = 0
+    private var cursor = 0
+    private var left = 0, leftEnd = 0, right = 0, rightEnd = 0, out = 0
+    private var merging = false
+    static let run = 16
+
+    init(_ items: [UInt32]) {
+        self.items = items
+        scratch = []
+    }
+
+    var isDone: Bool { width > 0 && width >= items.count && !merging }
+
+    /// Sorts by `less` for about `budget` element moves; true when sorted.
+    mutating func step(budget: Int, less: (UInt32, UInt32) -> Bool) -> Bool {
+        let n = items.count
+        var budget = budget
+        if width == 0 {
+            // Insertion-sorted runs.
+            while cursor < n, budget > 0 {
+                let end = min(n, cursor + Self.run)
+                var i = cursor + 1
+                while i < end {
+                    let value = items[i]
+                    var j = i - 1
+                    while j >= cursor, less(value, items[j]) {
+                        items[j + 1] = items[j]
+                        j -= 1
+                    }
+                    items[j + 1] = value
+                    i += 1
+                }
+                budget -= Self.run * 2
+                cursor = end
+            }
+            guard cursor >= n else { return false }
+            width = Self.run
+            cursor = 0
+            if scratch.count != n { scratch = [UInt32](repeating: 0, count: n) }
+        }
+        while width < n {
+            if !merging {
+                if cursor >= n {
+                    swap(&items, &scratch)
+                    width *= 2
+                    cursor = 0
+                    continue
+                }
+                left = cursor
+                leftEnd = min(n, cursor + width)
+                right = leftEnd
+                rightEnd = min(n, cursor + 2 * width)
+                out = cursor
+                merging = true
+            }
+            while out < rightEnd {
+                guard budget > 0 else { return false }
+                budget -= 1
+                if left < leftEnd, right >= rightEnd || !less(items[right], items[left]) {
+                    scratch[out] = items[left]
+                    left += 1
+                } else {
+                    scratch[out] = items[right]
+                    right += 1
+                }
+                out += 1
+            }
+            merging = false
+            cursor = rightEnd
+        }
+        scratch = []
+        return true
+    }
+}
+
+/// Builds a `WordIndex` in bounded steps over an `NSString` that must not
+/// change between steps (the controller's job checks the document version
+/// before each slice and drops the builder on any edit).
+public struct WordIndexBuilder: Sendable {
+    let dollar: Bool
+    private var storage = WordStorage()
+    private var slots: [Int32] = []
+    private var mask = 0
+    /// The previous table while `grow` moves it into `slots`.
+    private var draining: [Int32] = []
+    private var drainMask = 0
+    private var drainCursor = 0
+    private var position = 0
+    private var length = -1
+    /// 0 tokenize, 1 sort, 2 initials keys, 3 sort initials, 4 done (diagnostics).
+    private(set) var phase = 0
+    private var sorter = ResumableSort([])
+    private var rank: [UInt32] = []
+    private var multiPart: [UInt32] = []
+    private var initialSorter = ResumableSort([])
+    private var initialKeys: [[UInt16]] = []
+    private var result: WordIndex?
+
+    /// Longest run indexed as a word.
+    static let maximumWordLength = 128
+    /// Units tokenized per step; other phases scale their work from it.
+    static let stepUnits = 16_384
+
+    public init(dollar: Bool) {
+        self.dollar = dollar
+    }
+
+    public var isFinished: Bool { result != nil }
+    public var index: WordIndex? { result }
+
+    public mutating func finish(_ text: NSString) -> WordIndex {
+        while !step(text, budgetUnits: Self.stepUnits) {}
+        return result!
+    }
+
+    /// Advances about `budgetUnits` units of work; true when finished.
+    @discardableResult
+    public mutating func step(_ text: NSString, budgetUnits: Int) -> Bool {
+        if result != nil { return true }
+        if length < 0 {
+            length = text.length
+            // Small to start and doubled as words arrive: a large document
+            // with few distinct words (generated / repetitive text) must not
+            // pay for a table sized by its length.
+            let capacity = 4096
+            slots = [Int32](repeating: -1, count: capacity)
+            mask = capacity - 1
+        }
+        switch phase {
+        case 0:
+            if text.length != length {
+                // The text changed under the builder: finish with what was read.
+                position = length
+            }
+            if position < length {
+                if !draining.isEmpty { drain(budget: max(256, budgetUnits)) }
+                tokenize(text, budget: max(1, budgetUnits))
+            }
+            if position >= length {
+                slots = []
+                draining = []
+                sorter = ResumableSort((0..<UInt32(storage.count)).map { $0 })
+                phase = 1
+            }
+            return false
+        case 1:
+            let storage = self.storage
+            if sorter.step(budget: max(64, budgetUnits / 16), less: { storage.compare($0, $1) < 0 }) {
+                rank = [UInt32](repeating: 0, count: storage.count)
+                phase = 2
+                position = 0
+            }
+            return false
+        case 2:
+            // Sorted ranks and the initials of multi-part words.
+            var budget = max(32, budgetUnits / 128)
+            while position < storage.count, budget > 0 {
+                rank[Int(sorter.items[position])] = UInt32(position)
+                let key = storage.initials(UInt32(position))
+                initialKeys.append(key.count >= 2 ? key : [])
+                if key.count >= 2 { multiPart.append(UInt32(position)) }
+                position += 1
+                budget -= 1
+            }
+            if position >= storage.count {
+                initialSorter = ResumableSort(multiPart)
+                multiPart = []
+                phase = 3
+            }
+            return false
+        case 3:
+            let keys = initialKeys
+            let rank = self.rank
+            if initialSorter.step(budget: max(64, budgetUnits / 16), less: {
+                let order = DeclarationQueryIndex.compare(keys[Int($0)], keys[Int($1)])
+                return order != 0 ? order < 0 : rank[Int($0)] < rank[Int($1)]
+            }) {
+                phase = 4
+            }
+            return false
+        default:
+            // Exact-size copies: the buffers grew by doubling.
+            storage.units = storage.units.withUnsafeBufferPointer { Array($0) }
+            storage.starts = storage.starts.withUnsafeBufferPointer { Array($0) }
+            storage.counts = storage.counts.withUnsafeBufferPointer { Array($0) }
+            storage.firstLocations = storage.firstLocations.withUnsafeBufferPointer { Array($0) }
+            result = WordIndex(storage: storage, sorted: sorter.items, initials: initialSorter.items,
+                               allowsDollar: dollar)
+            sorter = ResumableSort([])
+            initialSorter = ResumableSort([])
+            rank = []
+            initialKeys = []
+            return true
+        }
+    }
+
+    private mutating func tokenize(_ text: NSString, budget: Int) {
+        var end = min(length, position + budget)
+        // Never split a word: extend through the run in progress.
+        var extended = 0
+        while end < length, extended < Self.maximumWordLength * 2 {
+            let u = text.character(at: end)
+            guard u >= 128 || IdentifierText.isASCIIPart(u, dollar: dollar) else { break }
+            end += 1
+            extended += 1
+        }
+        let count = end - position
+        guard count > 0 else { return }
+        var buffer = [UInt16](repeating: 0, count: count)
+        buffer.withUnsafeMutableBufferPointer { pointer in
+            text.getCharacters(pointer.baseAddress!, range: NSRange(location: position, length: count))
+        }
+        let base = position
+        var i = 0
+        while i < count {
+            let u = buffer[i]
+            var isStart = false
+            var isPart = false
+            var width = 1
+            if u < 128 {
+                isStart = IdentifierText.isASCIIStart(u, dollar: dollar)
+                isPart = isStart || (u >= 48 && u <= 57)
+            } else {
+                let (scalar, w) = Self.scalar(buffer, i)
+                width = w
+                isPart = IdentifierText.isPart(scalar, dollar: dollar)
+                isStart = isPart && IdentifierText.isStart(scalar, dollar: dollar)
+            }
+            guard isPart else {
+                i += width
+                continue
+            }
+            let start = i
+            i += width
+            while i < count {
+                let v = buffer[i]
+                if v < 128 {
+                    guard IdentifierText.isASCIIPart(v, dollar: dollar) else { break }
+                    i += 1
+                } else {
+                    let (scalar, w) = Self.scalar(buffer, i)
+                    guard IdentifierText.isPart(scalar, dollar: dollar) else { break }
+                    i += w
+                }
+            }
+            let runLength = i - start
+            if isStart, runLength >= 2, runLength <= Self.maximumWordLength {
+                intern(buffer, start, i, location: base + start)
+            }
+        }
+        position = end
+    }
+
+    private static func scalar(_ buffer: [UInt16], _ i: Int) -> (Unicode.Scalar, Int) {
+        let u = buffer[i]
+        if IdentifierText.isHighSurrogate(u), i + 1 < buffer.count, IdentifierText.isLowSurrogate(buffer[i + 1]) {
+            let value = 0x10000 + ((UInt32(u) - 0xD800) << 10) + (UInt32(buffer[i + 1]) - 0xDC00)
+            return (Unicode.Scalar(value) ?? "\u{FFFD}", 2)
+        }
+        return (Unicode.Scalar(u) ?? "\u{FFFD}", 1)
+    }
+
+    private static func hash(_ units: ArraySlice<UInt16>) -> UInt32 {
+        var hash: UInt32 = 2_166_136_261
+        for u in units { hash = (hash ^ UInt32(u)) &* 16_777_619 }
+        return hash
+    }
+
+    /// The id of the word `buffer[start..<end]` in `table`, or the free slot
+    /// where its probe ended.
+    private func probe(_ table: [Int32], _ tableMask: Int, _ hash: UInt32, _ buffer: [UInt16],
+                       _ start: Int, _ end: Int) -> (id: Int32?, slot: Int) {
+        var slot = Int(hash) & tableMask
+        while true {
+            let id = table[slot]
+            if id < 0 { return (nil, slot) }
+            let range = storage.range(UInt32(id))
+            if range.count == end - start {
+                var same = true
+                var k = 0
+                while k < range.count {
+                    if storage.units[range.lowerBound + k] != buffer[start + k] {
+                        same = false
+                        break
+                    }
+                    k += 1
+                }
+                if same { return (id, slot) }
+            }
+            slot = (slot + 1) & tableMask
+        }
+    }
+
+    private mutating func intern(_ buffer: [UInt16], _ start: Int, _ end: Int, location: Int) {
+        let hash = Self.hash(buffer[start..<end])
+        var found = probe(slots, mask, hash, buffer, start, end)
+        if found.id == nil, !draining.isEmpty {
+            let old = probe(draining, drainMask, hash, buffer, start, end)
+            if old.id != nil { found = (old.id, found.slot) }
+        }
+        if let id = found.id {
+            if storage.counts[Int(id)] < 255 { storage.counts[Int(id)] += 1 }
+            return
+        }
+        let id = Int32(storage.count)
+        storage.units.append(contentsOf: buffer[start..<end])
+        storage.starts.append(UInt32(storage.units.count))
+        storage.counts.append(1)
+        storage.firstLocations.append(UInt32(clamping: location))
+        slots[found.slot] = id
+        if storage.count * 5 > slots.count * 3 { grow() }
+    }
+
+    /// Doubles the table. The old one is moved over incrementally
+    /// (`drain`, a bounded amount per step), so no single step rehashes
+    /// every word; until then lookups probe both tables.
+    private mutating func grow() {
+        if !draining.isEmpty { drain(budget: Int.max) }
+        draining = slots
+        drainMask = mask
+        drainCursor = 0
+        let capacity = slots.count * 2
+        slots = [Int32](repeating: -1, count: capacity)
+        mask = capacity - 1
+    }
+
+    private mutating func drain(budget: Int) {
+        var budget = budget
+        while drainCursor < draining.count, budget > 0 {
+            let id = draining[drainCursor]
+            drainCursor += 1
+            budget -= 1
+            guard id >= 0 else { continue }
+            let range = storage.range(UInt32(id))
+            var slot = Int(Self.hash(storage.units[range])) & mask
+            while slots[slot] >= 0 { slot = (slot + 1) & mask }
+            slots[slot] = id
+        }
+        if drainCursor >= draining.count {
+            draining = []
+            drainCursor = 0
         }
     }
 }

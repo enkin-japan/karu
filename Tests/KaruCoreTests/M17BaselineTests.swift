@@ -242,7 +242,8 @@ private struct CaseResult {
     var missingFromTop50: [String] { c.expectedNames.filter { !list.prefix(50).contains($0) } }
 }
 
-/// Drives one case through a real `CompletionController`, the way the editor does.
+/// Drives one case through a real `CompletionController`, the way the editor does
+/// (edits are delivered through a `TextStorageObserverHub`, as in the window).
 @MainActor
 private func runCompletionCase(_ c: CompletionCase) throws -> [String] {
     let source = MarkedSource(raw: try readText(M17Paths.fixtures.appendingPathComponent(c.file)))
@@ -259,6 +260,15 @@ private func runCompletionCase(_ c: CompletionCase) throws -> [String] {
     let settings = ModuleSettings(defaults: m17Defaults(), center: center)
     let controller = CompletionController(textView: textView, moduleSettings: settings, moduleCenter: center)
     textView.completionKeyHandler = controller
+    // Edits reach the controller (and its analysis) as in the editor window
+    // (T17.5: the analysis journals them to map snapshot offsets).
+    let hub = TextStorageObserverHub()
+    hub.add(controller)
+    textView.textStorage?.delegate = hub
+    defer {
+        textView.textStorage?.delegate = nil
+        withExtendedLifetime(hub) {}
+    }
     // Same wiring as EditorWindowController.load: language, then a full index.
     controller.setLanguage(identifier: c.language == "plaintext" ? nil : c.language)
     controller.indexDocument()
@@ -494,7 +504,8 @@ struct M17BaselineTests {
         md += "`Tests/Fixtures/M17/completion/cases.json` (\(results.count) cases). "
         md += "Each case types `typed` keystroke by keystroke through `insertText` + "
         md += "`CompletionController.textViewDidInsertKey`, after a full `indexDocument()` at load "
-        md += "(no debounce rebuild in between, i.e. fast typing); the list is the popup content after "
+        md += "(no debounce rebuild in between, i.e. fast typing; since T17.5 the edits reach the controller "
+        md += "through a `TextStorageObserverHub` as in the editor window); the list is the popup content after "
         md += "the last keystroke (empty = no popup).\n\n"
         md += "Columns: top1 hits = cases whose `expectTop1` ranks first / cases with `expectTop1`; "
         md += "top3 hits = cases with every `expectTop3` name in the first three / cases with `expectTop3`; "
