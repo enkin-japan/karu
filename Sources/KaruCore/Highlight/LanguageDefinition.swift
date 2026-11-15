@@ -20,7 +20,18 @@ public enum TokenKind: Hashable, Sendable, CaseIterable {
     case number
     case comment
     case type
+    /// A key / member-style name in the variable colour: Markdown list
+    /// markers, TOML keys, YAML quoted keys (strings followed by the key
+    /// separator).
     case property
+    /// A JSON / JSON Lines object key (`support.type.property-name.json`):
+    /// the variable blue in Dark Modern, `#0451A5` in Light Modern
+    /// (T17.15d; `.property` before).
+    case jsonKey
+    /// A CSS property name (`support.type.property-name.css`): the variable
+    /// blue in Dark Modern, `#E50000` in Light Modern (T17.15d; `.property`
+    /// before).
+    case cssProperty
     case punctuation
     /// An in-document function/method name (declared with `def`, `function`,
     /// an arrow binding, or matching the brace-language call heuristic).
@@ -256,8 +267,12 @@ public struct LanguageDefinition {
 
     /// Profiled languages only: a `.string` segment that ends before its line
     /// end and is followed on the same line by an anchored match of this
-    /// regex is reported as `.property` (JSON object keys: `\s*:`).
+    /// regex is reported as `propertyKind` (JSON object keys: `\s*:`).
     private let propertyFollower: NSRegularExpression?
+
+    /// The kind of a key string (`propertyFollower`): `.property` unless the
+    /// language names its own (JSON keys are `.jsonKey`, T17.15d).
+    private let propertyKind: TokenKind
 
     /// `rules` compiled (`RuleSet`): all of them (line-based languages, the
     /// stateless long-line fallback), and those that run in code segments —
@@ -301,6 +316,7 @@ public struct LanguageDefinition {
                 builtins: [String] = [],
                 lexicalProfile: LexicalProfile? = nil,
                 propertyStringFollower: String? = nil,
+                propertyStringKind: TokenKind = .property,
                 stringRules: [LanguageRule] = [],
                 identifierPolicy: IdentifierPolicy = .tableOnly) {
         self.identifier = identifier
@@ -312,6 +328,7 @@ public struct LanguageDefinition {
         self.lexicalScanner = lexicalProfile.map(LexicalScanner.init(profile:))
         // swiftlint:disable:next force_try
         self.propertyFollower = propertyStringFollower.map { try! NSRegularExpression(pattern: $0) }
+        self.propertyKind = propertyStringKind
         self.stringRules = stringRules
         self.identifierPolicy = identifierPolicy
         let keepsStrings = lexicalProfile?.keepsStringRules ?? false
@@ -342,6 +359,7 @@ public struct LanguageDefinition {
         let codeRules: RuleSet
         let stringRules: RuleSet
         let follower: NSRegularExpression?
+        let propertyKind: TokenKind
         let stringKind: TokenKind
         let interpolationKind: TokenKind
     }
@@ -353,11 +371,13 @@ public struct LanguageDefinition {
             return SegmentRules(codeRules: child?.codeRuleSet ?? RuleSet([]),
                                 stringRules: child?.stringRuleSet ?? RuleSet([]),
                                 follower: child?.propertyFollower,
+                                propertyKind: child?.propertyKind ?? .property,
                                 stringKind: childProfile.stringKind,
                                 interpolationKind: childProfile.interpolationDelimiterKind)
         }
         return SegmentRules(codeRules: lexicalScanner != nil ? codeRuleSet : allRuleSet, stringRules: stringRuleSet,
                             follower: propertyFollower,
+                            propertyKind: propertyKind,
                             stringKind: lexicalProfile?.stringKind ?? .string,
                             interpolationKind: lexicalProfile?.interpolationDelimiterKind ?? .interpolationDelimiter)
     }
@@ -394,7 +414,7 @@ public struct LanguageDefinition {
     /// Ranges are absolute, ascending and non-overlapping. String and comment
     /// segments become one `.string` / `.comment` token each (a multi-line
     /// string is one token; with `propertyStringFollower`, a key string is
-    /// `.property`; `stringRules` matches split a string), escapes `.escape`,
+    /// `propertyStringKind`; `stringRules` matches split a string), escapes `.escape`,
     /// interpolation delimiters the profile's `interpolationDelimiterKind`,
     /// atoms their form's kind (a `.regex` atom split into regex body,
     /// escapes and flags, `regexTokens`), line-block segments one token of
@@ -608,7 +628,7 @@ public struct LanguageDefinition {
                     }
                 }
                 if key {
-                    out.append((segment, .property))
+                    out.append((segment, segmentRules.propertyKind))
                 } else if segmentRules.stringRules.isEmpty {
                     out.append((segment, segmentRules.stringKind))
                 } else {

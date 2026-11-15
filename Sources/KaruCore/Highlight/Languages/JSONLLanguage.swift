@@ -18,7 +18,8 @@ public enum JSONLLanguage {
             rules: JSONLanguage.rules(),
             keywords: ["true", "false", "null"],
             lexicalProfile: JSONLanguage.lexicalProfile,
-            propertyStringFollower: JSONLanguage.keyFollower
+            propertyStringFollower: JSONLanguage.keyFollower,
+            propertyStringKind: .jsonKey
         )
     }
 }

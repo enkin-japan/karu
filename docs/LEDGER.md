@@ -54,10 +54,10 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ✅ 选手写解析器（内存约 1/10、时延约 1/5，容错 58/58 对 57/58） |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ✅ 11a 解析器、11b Python、11c JS/TS、11d 静态语言；50 条成员门槛：禁用 0、前十召回 100% |
-| T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 +5–6 MB 超 5 MB 目标（分配器保留页，T17.15 处理）；TCC 与三语布局待真机 |
+| T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 T17.15d-B 后达标（typeshed 5,451 文件 +4.0–4.5 MB，>64 KB 的文件不做签名摘要）；TCC 与三语布局待真机 |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ✅ 夹具 33/33；无外部进程；保存后 ≤1 s；真实 venv/node_modules 与 TCC 待真机 |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ✅ 自动化通过；夹具 36/36；⌘T 面板与刷新观感待真机 |
-| T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | 🔶 15a 超标项已修（查询索引、索引内存、弹窗对齐、偶发测试）；15b 读数完成（[质量报告](M17-QUALITY-REPORT.md)；超目标：真实 5k 仓库索引 +7 MB、10 MB 多样名字与双窗口 >99 MB、键入时 80–94 ms 停顿）；15c 真机与 VS Code 卸载待做 |
+| T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | 🔶 15a 超标项已修（查询索引、索引内存、弹窗对齐、偶发测试）；15b 读数完成（[质量报告](M17-QUALITY-REPORT.md)）；15d-A 主线程长段已切片（重扫、打开时扫描、检查点推进）；15d-B 索引常驻达标、浅色 JSON 键 / CSS 属性名配色（浅色一致率 95.4%）、mem-benchmark 最短观察时间；压力项超 99 MB 经用户判定通过；15c 真机与 VS Code 卸载待做 |
 
 - T17.0 进展（main，2026-11-13）：
   - **VS Code 对照环境**：官方更新服务器 darwin-arm64 包，1.146.0（commit `69047191`，2026-11-10），Microsoft Developer ID 签名、
@@ -1123,6 +1123,142 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **事故**：测量开始时误执行了一次 `/Applications/Karu.app/Contents/MacOS/Karu --version`（不带诊断目录，PID 15055，16:04:53 启动），
     它作为第二个实例用用户的偏好域启动并一直空闲；子代理无权结束它，交由 main / 用户退出。用户自己的 Karu（PID 71072）未触碰。
   - **待 T17.15c**：输入法与交互清单、真实 App 内键入 / 滚动内存、建索引期间的输入时延、真实项目的导入解析、TCC 与 ⌘T 面板、打包体积、卸载 VS Code。
+
+- T17.15d-A 主线程长段切片（main 列出项目，implementer 实现，main 审查，2026-11-15）：
+  - **范围**：质量报告第 8 节第 3、4、6 条。改动在 `Analysis/`（`DeclarationScanner`、`DocumentAnalysis`、`CheckpointStore`）、
+    `HighlightEngine` 的检查点续扫与语言接入、`CompletionController` 的两处接入、`TextStorageObserverHub`（新增 `willProcessEditing` 转发）。
+    色板、`TokenKind`、语言定义与 `Workspace/` 未动（另一位 implementer 同时在改）。
+  - **1. 键入时声明重扫单片 81–94 ms**：
+    - 定位（release，逐步计时）：同前缀 1.1 MB 的最后一步 102 ms，10 MB 多样名字的最后一步 67 ms，中途另有 39 / 20 / 10 ms 的翻倍尖峰。
+      最后一步是 `makeScan`：同前缀建变量集合 90 ms（18,002 个）、并集 32 ms。根因不是数量，而是名字取自 `substring(with:)`，是桥接的 NSString，
+      每次哈希、比较都走 Foundation，长于 15 字节的名字每次插入约 5 µs。尖峰是名字表扩容时整体重哈希。同一原因让同前缀整份扫描要 200 ms。
+    - 做法：
+      - 名字改为原生 Swift 字符串（`DeclarationBuilder.nativeName`：直接解码 UTF-16；含代理单元的名字保持桥接形式，孤立代理不会被替换）。
+        ≤15 字节的名字内联存放，不再每个名字一个堆对象。
+      - 名字表按 UTF-8 长度与末两字节分成 16 个字典，扩容只重哈希其中一个。
+      - 收尾全部进 `finishStep`：大纲 → 函数 / 类型 → 变量过滤 → 补全符号并集，每步至多 `budget / 16` 项；每个集合在开始填之前按确切大小预留，
+        不会在某一步里扩容重哈希。`makeScan` 只做组装。
+    - 效果（release，逐步计时）：最长一步 102 / 67 ms → **0.57 ms**；整份扫描同前缀 203 → 17 ms、多样名字 470 → 153 ms；large.py 只有 6 个名字，不变（163 ms）。
+  - **2. 打开时整份声明扫描**：
+    - `setLanguage` 遇到长于 `synchronousScanLimit`（262,144 单元，release 约 5 ms）的文档时不再同步扫描，改走编辑时的分片任务（不去抖）；
+      更短的文档照旧同步，首帧就有名字着色。
+    - 大文件首帧不带名字着色。快照落地时高亮器收到 `.declarations`；因为是第一次拿到符号表，先比较「有声明」与「无声明」两种算法给这条色带的颜色，
+      不同才清掉已画色带的记录并重画可视区（原来色带覆盖视口时直接跳过，名字会一直不着色），相同（JSON 等没有声明的数据文件）就不重画。
+      原因见下面「内存」：首次显示之后的任何重画都让窗口多一块后备表面。
+    - 高亮器的 `rebuildLanguage` 与补全的 `indexDocument` 改用 `declarationsUnlessPending()`：有分片任务时不在主线程补完。
+      导航、推断等显式请求仍用 `ensureDeclarations()` 当场补完正在跑的扫描器。
+  - **3. 编辑后第一键的检查点推进**：
+    - 定位：真实窗口里的 45–57 ms 不是上游编辑造成的。补全的上下文检查点只在请求时建立，跳到末尾后第一次请求要从 0 扫到光标。
+      单行 JSON 则是每次在行尾键入都整行失效：`didProcessEditing` 报的是整段，在 5 MB 段落里插 1 个单元也报成整段（`willProcessEditing` 才是精确范围）。
+    - 做法：
+      - **精确范围**：`TextStorageObserving` 增加可选的 `textStorageWillProcessEditing`，由 hub 转发。`DocumentAnalysis` 记下精确编辑范围，只用于检查点失效
+        （与 did 的变化量一致且落在 did 范围内时才用）。
+      - **长行**：编辑行长于 2 × `CheckpointStore.editMargin`（32 K）时，编辑点前 32 K 以外的行内检查点保留。扫描器在停点之后最多看 `embedWindow`（16 K），
+        原子最长 512，回看最多 4 K。
+      - **待确认检查点**：编辑点之后、距编辑 32 K 以外的检查点不再丢弃，平移后放进 `pending`。`CheckpointStore.walk` 推进到其中一个时，状态相同就把它和
+        下一个未解决编辑之前的待确认点一起恢复（从那里起文字和回看范围都没变）；状态不同就照常往下扫。只改动一处的编辑因此只重扫一块。
+        只从已确认的检查点续扫；不变式：已确认点都在第一个未解决编辑之前，待确认点都在它之后。
+      - **分片补齐**：高亮器和补全各自登记推进方式（`highlightCheckpointAdvancer`：通用扫描器或 Python 分词器；`contextCheckpointAdvancer`：分析扫描器）。
+        语言切换、编辑停顿（与重扫同样 70 ms 去抖）、模块开关之后，一个单独的任务按约 4 ms 一片把两套检查点推进到文末。
+        预估下一块会越过截止时间就停；有截止时间时，长行里一块是半个间距。
+      - `HighlightEngine.resumeLexicalState` 改为调用 `walk`，行为只多了「遇到待确认点先比较」。
+    - 效果：跳到末尾、在远处第一次请求时，最近的检查点就在附近；在上游编辑后，大多只重扫一块（64 K）。
+  - **读数**（真实窗口验收套件 `M17AcceptanceBenchmark`，release，HEAD `27ffa71` 与本次交替：H1 N1 H2 N2（18:00–18:16，负载 2.1–7.8）、
+    H3 N4（18:31–18:39，负载 2.8–5.3；N4 是最终代码）；表中「前 → 后」各为三轮的范围；PerfLog 按阶段切片）：
+
+    | 夹具 | 键入：重扫最长一片 | 打开：声明扫描 | 打开：同步耗时 | 键入：词法推进最长一次 | 跳到末尾：词法推进 | 键入：主线程最长停顿 |
+    |---|---|---|---|---|---|---|
+    | 10 MB large.py | 4.2–4.3 → 4.1–4.2 ms | 296–324 ms 一次 → 分片，最长 4.1–4.2 ms | 494–513 → 179–206 ms | 47.5–64.1 → 0.0–0.1 ms | 54–58 → 0.0 ms | 52.5–70.5 → 20.9–43.5 ms |
+    | 10 MB 多样名字 | **78.5–83.7 → 4.3–6.3 ms** | 517–640 ms 一次 → 分片，最长 4.2 ms | 741–883 → 201–251 ms | 50.5–104.4 → 0.1–0.2 ms | 58–67 → 0.1–0.2 ms | 90–115 → 20–42 ms |
+    | 1.1 MB 同前缀 | **93.8–100.6 → 4.1 ms** | 187–197 ms 一次 → 分片，最长 4.1–4.2 ms（总 19–22 ms） | 278–319 → 87–104 ms | 2.5–5.0 → 0.2–0.8 ms | 2.1–5.0 → 0.1–0.2 ms | 96–102 → 19–30 ms（N4 77 ms，见下） |
+    | 3 MB 混合 Markdown | 4.1–4.2 → 4.1 ms | 60–63 ms 一次 → 分片，最长 4.1 ms | 153–167 → 96–123 ms | 34.7–35.5 → 0.6–0.9 ms | 36 → 0.4–0.6 ms | 39–40 → 17–29 ms |
+    | 5 MB 单行 JSON | –（无声明） | – | 766–771 → 765–813 ms（TextKit 排版） | **200–205 → 2.4–3.9 ms** | 180–193 → 2.2–3.4 ms | 689–747 → 130–196 ms |
+
+    检查点补齐（打开后一次，最长一片）：N1/N2 为 4.3–4.4 ms（Python）、4.8–5.6 ms（Markdown）、6.8–7.6 ms（单行 JSON，一块 64 K 的 JSON 就超过 4 ms）；
+    加了「预估下一块」和长行半块之后 N4 全部 ≤4.0 ms（Python 3.98–4.01、Markdown 3.95、单行 JSON 3.94 ms，159 片共 383 ms）。
+    键入每键 p95 不变或略降（large.py 5.6–6.9 → 4.7–5.8 ms，多样名字 9.6–12.0 → 8.7–12.9 ms），每键最大值 49–108 → 7–19 ms（单行 JSON 233–247 → 53–91 ms）。
+    N4 的同前缀键入整段偏慢（每键 p50 4.5 ms，N1/N2 为 2.3 ms；`completion.request` 单次到 51 ms），本阶段的路径在那段里只有词法推进 ≤0.8 ms、
+    重扫片 4.1 ms，且键入期间补齐不会触发（70 ms 去抖），判断为负载波动。
+  - **冷启动到窗口**（`coldstart` 工具，交替各 5 次，18:26–18:28，负载 6.4–6.7）：空文档 209–248 / 211–258 ms（HEAD 首次 490 ms 为冷缓存）；
+    1 MB JSON 244–321 / 249–345 ms（噪声内，路径未变）；**10 MB large.py 623–682 → 313–330 ms**，首个绘制事件 530–583 → 227–237 ms；
+    **10 MB 多样名字 884–926 → 368–381 ms**，首个绘制事件 744–770 → 221–233 ms。首帧没有变晚。
+  - **内存**：
+    - malloc 在用量（验收套件）：多样名字各阶段 −4–5 MB（名字原生化），同前缀 −0.7 MB，large.py 从键入起相同。两套检查点各约 160 个，常驻可忽略。
+    - `mem-benchmark.sh`（`KARU_BENCH_MIN_WAIT_SECONDS=8`，HEAD 与本次交替各 2 轮，19:12–19:15，负载 3.0–4.9）：空文档 30.8–31.0 / 30.7–30.8、
+      1 MB JSON 50.5–50.6 / 50.4–50.5、推断样本 46.5–47.2 / 46.5–47.0 MB，都相同；**10 MB large.py 86.9–87.0 → 94.4 MB（+7.4 MB）**，峰值 87.5 → 143 MB，仍在 99 MB 上限内。
+    - 定位：第一版在 1 MB JSON 上也 +7.7 MB。逐项开关（同一二进制）：关掉检查点补齐不变；改回同步扫描或去掉快照落地后的那次重画则与 HEAD 相同。
+      `footprint` 分类显示多出来的是图形内存（IOSurface 区域 18 → 36，其中 14 MB 可回收；「unmapped (graphics)」约 23 MB 可回收），malloc 只差 2 MB：
+      窗口首次显示之后再重画一次，Core Animation 就多分配一块后备表面。只改变化的 token（小矩形重画）也一样。HEAD 在打开后静置不重画，所以这个读数低；
+      验收套件里 HEAD 的 large.py 打开后 +64.9–65.0 MB，第一次交互（手动唤起）后就到 +72.8–73.4 MB，本次打开后 +72.3–73.0、手动唤起后 +73.4–74.2 MB——
+      同一笔一次性成本，HEAD 在第一次交互时付，本次在名字落地时付。
+    - 处理：落地时只在名字确实改变色带颜色时才重画（见上），1 MB JSON 回到与 HEAD 相同；large.py 的色带里有参数、局部变量要着色，必须重画，+7.4 MB 保留。
+      若要在正式场景里也去掉：打开时用文档开头一段（色带末尾加余量）同步扫一份临时声明供首帧使用，落地时颜色相同就不必重画；未做，由 main 决定。
+  - **剩余的键入停顿**（套件新增可选 `KARU_T1715B_GAPLOG=1`，列出超过 20 ms 的主线程空隙，用来对 PerfLog）：
+    - 10 MB 文件在最后一键后约 1.5 s 有一次 52–56 ms 的空隙：崩溃草稿的去抖刷新（`defaultDraftDebounce` 1.5 s）在主线程做
+      `matchesBaseline(textView.string)` 和 `textView.string`，两次复制 10 MB。属保存 / 恢复路径，本阶段不动，建议另开一项。
+    - 开头两次 22–27 ms：第一次弹出补全面板（T17.15a 已记录）。
+    - 单行 JSON 的 90–165 ms：TextKit 重排 5 MB 段落；JSON 的一趟着色 13–15 ms（报告第 8 节第 8 条）。
+    - 打开时仍同步的还有文档词索引：10 MB 多样名字 72 ms、large.py 15 ms（`completion.index sliced=0`）；它已有分片路径，可同样改为打开时分片，本阶段未做。
+  - **测试**：
+    - 新增 `SlicedAnalysisTests`（9 个，结构断言，不按时长判；纯扫描的 2 个放在不占主线程的 `SlicedAnalysisScan` 套件里，其余文档都在 400 K 单元以内，
+      避免并行全量里长时间占住主线程）：没有声明的大 JSON 在快照落地时不重画（`paintedPasses` 不变）；八千个名字的收尾分多步且与一次跑完相同；原生名字与文本一致（含孤立代理）；
+      大文档打开时声明扫描不同步、`indexDocument` 不补完、分片发布（>1 片）、落地后色带重画且与首帧就有声明的引擎相同；小文档仍同步；
+      显式请求当场补完；两套检查点分片补齐到文末（>1 片）；上游同状态编辑后只用 ≤3 片恢复全部检查点且状态与重新推进相同；
+      单行 JSON 行尾键入（经 `insertText`）保留编辑点前的行内检查点。
+    - `CheckpointStoreTests` 新增 5 个（长行保留、待确认只在 32 K 以外、同状态编辑一块内恢复、改变状态时整段重扫、带截止时间分片与一次推进位置相同）；
+      CRLF 测试里 100 K 长行行首那一项按新规则改为保留。`LongLineSlicingTests` 两处期望改为「编辑点前 32 K 以外保留、之后待确认」（后续与整份重扫的一致性断言未改，仍通过）。
+    - 四个测试的绘制夹具（`DocumentAnalysisTests`、`LexicalConsistencyTests`、`LongLineSlicingTests`、`EmbeddedLanguageTests`）在 `setLanguage` 后调用
+      `finishPendingDeclarationScanForTesting()`：它们拿大文档和刚建的新引擎比颜色，新引擎的声明现在分片到达。
+    - debug 全量（最终代码，负载 4–12，另一位 implementer 同时在跑构建与测试）：一次 **1603 tests / 178 suites 全部通过**（负载 11.9）；
+      其余各轮的失败只有两类：`ToolchainManagerTests` / `ToolchainInstallerTests` 的等待超时（其中两轮 `rowsShowNotInstalledInstalledAndUpdateStates` 超时后强制解包崩溃，
+      单独跑 60/60 通过），以及 `AnalysisSchedulerTests.longJobYieldsBetweenSlicesAndStillCompletes`（自带调度器的 40 ms 任务在 10 s 内没轮到主线程；
+      共 8 轮里 3 轮，负载都 ≥5；第一次出现在新增测试之前；单独 5/5 通过）。同时段 HEAD 交替跑两轮也有工具链崩溃与导入测试失败（导出目录里的夹具路径），
+      判断是负载下的已知计时问题。`SlicedAnalysis` 改小之后整套 2.6 s。之前一次跳过工具链 1532 / 171 全部通过。
+    - `bash scripts/visual-smoke.sh`：VISUAL OK、FOLD GEOMETRY OK（改重画条件后复跑一次，同样通过）。`swift build`、`swift build -c release` 通过（最后一次是普通 release，不是 `-enable-testing`）。
+
+- T17.15d-B 索引常驻、浅色配色与测量口径（main 列出项目，implementer 实现，main 审查，2026-11-15）：
+  - **范围**：质量报告第 8 节第 1、7、10 条。改动在 `Workspace/`（`WorkspaceIndex`、`WorkspaceSymbol`、`IndexSignatures`、`IndexScope`）、
+    `LanguageDefinition`（两个新 `TokenKind` 与 `propertyStringKind`）、`HighlightEngine.swift` 里只动 `HighlightTheme`、JSON / JSONL / CSS 语言定义、
+    `scripts/mem-benchmark.sh`。`Analysis/`、`LexicalScanner`、引擎代码未动（T17.15d-A 同时在改）；队列与线程模型、SQLite schema 2 不变。
+    共享测试文件 `EmbeddedLanguageTests`、`LongLineSlicingTests` 里各改了两行 JSON 键的期望（`.property` → `.jsonKey`），其余是 T17.15d-A 的改动。
+  - **1. 索引常驻**（typeshed 5,451 文件超 5 MB 目标）：
+    - 机制（独立小程序，本机 macOS 27.2 的 xzone malloc）：释放的块不论大小都留在 footprint（10 MB 一块释放后 30 s 仍在），`malloc_zone_pressure_relief`
+      对默认与全部 zone 返回 0，自建 zone 销毁只还回约三分之一，只有环境变量 `MallocSpaceEfficient=1` 会把空闲页标成可回收（App 无法在运行中切换）。
+      因此「专用 malloc zone」「建完一轮后压力释放」都无效；索引常驻 = 建索引期间各尺寸分配的高水位，同尺寸反复分配会复用。
+    - 定位：App 内逐段关闭（typeshed）遍历 +0.5–0.9、写库 +0.5、声明扫描 +2.0–2.6、`extract` +1.1、签名摘要 +2.2–2.8 MB；单文件进程内峰值
+      `winerror.pyi`（331 KB）带摘要 4.84 MB、摘要器单独 3.55 MB——大文件的摘要器（15–25 倍文件大小）定下高水位。扫描缓冲在 `Analysis/`，已按 16 K 单元分步。
+    - 做法：
+      - `IndexedSymbol.extract` 一遍流式：用 `forEachDeclaration(from:to:)` 代替物化 `scan.declarations`，不再有 pending 数组，函数签名在参数到齐后回填；
+        行号仍是一次升序扫描（栈上 4 K 缓冲）。新测试与原两遍算法逐项比对（全部夹具、大 Python / TS、Go 方法、CRLF / CR、非 ASCII）。
+      - `IndexSignatures.enrich` 原地改写，调用方 `consume` 传入，不再复制一份符号数组。
+      - **`IndexScope.richSignatureMaxBytes`（默认 64 KB）**：更大的文件不跑签名摘要，保留参数名签名 `(a, b)`；名字、类别、位置不变。
+        受影响 typeshed 14 个文件、CPython 标准库 43 个（4%）。上限 128 KB 时 App 内 +4.1–5.4 MB（8 轮 2 轮超标），所以取 64 KB。
+    - 读数（App，交替 3 轮，每轮新诊断目录，≥10 s 后稳定取值，18:37–18:41，负载 3.1–5.1）：typeshed **+6.5–7.8 → +4.0–4.5 MB**（峰值 +7.6–8.3 → +5.0–5.6），
+      CPython +3.1–4.2 → +2.7–3.5 MB；进程内基准 typeshed +7.45 / +7.67 → +4.81 / +4.86 MB，CPython +4.11 / +4.13 → +3.23 / +3.50 MB。
+    - 建索引时间（基准，交替各 2 次）：typeshed 6.84–7.48 → 5.33–5.35 s、CPU 5.04–5.13 → 3.98–4.00 s；CPython 1.62–1.66 → 1.29–1.32 s。没有变慢。
+    - 余量小：剩下的高水位主要是最大两个文件只做声明扫描时的 2.3–2.4 MB；再降要动扫描器产物（`Analysis/`）。项目里 0.5–2 MB 的单个源文件仍会有数 MB 峰值（T17.15a 的风险）。
+    - 附带发现：`MallocSpaceEfficient=1` 下空文档启动 22.5 MB（默认 31 MB），只作记录；它是进程级分配器模式，要启用只能从启动环境设，需 main 评估性能与打包方式。
+  - **2. 浅色配色**：`TokenKind.jsonKey`（深 `#9cdcfe` / 浅 `#0451a5`，VS Code `support.type.property-name.json`）、`.cssProperty`（深 `#9cdcfe` / 浅 `#e50000`）。
+    `LanguageDefinition` 新增 `propertyStringKind`（默认 `.property`），JSON / JSONL 传 `.jsonKey`；CSS 属性名规则改用 `.cssProperty`。
+    Markdown 列表标记、TOML 键、YAML 带引号的键仍为 `.property`。一致率（同一导出与 `compare-colors.py`）：浅色 94.2% → **95.4%**
+    （不一致单元 2,559 → 2,015；JSON / JSONL 100%，CSS 54.3% → 72.2%），深色 97.3% 逐样本不变。
+  - **3. `mem-benchmark.sh`**：新增 `KARU_BENCH_MIN_WAIT_SECONDS`（默认 0 不变）：之前的读数不参与稳定判定，最长等待不足时自动延长；脚本头与 DEVELOPMENT.md 已写。
+    实测默认稳定于 0.2–1.0 s，设 6 s 时稳定于 6.1–6.2 s，读数相同（31.4–31.8 / 51.2 / 87.3–87.5 MB）。
+  - **测试**：新增 `IndexMemoryTests` 3 个（流式 `extract` 与原算法相同、原地 `enrich` 不影响其他引用、大文件只留参数名签名）、`SyntaxPalette` 1 个
+    （两个新类别的深浅色、JSON / JSONL / CSS 用新类别、Markdown / TOML / YAML 仍为 `.property`），并更新各处 JSON 键与 CSS 属性名的类别期望。
+    主工作区（含 T17.15d-A 的未提交改动）debug 全量 1602 tests / 177 suites：只有工具链管理的 5 个计时问题（负载 7–8），单独重跑 10/10 通过；
+    相关套件（索引、导入、跨文件、高亮、配色、嵌入、长行、语言）312 tests / 58 suites 全过。独立 worktree（HEAD + 本阶段改动）里
+    `ImportResolutionTests` 有 7 个问题，HEAD 本身在该 worktree 里也一样（路径在 `/private/tmp` 下），主工作区通过，判定与本阶段无关。
+
+- T17.15 用户决定（2026-11-15）：
+  - **压力项超 99 MB 判通过，不做降级**：10 MB 大量不同名字的文件静置约 113 MB、两个窗口各开一个 10 MB 文件约 146 MB（v0.12.0 同条件 128 / 175 MB）。
+    99 MB 上限只约束三个正式场景；若要压到上限内，须按 §11 降级顺序第 3、4 步牺牲这类文件的召回率，用户不要。5 MB 单行 JSON 258 MB 是 TextKit 排版，同样记录不处理。
+    只在开发文档（DEVELOPMENT、质量报告、本台账）标注，README 与更新推送不写。
+  - **T17.15d-A 的 10 MB 正式场景 +7.4 MB（87 → 94.4 MB）由 main 接受**：名字分片落地后重画一次，窗口提前生成后备图形表面（IOSurface），
+    HEAD 在第一次交互时付同样的成本（验收套件打开后 +65 MB、手动唤起后 +73 MB；本次打开后即 +73 MB），实际使用中没有净增；仍在 99 MB 内。
+    若以后要让正式场景读数回落，可在打开时同步扫文档开头一段、给首帧临时声明。
+  - `MallocSpaceEfficient=1`（空文档 31 → 22.5 MB）等 M17 完全落地后再评估。
+  - 遗留另记：10 MB 文件最后一键约 1.5 s 后的崩溃草稿刷新在主线程两次复制全文（52–56 ms 停顿），属保存 / 恢复路径，不在 M17 范围。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

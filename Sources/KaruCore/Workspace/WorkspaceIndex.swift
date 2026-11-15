@@ -685,7 +685,10 @@ public final class WorkspaceIndex: @unchecked Sendable {
             return (nil, false)
         }
         // Per file: the scan's bridged strings do not pile up on the queue.
-        let symbols = autoreleasepool { Self.symbols(of: text, language: language) }
+        // Summaries only up to `richSignatureMaxBytes` (T17.15d): a large
+        // file's summariser peak would stay resident.
+        let rich = size <= Int64(scope.richSignatureMaxBytes)
+        let symbols = autoreleasepool { Self.symbols(of: text, language: language, rich: rich) }
         folder.databaseLock.lock()
         let id = try? folder.database?.replaceFile(path: relative, language: language, size: size, mtime: mtime,
                                                     symbols: symbols)
@@ -707,17 +710,20 @@ public final class WorkspaceIndex: @unchecked Sendable {
     /// `NSString(data:encoding:)` built a UTF-16 copy twice that size —
     /// freed pages the allocator keeps after the largest file. Same text
     /// (`NSString` decoding failed over to this for invalid UTF-8 anyway).
-    static func symbols(of data: Data, language: String) -> [IndexedSymbol] {
-        symbols(of: decodedText(data) as NSString, language: language)
+    static func symbols(of data: Data, language: String, rich: Bool = true) -> [IndexedSymbol] {
+        symbols(of: decodedText(data) as NSString, language: language, rich: rich)
     }
 
     /// The indexed declarations of a file's text (`readText`, `decodedText`).
-    static func symbols(of text: NSString, language: String) -> [IndexedSymbol] {
+    /// `rich` false (a file above `IndexScope.richSignatureMaxBytes`) keeps
+    /// `extract`'s parameter-name signatures.
+    static func symbols(of text: NSString, language: String, rich: Bool = true) -> [IndexedSymbol] {
         let scan = DeclarationScan.scan(text: text as String, languageIdentifier: language)
         // Signature summaries (T17.14) cost a summariser pass: skipped when
         // `richSignatures` is off (benchmarks compare both).
         let symbols = IndexedSymbol.extract(from: scan, text: text)
-        return richSignatures ? IndexSignatures.enrich(symbols, text: text, language: language) : symbols
+        // `consume`: the summaries replace signatures in place (T17.15d).
+        return rich && richSignatures ? IndexSignatures.enrich(consume symbols, text: text, language: language) : symbols
     }
 
     /// Whether indexed symbols carry `IndexSignatures` summaries (always in

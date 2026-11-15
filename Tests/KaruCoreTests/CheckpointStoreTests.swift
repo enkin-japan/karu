@@ -153,8 +153,11 @@ struct CheckpointStoreTests {
         #expect(offsets(edited) == [100_000])
 
         // Deleting the LF of a CRLF right before an entry's line (location
-        // 199 999): the entry at 200 000 is dropped, the one at 100 000 is the
-        // start of the edited line and goes too; nothing before it exists.
+        // 199 999): the entry at 200 000 is dropped. The one at 100 000 is the
+        // start of the edited line, but that line is longer than twice
+        // `editMargin`, so the cut is `editMargin` before the edit and the
+        // entry stays (T17.15d-A; a short line still loses its start, see
+        // `invalidateDropsFromTheEditedLineOn`).
         store = CheckpointStore()
         store.record(offset: 0, state: state(0))
         store.record(offset: 100_000, state: state(1))
@@ -163,6 +166,124 @@ struct CheckpointStoreTests {
         joined.deleteCharacters(in: NSRange(location: 199_999, length: 1))
         edited = store
         edited.invalidate(editedRange: NSRange(location: 199_999, length: 0), changeInLength: -1, in: joined)
-        #expect(offsets(edited) == [0])
+        #expect(offsets(edited) == [0, 100_000])
+    }
+
+    // MARK: - T17.15d-A: long lines, pending entries, walking
+
+    @Test func longLineKeepsInLineEntriesWellBeforeTheEdit() {
+        // One 400 000-unit line: entries are in-line safe points.
+        let text = String(repeating: "a", count: 400_000) as NSString
+        var store = CheckpointStore()
+        for k in 1...5 { store.record(offset: k * spacing, state: state(k)) }
+        let editAt = 3 * spacing + 100
+        store.invalidate(editedRange: NSRange(location: editAt, length: 1), changeInLength: 1, in: text)
+        // Before `editAt - 1 - editMargin`: kept; the rest goes or is pending.
+        #expect(offsets(store) == [spacing, 2 * spacing])
+        #expect(store.entries.allSatisfy { $0.offset < editAt - 1 - CheckpointStore.editMargin })
+        // After the edit (shifted by +1, beyond the margin): pending.
+        #expect(store.pending.map(\.offset) == [4 * spacing + 1, 5 * spacing + 1])
+    }
+
+    @Test func pendingEntriesOnlyBeyondTheMargin() {
+        let text = lines(40_000) as NSString            // 400 000 units, 10-unit lines
+        var store = CheckpointStore()
+        for offset in [0, 70_000, 140_000, 210_000, 280_000] { store.record(offset: offset, state: state(1)) }
+        // Insert 5 units at 140 004 (inside the line starting at 140 000).
+        store.invalidate(editedRange: NSRange(location: 140_004, length: 5), changeInLength: 5, in: text)
+        #expect(offsets(store) == [0, 70_000])
+        // 140 000 is the edited line's start: dropped; 210 000 / 280 000 shift.
+        #expect(store.pending.map(\.offset) == [210_005, 280_005])
+        // An edit right before a pending entry drops it (within the margin).
+        store.invalidate(editedRange: NSRange(location: 200_000, length: 0), changeInLength: -10, in: text)
+        #expect(store.pending.map(\.offset) == [279_995])
+        #expect(!store.isEmpty)
+        store.removeAll()
+        #expect(store.isEmpty && store.pending.isEmpty)
+    }
+
+    /// Lines alternating "x\n" text with a Python triple-quoted string that a
+    /// one-unit edit can open or keep closed.
+    private func walkPython(_ store: inout CheckpointStore, to target: Int, in text: NSString,
+                            deadline: UInt64? = nil) -> (offset: Int, finished: Bool, units: Int) {
+        let language = PythonLanguage.make()
+        var units = 0
+        let walked = store.walk(toward: target, in: text, stepEnd: target, initial: PythonTokenizer.State(),
+                                unwrap: { if case .python(let s) = $0 { return s } else { return nil } },
+                                wrap: { .python($0) },
+                                advance: { from, to, state in
+                                    units += to - from
+                                    state = PythonTokenizer.state(in: text, before: to, language: language,
+                                                                  from: from, initial: state)
+                                },
+                                advanceToSafePoint: nil, deadline: deadline)
+        return (walked.offset, walked.finished, units)
+    }
+
+    @Test func walkReconfirmsPendingEntriesAfterAnEditThatKeepsTheState() {
+        let line = "value = compute(item, 42)  # note\n"
+        let original = String(repeating: line, count: 30_000)          // ~1 MB
+        let text = NSMutableString(string: original)
+        var store = CheckpointStore()
+        _ = walkPython(&store, to: text.length, in: text)
+        let built = store.entries
+        #expect(built.count >= 10)
+        // A same-state edit near the top: one more character in a line.
+        text.insert("x", at: 5)
+        store.invalidate(editedRange: NSRange(location: 5, length: 1), changeInLength: 1, in: text)
+        #expect(store.entries.isEmpty && !store.pending.isEmpty)
+        // The walk re-synchronises at the first pending entry: it scans one
+        // chunk, not the document, and every entry is verified again.
+        let walk = walkPython(&store, to: text.length, in: text)
+        #expect(walk.finished)
+        #expect(walk.units <= 2 * spacing, "walked \(walk.units) units")
+        #expect(store.pending.isEmpty)
+        #expect(store.entries.count >= built.count - 1)
+        // Same states as a fresh walk over the edited text.
+        var fresh = CheckpointStore()
+        _ = walkPython(&fresh, to: text.length, in: text)
+        for entry in store.entries {
+            var probe = PythonTokenizer.State()
+            if let nearest = fresh.nearest(atOrBefore: entry.offset), case .python(let s) = nearest.state {
+                probe = PythonTokenizer.state(in: text, before: entry.offset, language: PythonLanguage.make(),
+                                              from: nearest.offset, initial: s)
+            }
+            #expect(entry.state == .python(probe), "entry \(entry.offset)")
+        }
+    }
+
+    @Test func walkRescansWhenTheEditChangesTheStateDownstream() {
+        let line = "value = compute(item, 42)  # note\n"
+        let text = NSMutableString(string: String(repeating: line, count: 30_000))
+        var store = CheckpointStore()
+        _ = walkPython(&store, to: text.length, in: text)
+        // An unclosed triple quote at the top: every later state differs, so
+        // no pending entry may be confirmed.
+        text.insert("\"\"\"\n", at: 0)
+        store.invalidate(editedRange: NSRange(location: 0, length: 4), changeInLength: 4, in: text)
+        let walk = walkPython(&store, to: text.length, in: text)
+        #expect(walk.finished)
+        #expect(walk.units > text.length - 2 * spacing)
+        #expect(store.pending.isEmpty)
+        let inString = PythonTokenizer.state(in: text, before: store.entries.last!.offset, language: PythonLanguage.make())
+        #expect(store.entries.last!.state == .python(inString))
+        #expect(!inString.frames.isEmpty)
+    }
+
+    @Test func walkWithADeadlineStopsAndResumes() {
+        let text = String(repeating: "value = 1\n", count: 100_000) as NSString   // 1 000 000 units
+        var store = CheckpointStore()
+        // An expired deadline: one chunk per call.
+        var calls = 0
+        var finished = false
+        while !finished, calls < 1_000 {
+            finished = walkPython(&store, to: text.length, in: text, deadline: 0).finished
+            calls += 1
+        }
+        #expect(finished)
+        #expect(calls > 5, "a sliced walk takes several calls (\(calls))")
+        var whole = CheckpointStore()
+        _ = walkPython(&whole, to: text.length, in: text)
+        #expect(offsets(store) == offsets(whole))
     }
 }

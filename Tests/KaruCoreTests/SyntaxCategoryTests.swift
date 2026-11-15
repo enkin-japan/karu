@@ -56,6 +56,8 @@ struct SyntaxPaletteTests {
         .comment: (0x6A9955, 0x008000),
         .type: (0x4EC9B0, 0x267F99),
         .property: (0x9CDCFE, 0x001080),
+        .jsonKey: (0x9CDCFE, 0x0451A5),
+        .cssProperty: (0x9CDCFE, 0xE50000),
         .punctuation: (0xD4D4D4, 0x000000),
         .symbolFunction: (0xDCDCAA, 0x795E26),
         .symbolVariable: (0x9CDCFE, 0x001080),
@@ -100,6 +102,50 @@ struct SyntaxPaletteTests {
             #expect(hex(color, .darkAqua) == pair.dark, "\(kind) dark")
             #expect(hex(color, .aqua) == pair.light, "\(kind) light")
         }
+    }
+
+    /// T17.15d: JSON keys and CSS property names take Light Modern's
+    /// `support.type.property-name(.json)` colours; Dark Modern keeps the
+    /// variable blue for them, and the other `.property` producers
+    /// (Markdown list markers, TOML keys, YAML quoted keys) keep theirs.
+    @Test func jsonKeysAndCSSPropertiesHaveTheirLightModernColours() {
+        // Light: JSON key #0451A5, CSS property #E50000; dark unchanged.
+        #expect(HighlightTheme.hex(for: .jsonKey)?.light == 0x0451A5)
+        #expect(HighlightTheme.hex(for: .cssProperty)?.light == 0xE50000)
+        for kind in [TokenKind.jsonKey, .cssProperty, .property] {
+            #expect(HighlightTheme.hex(for: kind)?.dark == 0x9CDCFE, "\(kind)")
+        }
+        #expect(HighlightTheme.hex(for: .property)?.light == 0x001080)
+
+        // Which kind each language gives these names.
+        #expect(kinds("json", #"{"name": "x"}"#, of: #""name""#) == [.jsonKey])
+        #expect(kinds("json", #"{"name": "x"}"#, of: #""x""#) == [.string])
+        #expect(kinds("jsonl", #"{"k": 1}"#, of: #""k""#) == [.jsonKey])
+        #expect(kinds("css", "a { color: red; }", of: "color") == [.cssProperty])
+        #expect(kinds("markdown", "- item", of: "- ") == [.property])
+        #expect(kinds("markdown", "1. next", of: "1. ") == [.property])
+        #expect(kinds("toml", "name = \"Karu\"", of: "name") == [.property])
+        #expect(kinds("toml", "\"quoted\" = 1", of: "\"quoted\"") == [.property])
+        #expect(kinds("yaml", "\"quoted key\": 1", of: "\"quoted key\"") == [.property])
+
+        // The colours those tokens resolve to, per appearance.
+        let theme = HighlightTheme()
+        func hex(_ kind: TokenKind, _ name: NSAppearance.Name) -> UInt32? {
+            guard let color = theme.color(for: kind) else { return nil }
+            var resolved: NSColor?
+            NSAppearance(named: name)!.performAsCurrentDrawingAppearance { resolved = color.usingColorSpace(.sRGB) }
+            guard let c = resolved else { return nil }
+            func byte(_ v: CGFloat) -> UInt32 { UInt32(max(0, min(255, (v * 255).rounded()))) }
+            return byte(c.redComponent) << 16 | byte(c.greenComponent) << 8 | byte(c.blueComponent)
+        }
+        #expect(hex(.jsonKey, .aqua) == 0x0451A5)
+        #expect(hex(.cssProperty, .aqua) == 0xE50000)
+        #expect(hex(.property, .aqua) == 0x001080)
+        for kind in [TokenKind.jsonKey, .cssProperty, .property] {
+            #expect(hex(kind, .darkAqua) == 0x9CDCFE, "\(kind) dark")
+        }
+        // Dark Modern: still the variable colour object family (same pair as before).
+        #expect(theme.color(for: .property) === theme.color(for: .symbolVariable))
     }
 
     @Test func onlyHeadingsAreBold() {

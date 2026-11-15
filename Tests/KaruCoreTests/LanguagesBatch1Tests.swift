@@ -22,7 +22,7 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     #expect(def.identifier == "jsonl")
 
     let pairs = spans(def, #"{"k": 1, "v": true, "s": "x"}"#)
-    #expect(kind(of: #""k""#, in: pairs) == .property)   // key
+    #expect(kind(of: #""k""#, in: pairs) == .jsonKey)    // key (T17.15d)
     #expect(kind(of: "1", in: pairs) == .number)
     #expect(kind(of: "true", in: pairs) == .keyword)
     #expect(kind(of: #""x""#, in: pairs) == .string)     // value string
@@ -210,9 +210,9 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func cssPropertyColorAndUnit() {
     let css = CSSLanguage.make()
     let pairs = spans(css, "color: #fff; margin: 10px;")
-    #expect(kind(of: "color", in: pairs) == .property)
+    #expect(kind(of: "color", in: pairs) == .cssProperty)   // T17.15d
     #expect(kind(of: "#fff", in: pairs) == .string)   // T17.7: `constant.other.color.rgb-value`
-    #expect(kind(of: "margin", in: pairs) == .property)
+    #expect(kind(of: "margin", in: pairs) == .cssProperty)
     #expect(kind(of: "10px", in: pairs) == .number)
 }
 
@@ -227,7 +227,7 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
 @Test func cssStringValue() {
     let css = CSSLanguage.make()
     let pairs = spans(css, #"content: "hello";"#)
-    #expect(kind(of: "content", in: pairs) == .property)
+    #expect(kind(of: "content", in: pairs) == .cssProperty)
     #expect(kind(of: #""hello""#, in: pairs) == .string)
 }
 

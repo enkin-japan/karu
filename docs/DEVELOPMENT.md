@@ -77,7 +77,9 @@
   （`lang`、`painted`、`skipped`、`sliced`：色带落在超长行中间而只着色一段时为 1）、`analysis.declarations`（T17.1 起取代 `highlight.symbols`：每个文档版本一次的
   共用声明扫描，`docLen`、`lang`、`version`；T17.4a 起 `sliced`=1 为分片扫描，时长为各片主线程时间之和，
   另记 `slices` 片数与 `maxSliceUs` 最长一片）、`lexical.advance`（T17.2：着色前从最近检查点推进
-  词法状态到色带起点，`lang`、`units` 扫描的 UTF-16 单元数、`resumedAt` 起点、`checkpoints` 现存数量）。用
+  词法状态到色带起点，`lang`、`units` 扫描的 UTF-16 单元数、`resumedAt` 起点、`checkpoints` 现存数量）、`lexical.catchUp`（T17.15d-A：
+  语言切换、编辑停顿或模块开关之后，把高亮与补全的两套检查点分片推进到文末，时长为各片之和，`slices`、`maxSliceUs`、
+  `checkpoints` / `contextCheckpoints` 完成后的数量）。T17.15d-A 起 `analysis.declarations` 在超过 256 K 单元的文档上打开时也是 `sliced=1`。用
   `python3 -I scripts/m17/perf-summary.py <日志>` 汇总各事件的 count / p50 / p95 / max。
   M17 基线采集套件（`KARU_M17_BASELINE=1 swift test --filter M17Baseline`）另写
   `Tests/Fixtures/M17/baseline/` 与 `.build/m17-baseline/probes.txt`，普通 `swift test` 跳过。
@@ -108,6 +110,10 @@
   （超时取最后读数并标“未稳定”）；表格末列「稳定于」为读数稳定的时刻（距启动秒数）。旧版固定 3 s
   采样会随时序落在启动期一次约 +20 MB 阶跃的前或后，产生假回归；与旧记录对比时注意口径不同。
   阈值可用 `KARU_BENCH_STABLE_SECONDS`、`KARU_BENCH_STABLE_TOLERANCE_KB`、`KARU_BENCH_MAX_WAIT_SECONDS` 调整。
+  `KARU_BENCH_MIN_WAIT_SECONDS`（T17.15d，默认 0，与旧版相同）是最短观察时间：启动后这段时间内的读数不参与稳定判定，
+  稳定区间必须整个落在它之后，读数最早在「最短观察时间 + 稳定窗口」取得；最长等待不足这个值时自动延长。
+  用于主线程阻塞、内存暂时不动而会被提前取值的构建（v0.12.0 打开 10 MB 时 1.2 s 取到台阶前的 63 MB），
+  例如对照 v0.12.0 的 10 MB 场景设 `KARU_BENCH_MIN_WAIT_SECONDS=8`。
   A/B 对照应交替运行 2–3 轮并记录负载（`uptime`）。
 - 与 `/Applications/Karu.app` 的已发布二进制做 A/B 时注意（T17.15b）：它用 `dev.enkin.TinyEditor` 偏好域，会读用户自己的窗口尺寸与字号，
   诊断目录不隔离这些；裸二进制 `.build/release/KaruApp` 用 `KaruApp` 域（800×600、默认字号）。把已发布二进制拷出包外运行会因签名失效被 SIGKILL。
@@ -119,10 +125,14 @@
   `completion-baseline.tsv` 对比。真实窗口验收套件 `KARU_TYPE_TABLES=$PWD/assets/typetables KARU_PERFLOG=<日志> KARU_T1715B_FILES=<文件>[:<文件>…]
   KARU_T1715B_OUT=<报告> swift test -c release -Xswiftc -enable-testing --filter M17AcceptanceBenchmark`（`KARU_T1715B_PAIR=<a>:<b>` 测双窗口）
   逐段记录同步耗时、主线程最长停顿、峰值与在用量，并输出每段的 uptime 区间以切 PerfLog；测试进程里的 footprint 只作参考。
+  T17.15d-A 起加 `KARU_T1715B_GAPLOG=1` 时，每段另列超过 20 ms 的主线程空隙（`gaps <段>  <结束 uptime>:<毫秒>`），用来对照 PerfLog 找停顿来源。
   release 测试构建会覆盖 `.build/release/KaruApp`，跑完重新 `swift build -c release` 再做 App 内存测量。
 - 会启动 App 的验证先检查用户数据副作用。特别是草稿本探针会写示例内容，不能直接对
   用户真实草稿运行；使用现有隔离入口或由主会话先设计隔离，不声称环境变量天然隔离。
 - 内存以 ARCHITECTURE.md 的窗口尺寸和 phys_footprint 口径判断，记录系统/工具链与构建。
+- 99 MB 上限只约束三个正式场景（空文档、约 1 MB JSON、约 10 MB Python）。M17 压力夹具中超出的几项经用户判定通过、不做降级（2026-11-15）：
+  10 MB 大量不同名字约 113 MB、两个窗口各开一个 10 MB 文件约 146 MB、5 MB 单行 JSON 约 258 MB（TextKit 排版），均低于 v0.12.0 同条件读数；
+  复测时与质量报告第 7 节对照，明显变大才算回归。这些只记在开发文档，不写进 README 和更新推送。
   脚本可能回退 RSS 或跳过场景；必须披露，不能据此宣称全部预算通过。
 - 单测环境、静态快照与真实通知/滚动路径不同。复现不了时如实记录，结合崩溃栈、
   几何日志或 A/B 证据判断；需要用户实测的项目保持待验收状态。

@@ -7,8 +7,10 @@ import Foundation
 /// so the profile only matters when a slice starts in the middle of a long
 /// (minified) line: the scanner state then says whether it is inside a
 /// string. Object keys — a string followed by optional whitespace and a colon
-/// on the same line — are `.property` through `propertyStringFollower`, every
-/// other string `.string`. Numbers, literals and punctuation are rules.
+/// on the same line — are `.jsonKey` through `propertyStringFollower` (VS
+/// Code's `support.type.property-name.json`, its own colour in Light Modern;
+/// T17.15d), every other string `.string`. Numbers, literals and punctuation
+/// are rules.
 public enum JSONLanguage {
     /// Number of times `make()` has run this process. Used only by tests to
     /// prove that definitions are built lazily / on demand.
@@ -45,7 +47,8 @@ public enum JSONLanguage {
             rules: rules(),
             keywords: ["true", "false", "null"],
             lexicalProfile: lexicalProfile,
-            propertyStringFollower: keyFollower
+            propertyStringFollower: keyFollower,
+            propertyStringKind: .jsonKey
         )
     }
 }

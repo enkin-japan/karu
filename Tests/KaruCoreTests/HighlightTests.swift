@@ -54,10 +54,10 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
     let json = JSONLanguage.make()
     let pairs = spans(json, #"{"name": "x", "n": 1.5e2, "ok": true}"#)
 
-    // Key strings (followed by a colon) are properties; value strings are strings.
-    #expect(kind(of: #""name""#, in: pairs) == .property)
-    #expect(kind(of: #""n""#, in: pairs) == .property)
-    #expect(kind(of: #""ok""#, in: pairs) == .property)
+    // Key strings (followed by a colon) are keys (T17.15d: `.jsonKey`); value strings are strings.
+    #expect(kind(of: #""name""#, in: pairs) == .jsonKey)
+    #expect(kind(of: #""n""#, in: pairs) == .jsonKey)
+    #expect(kind(of: #""ok""#, in: pairs) == .jsonKey)
     #expect(kind(of: #""x""#, in: pairs) == .string)
 
     // Number, literal, punctuation.
@@ -85,7 +85,7 @@ private func documentSpans(_ def: LanguageDefinition, _ source: String) -> [[(te
     let json = JSONLanguage.make()
     // A value string containing an escaped quote must be one token.
     let pairs = spans(json, #"{"k": "a\"b"}"#)
-    #expect(kind(of: #""k""#, in: pairs) == .property)
+    #expect(kind(of: #""k""#, in: pairs) == .jsonKey)
     // T17.7: the escape is its own token inside the string (VS Code's
     // `constant.character.escape`); the string still ends after `b"`.
     #expect(kind(of: #""a"#, in: pairs) == .string)

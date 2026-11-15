@@ -11,14 +11,24 @@ import Foundation
 /// it — after scopes nested in it may already exist; `insertScope` puts it at
 /// its sorted place (scanning back from the end, so the cost is the number of
 /// scopes opened since the block's `{`). The outline is encoded at the end.
+///
+/// **Bounded steps** (T17.15d-A): names are native Swift strings
+/// (`nativeName`), the name → index table is split into `nameShardCount`
+/// dictionaries so a growth rehash touches a sixteenth of the names, and
+/// every finishing product — outline, the three categories, the variable
+/// filter and the completion-symbol union — is built in `finishStep` items
+/// with exact up-front reservations; `makeScan` only assembles them.
 struct DeclarationBuilder: Sendable {
     let languageIdentifier: String
 
     private(set) var names: [String] = []
-    private var nameIndex: [String: Int32] = [:]
+    /// Name → index, sharded by `shard(of:)` (T17.15d-A).
+    private var nameShards = [[String: Int32]](repeating: [:], count: nameShardCount)
+    static let nameShardCount = 16
     /// Per name: 1 listed function / method, 2 listed class / type,
     /// 4 listed other, 8 declared at all (scope-only included), 16 called
-    /// (a table-only reference, T17.4b), 32 referenced as a type (table-only).
+    /// (a table-only reference, T17.4b), 32 referenced as a type (table-only);
+    /// while finishing, 64 entered into the table.
     private var masks: [UInt8] = []
     private(set) var encoded: [UInt8] = []
     private var lastLocation = 0
@@ -45,7 +55,16 @@ struct DeclarationBuilder: Sendable {
     private var functions = Set<String>()
     private var types = Set<String>()
     private var variableCandidates: [Int] = []
+    private var variableCursor = 0
+    private var excluded: Set<String> = []
+    private var variables = Set<String>()
+    private var unionCursor = 0
+    private var tableCount = 0
+    private var completionSymbols = Set<String>()
+    /// 0 outline, 1 categories, 2 variables, 3 completion symbols, 4 done.
     private var phase = 0
+    /// `finishStep` calls so far (tests).
+    private(set) var finishSteps = 0
 
     /// Declarations are scope-only (T17.8c: an embedding host's regions):
     /// recorded with their kinds for `visibleBindings`, never entered into
@@ -60,6 +79,54 @@ struct DeclarationBuilder: Sendable {
     var scopeCount: Int { order.count }
 
     // MARK: - Declarations
+
+    /// The token's text as a native Swift string (T17.15d-A). A bridged
+    /// `substring(with:)` result hashes and compares through Foundation on
+    /// every dictionary / set operation (≈5 µs per insert for names over 15
+    /// bytes); a native one hashes its UTF-8 directly, and names up to 15
+    /// bytes are stored inline without an allocation.
+    /// A name holding a surrogate keeps the bridged form, so a lone surrogate
+    /// is not replaced (the text is the only truth).
+    static func nativeName(_ text: NSString, _ token: DeclToken) -> String {
+        let range = NSRange(location: token.start, length: token.end - token.start)
+        func decode(_ buffer: UnsafeMutableBufferPointer<UInt16>) -> String? {
+            text.getCharacters(buffer.baseAddress!, range: range)
+            if buffer.contains(where: { $0 & 0xF800 == 0xD800 }) { return nil }
+            return String(decoding: buffer, as: UTF16.self)
+        }
+        let native: String? = range.length <= 64
+            ? withUnsafeTemporaryAllocation(of: UInt16.self, capacity: range.length) { decode($0) }
+            : {
+                var units = [UInt16](repeating: 0, count: range.length)
+                return units.withUnsafeMutableBufferPointer { decode($0) }
+            }()
+        return native ?? text.substring(with: range)
+    }
+
+    /// The `nameShards` dictionary holding `name`: its UTF-8 length and last
+    /// two bytes (identifiers sharing a prefix differ at the end).
+    private static func shard(of name: String) -> Int {
+        let utf8 = name.utf8
+        var key = utf8.count
+        var index = utf8.endIndex
+        for _ in 0..<2 where index > utf8.startIndex {
+            index = utf8.index(before: index)
+            key = key &* 31 &+ Int(utf8[index])
+        }
+        return key & (nameShardCount - 1)
+    }
+
+    /// The index of `name`, interning it when new.
+    private mutating func index(of name: String) -> Int32 {
+        let shard = Self.shard(of: name)
+        if let known = nameShards[shard][name] { return known }
+        let index = Int32(names.count)
+        nameShards[shard][name] = index
+        names.append(name)
+        masks.append(0)
+        return index
+    }
+
 
     private mutating func appendVarint(_ value: Int) {
         var v = value
@@ -79,16 +146,7 @@ struct DeclarationBuilder: Sendable {
             droppedOutOfOrder += 1
             return -1
         }
-        let name = text.substring(with: NSRange(location: token.start, length: token.end - token.start))
-        let index: Int32
-        if let known = nameIndex[name] {
-            index = known
-        } else {
-            index = Int32(names.count)
-            nameIndex[name] = index
-            names.append(name)
-            masks.append(0)
-        }
+        let index = index(of: Self.nativeName(text, token))
         var bit: UInt8 = 8
         let listed = listed && !scopeOnly
         if listed {
@@ -117,16 +175,7 @@ struct DeclarationBuilder: Sendable {
     /// location, no binding.
     mutating func noteReference(_ text: NSString, _ token: DeclToken, kind: WordIndex.SymbolKind) {
         guard token.end > token.start, !scopeOnly else { return }
-        let name = text.substring(with: NSRange(location: token.start, length: token.end - token.start))
-        let index: Int
-        if let known = nameIndex[name] {
-            index = Int(known)
-        } else {
-            index = names.count
-            nameIndex[name] = Int32(index)
-            names.append(name)
-            masks.append(0)
-        }
+        let index = Int(index(of: Self.nativeName(text, token)))
         masks[index] |= kind == .type ? 32 : 16
     }
 
@@ -134,23 +183,12 @@ struct DeclarationBuilder: Sendable {
     /// impls; no table entry).
     mutating func intern(_ text: NSString, _ token: DeclToken) -> Int32 {
         guard token.end > token.start else { return -1 }
-        let name = text.substring(with: NSRange(location: token.start, length: token.end - token.start))
-        if let known = nameIndex[name] { return known }
-        let index = Int32(names.count)
-        nameIndex[name] = index
-        names.append(name)
-        masks.append(0)
-        return index
+        return index(of: Self.nativeName(text, token))
     }
 
     /// Interns `name` without declaring it (an embedded region's language).
     mutating func intern(name: String) -> Int32 {
-        if let known = nameIndex[name] { return known }
-        let index = Int32(names.count)
-        nameIndex[name] = index
-        names.append(name)
-        masks.append(0)
-        return index
+        index(of: name)
     }
 
     /// Names a scope after it was opened (a Go method's scope opens at its
@@ -196,9 +234,13 @@ struct DeclarationBuilder: Sendable {
 
     // MARK: - Finishing
 
-    /// Encodes the outline and classifies the names, about `units` items per
-    /// call. Returns true when done.
+    /// Encodes the outline, classifies the names, filters the variables and
+    /// builds the completion-symbol union, about `units` items per call
+    /// (T17.15d-A: every product of the old one-shot `makeScan` is an item
+    /// here, and each set is reserved at its exact size before it fills, so
+    /// no step rehashes a large set). Returns true when done.
     mutating func finishStep(units: Int, documentLength: Int) -> Bool {
+        finishSteps += 1
         var budget = max(64, units)
         let length = Int32(clamping: documentLength)
         while budget > 0 {
@@ -206,7 +248,11 @@ struct DeclarationBuilder: Sendable {
             switch phase {
             case 0:
                 // Outline, pre-order (ascending start, parent first).
-                guard encodeCursor < order.count else { phase = 1; continue }
+                guard encodeCursor < order.count else {
+                    phase = 1
+                    reserveCategories()
+                    continue
+                }
                 let id = Int(order[encodeCursor])
                 encodeCursor += 1
                 let start = min(scopeStart[id], length)
@@ -218,7 +264,12 @@ struct DeclarationBuilder: Sendable {
                 previousStart = Int(start)
             case 1:
                 // Functions / types first (variables are demoted against them).
-                guard classifyCursor < names.count else { phase = 3; continue }
+                guard classifyCursor < names.count else {
+                    phase = 2
+                    excluded = WordIndex.nonVariableNames(for: languageIdentifier)
+                    variables.reserveCapacity(variableCandidates.count)
+                    continue
+                }
                 let i = classifyCursor
                 classifyCursor += 1
                 let mask = masks[i]
@@ -227,14 +278,53 @@ struct DeclarationBuilder: Sendable {
                 if mask & 1 != 0
                     || mask & 16 != 0 && mask & (2 | 32) == 0 && !WordIndex.cLikeNonSymbols.contains(names[i]) {
                     functions.insert(names[i])
+                    masks[i] |= 64
                 }
-                if mask & (2 | 32) != 0 { types.insert(names[i]) }
+                if mask & (2 | 32) != 0 {
+                    types.insert(names[i])
+                    masks[i] |= 64
+                }
                 if mask & 4 != 0 { variableCandidates.append(i) }
+            case 2:
+                guard variableCursor < variableCandidates.count else {
+                    phase = 3
+                    tableCount = 0
+                    for mask in masks where mask & 64 != 0 { tableCount += 1 }
+                    completionSymbols.reserveCapacity(tableCount)
+                    continue
+                }
+                let i = variableCandidates[variableCursor]
+                variableCursor += 1
+                // Names are unique per index, so a name's own table bit says
+                // whether it is a function or a type.
+                if masks[i] & 64 != 0 || excluded.contains(names[i]) { continue }
+                variables.insert(names[i])
+                masks[i] |= 64
+            case 3:
+                // The table's union, by name index (each name once).
+                guard unionCursor < names.count else { phase = 4; continue }
+                let i = unionCursor
+                unionCursor += 1
+                if masks[i] & 64 != 0 { completionSymbols.insert(names[i]) }
             default:
                 return true
             }
         }
-        return phase >= 3
+        return phase >= 4
+    }
+
+    /// Reserves the function and type sets at their sizes (functions: an
+    /// upper bound that still counts the few control words a call filter
+    /// drops, so this pass reads only the masks).
+    private mutating func reserveCategories() {
+        var functionCount = 0
+        var typeCount = 0
+        for mask in masks {
+            if mask & 1 != 0 || mask & 16 != 0 && mask & (2 | 32) == 0 { functionCount += 1 }
+            if mask & (2 | 32) != 0 { typeCount += 1 }
+        }
+        functions.reserveCapacity(functionCount)
+        types.reserveCapacity(typeCount)
     }
 
     private mutating func appendOutlineVarint(_ value: Int) {
@@ -246,20 +336,14 @@ struct DeclarationBuilder: Sendable {
         outline.append(UInt8(v))
     }
 
-    /// The finished scan (after `finishStep` returned true).
+    /// The finished scan (after `finishStep` returned true): assembles the
+    /// products, nothing proportional to the names is computed here.
     func makeScan(documentLength: Int) -> DeclarationScan {
-        let excluded = WordIndex.nonVariableNames(for: languageIdentifier)
-        var variables = Set<String>()
-        for i in variableCandidates {
-            let name = names[i]
-            if functions.contains(name) || types.contains(name) || excluded.contains(name) { continue }
-            variables.insert(name)
-        }
         let table = WordIndex.SymbolTable(functions: functions, types: types, variables: variables)
         // Exact-size copies: the streams grew by doubling and are held for
         // as long as the version is current.
         return DeclarationScan(languageIdentifier: languageIdentifier, table: table,
-                               completionSymbols: table.all, names: Array(names[...]),
+                               completionSymbols: completionSymbols, names: Array(names[...]),
                                encodedLocations: encoded.withUnsafeBufferPointer { Array($0) },
                                outline: outline.withUnsafeBufferPointer { Array($0) },
                                scopeCount: order.count, documentLength: documentLength,
@@ -299,6 +383,8 @@ public struct DeclarationScanner: Sendable {
     public let languageIdentifier: String
     private var walker: WalkerScan?
     private var result: DeclarationScan?
+    /// Finishing steps the scan took (tests, T17.15d-A).
+    private(set) var finishingSteps = 0
 
     public init(languageIdentifier: String) {
         self.languageIdentifier = languageIdentifier
@@ -325,6 +411,7 @@ public struct DeclarationScanner: Sendable {
             return true
         }
         if walker!.step(text, budgetUnits: max(1, budgetUnits)) {
+            finishingSteps = walker!.builder.finishSteps
             result = walker!.builder.makeScan(documentLength: walker!.documentLength)
             walker = nil
             return true

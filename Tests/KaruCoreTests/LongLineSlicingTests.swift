@@ -514,6 +514,8 @@ private final class SlicePainter {
         hub.add(engine)
         textView.textStorage?.delegate = hub
         engine.setLanguage(identifier: language)
+        // A large document scans in slices (T17.15d-A); compare with names.
+        engine.analysis.finishPendingDeclarationScanForTesting()
     }
 
     var ns: NSString { textView.textStorage!.mutableString }
@@ -729,13 +731,13 @@ struct LongLineSlicingEngineTests {
         var full = await FullPass.detached("json", text)
 
         let top = expectBandMatches(painter, full, "after setLanguage")
-        #expect(top.contains(colour(.property)) && top.contains(colour(.string)) && top.contains(colour(.number)))
+        #expect(top.contains(colour(.jsonKey)) && top.contains(colour(.string)) && top.contains(colour(.number)))
         for (label, offset) in [("quarter", ns.length / 4), ("middle", ns.length / 2), ("end", ns.length - 1)] {
             await painter.paint(at: offset)
             let band = try #require(painter.engine.paintedRange)
             #expect(NSLocationInRange(offset, band), "\(label): \(offset) not in \(band)")
             let colours = expectBandMatches(painter, full, label)
-            #expect(colours.contains(colour(.property)), "\(label): no key coloured as a property")
+            #expect(colours.contains(colour(.jsonKey)), "\(label): no key coloured as a JSON key")
         }
         // Checkpoints inside the line (the only line start is 0).
         let checkpoints = painter.engine.analysis.checkpoints.entries
@@ -750,7 +752,13 @@ struct LongLineSlicingEngineTests {
         let stale = painter.engine.analysis.checkpoints
         #expect(stale.entries.contains { $0.offset > editAt && $0.offset < probe.location })
         painter.replace(NSRange(location: editAt, length: 0), with: "\"")
-        #expect(painter.engine.analysis.checkpoints.entries.isEmpty)
+        // T17.15d-A: in-line checkpoints more than `editMargin` before the
+        // edit stay; those after it wait as pending entries (their states
+        // flipped with the quote, so the walk below re-scans past them).
+        let survivors = painter.engine.analysis.checkpoints
+        #expect(!survivors.entries.isEmpty)
+        #expect(survivors.entries.allSatisfy { $0.offset < editAt - CheckpointStore.editMargin })
+        #expect(survivors.pending.allSatisfy { $0.offset > editAt + CheckpointStore.editMargin })
         await pump(0.3)
         full = await FullPass.detached("json", painter.textView.string)
         await painter.paint(at: probe.location + 1)
@@ -810,7 +818,11 @@ struct LongLineSlicingEngineTests {
         #expect(painter.engine.analysis.checkpoints.entries.contains { $0.offset > lineStart && $0.offset < editAt })
         painter.replace(NSRange(location: editAt, length: 0), with: "`")
         let kept = painter.engine.analysis.checkpoints.entries
-        #expect(!kept.isEmpty && kept.allSatisfy { $0.offset < lineStart })
+        // T17.15d-A: the long line's in-line checkpoints more than
+        // `editMargin` before the edit stay (the exact edited range, not the
+        // paragraph `didProcessEditing` reports).
+        #expect(!kept.isEmpty && kept.allSatisfy { $0.offset < editAt - CheckpointStore.editMargin })
+        #expect(kept.contains { $0.offset > lineStart })
         await pump(0.3)
         full = await FullPass.detached("javascript", painter.textView.string)
         await painter.paint(at: editAt)

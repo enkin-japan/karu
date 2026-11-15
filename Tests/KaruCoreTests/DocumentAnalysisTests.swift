@@ -342,6 +342,8 @@ struct DocumentAnalysisTests {
             hub.add(engine)
             textView.textStorage?.delegate = hub
             engine.setLanguage(identifier: "python")
+            // A large document scans in slices (T17.15d-A); compare with names.
+            engine.analysis.finishPendingDeclarationScanForTesting()
         }
 
         var length: Int { (textView.string as NSString).length }

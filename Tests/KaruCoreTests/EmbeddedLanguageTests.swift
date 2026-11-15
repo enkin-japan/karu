@@ -371,7 +371,7 @@ struct EmbeddedMarkdownTests {
         let tokens = try Tokens("markdown", text)
         #expect(tokens.of("def") == [.keyword])
         #expect(tokens.of("return", occurrence: 1) == [.controlKeyword])
-        #expect(tokens.of("\"fence\"") == [.property])                    // JSON key
+        #expect(tokens.of("\"fence\"") == [.jsonKey])                     // JSON key
         #expect(tokens.of("true") == [.keyword])
         #expect(tokens.of("`avg ") == [.string])
         #expect(tokens.of("${") == [.interpolationDelimiter])
@@ -838,7 +838,7 @@ struct EmbeddedLongLineTests {
         }
         let ns = ("# Data\n\n```json\n" + json + "]\n```\n\nafter\n") as NSString
         let full = fullPassKinds(def, ns)
-        #expect(full.contains(.property) && full.contains(.string))
+        #expect(full.contains(.jsonKey) && full.contains(.string))
         var rng = SplitMix(state: 0x150_F3)
         var store = CheckpointStore()
         let threshold = LanguageDefinition.longLineThreshold
@@ -902,6 +902,8 @@ private final class Painter {
         hub.add(engine)
         textView.textStorage?.delegate = hub
         engine.setLanguage(identifier: language)
+        // A large document scans in slices (T17.15d-A); compare with names.
+        engine.analysis.finishPendingDeclarationScanForTesting()
     }
 
     var ns: NSString { textView.textStorage!.mutableString }

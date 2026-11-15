@@ -17,6 +17,23 @@ public protocol TextStorageObserving: AnyObject {
                                       editedRange: NSRange,
                                       changeInLength delta: Int,
                                       textStorage: NSTextStorage)
+
+    /// Mirror of `textStorage(_:willProcessEditing:range:changeInLength:)`.
+    /// Its range is the edited characters themselves; by `didProcessEditing`
+    /// attribute fixing has widened it to whole paragraphs (a one-unit insert
+    /// into a 1 MB line reports the whole line), so an observer that needs
+    /// the exact extent reads it here (T17.15d-A). Optional.
+    func textStorageWillProcessEditing(editedMask: NSTextStorageEditActions,
+                                       editedRange: NSRange,
+                                       changeInLength delta: Int,
+                                       textStorage: NSTextStorage)
+}
+
+public extension TextStorageObserving {
+    func textStorageWillProcessEditing(editedMask: NSTextStorageEditActions,
+                                       editedRange: NSRange,
+                                       changeInLength delta: Int,
+                                       textStorage: NSTextStorage) {}
 }
 
 /// Delegate multiplexer for `NSTextStorage`.
@@ -45,6 +62,22 @@ public final class TextStorageObserverHub: NSObject, NSTextStorageDelegate {
     }
 
     // MARK: - NSTextStorageDelegate
+
+    public func textStorage(_ textStorage: NSTextStorage,
+                            willProcessEditing editedMask: NSTextStorageEditActions,
+                            range editedRange: NSRange,
+                            changeInLength delta: Int) {
+        MainActor.assumeIsolated {
+            for box in observers {
+                box.observer?.textStorageWillProcessEditing(
+                    editedMask: editedMask,
+                    editedRange: editedRange,
+                    changeInLength: delta,
+                    textStorage: textStorage
+                )
+            }
+        }
+    }
 
     public func textStorage(_ textStorage: NSTextStorage,
                             didProcessEditing editedMask: NSTextStorageEditActions,

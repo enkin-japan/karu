@@ -43,10 +43,17 @@ public struct IndexedSymbol: Sendable, Equatable {
     /// method's scope opens at its receiver, before the name: the receiver
     /// leads the signature, and a top-level method is filed under its
     /// receiver's base type (`Server` for `func (s *Server) Start`).
+    ///
+    /// One pass over the scan's declarations (T17.15d): they are streamed in
+    /// document order (`forEachDeclaration(from:to:)`) instead of
+    /// materialising `scan.declarations`, and each indexed one becomes its
+    /// symbol at once (lines from one ascending sweep); a function's
+    /// signature waits for its parameters, which follow its name, and is
+    /// filled in afterwards. No intermediate arrays the size of the file's
+    /// declarations — the allocator keeps freed blocks resident, so every
+    /// transient array a large file needs stays in the footprint.
     public static func extract(from scan: DeclarationScan, text: NSString) -> [IndexedSymbol] {
         let scopes = scan.scopes
-        let declarations = scan.declarations
-        guard !declarations.isEmpty else { return [] }
         let documentLength = scan.documentLength
 
         func contains(_ scope: DeclarationScan.Scope, _ offset: Int) -> Bool {
@@ -59,106 +66,106 @@ public struct IndexedSymbol: Sendable, Equatable {
 
         // Parameters per function scope (by scope index), for signatures.
         var parameters: [Int: [String]] = [:]
-        struct Pending {
-            var name: String
-            var kind: DeclarationScan.DeclarationKind
-            var container: String?
-            var location: Int
-            /// The function scope already containing the name (Go methods).
-            var ownScope: Int?
-        }
-        var pending: [Pending] = []
+        /// Symbols whose signature lists a scope's parameters: (symbol, scope).
+        var signed: [(symbol: Int, scope: Int)] = []
+        var symbols: [IndexedSymbol] = []
         var stack: [DeclarationScan.Scope] = []
         var next = 0
-        for declaration in declarations {
-            let location = declaration.location
-            while next < scopes.count, scopes[next].start <= location {
-                let scope = scopes[next]
-                while let top = stack.last, top.index != scope.parent { stack.removeLast() }
-                stack.append(scope)
-                next += 1
-            }
-            while let top = stack.last, !contains(top, location) { stack.removeLast() }
-            guard let innermost = stack.last else { continue }
-            switch declaration.kind {
-            case .parameter:
-                if innermost.kind == .function || innermost.kind == .lambda {
-                    parameters[innermost.index, default: []].append(declaration.name)
-                }
-                continue
-            case .import, .global, .nonlocal:
-                continue
-            default:
-                break
-            }
-            let owner: Int
-            var ownScope: Int?
-            if innermost.kind == .module || isContainer(innermost) {
-                owner = stack.count - 1
-            } else if declaration.kind == .function || declaration.kind == .method,
-                      innermost.kind == .function, innermost.name == declaration.name, stack.count >= 2,
-                      stack[stack.count - 2].kind == .module || isContainer(stack[stack.count - 2]) {
-                // A Go method: its scope opens at the receiver `(`, before the name.
-                owner = stack.count - 2
-                ownScope = innermost.index
-            } else if declaration.kind == .property,
-                      let classPosition = stack.lastIndex(where: { $0.kind == .class }) {
-                owner = classPosition
-            } else {
-                continue
-            }
-            let names = stack[...owner].filter(isContainer).compactMap(\.name)
-            var container = names.isEmpty ? nil : names.joined(separator: ".")
-            if ownScope != nil, container == nil, let receiver = goReceiverType(text, nameLocation: location) {
-                // A Go method is filed under its receiver's base type (T17.14:
-                // cross-file members find `func (s *Server) Start` by `Server`).
-                container = receiver
-            }
-            pending.append(Pending(name: declaration.name, kind: declaration.kind, container: container,
-                                   location: location, ownScope: ownScope))
-        }
-
-        // Lines: one ascending sweep over the text.
-        var symbols: [IndexedSymbol] = []
-        symbols.reserveCapacity(pending.count)
+        // Lines: one ascending sweep over the text (declarations arrive in
+        // document order).
         var line = 1
         var cursor = 0
         let length = text.length
-        var buffer = [unichar](repeating: 0, count: 4096)
-        for item in pending {
-            let target = min(item.location, length)
-            while cursor < target {
-                let count = min(buffer.count, target - cursor)
-                text.getCharacters(&buffer, range: NSRange(location: cursor, length: count))
-                for i in 0..<count {
-                    let u = buffer[i]
-                    if u == 10 {
-                        line += 1
-                    } else if u == 13 {
-                        // CR, or CRLF counted at its LF.
-                        let nextIndex = cursor + i + 1
-                        if nextIndex >= length || text.character(at: nextIndex) != 10 { line += 1 }
+        withUnsafeTemporaryAllocation(of: unichar.self, capacity: 4096) { buffer in
+            let base = buffer.baseAddress!
+            func advanceLine(to location: Int) {
+                let target = min(location, length)
+                while cursor < target {
+                    let count = min(buffer.count, target - cursor)
+                    text.getCharacters(base, range: NSRange(location: cursor, length: count))
+                    for i in 0..<count {
+                        let u = base[i]
+                        if u == 10 {
+                            line += 1
+                        } else if u == 13 {
+                            // CR, or CRLF counted at its LF.
+                            let nextIndex = cursor + i + 1
+                            if nextIndex >= length || text.character(at: nextIndex) != 10 { line += 1 }
+                        }
+                    }
+                    cursor += count
+                }
+            }
+            scan.forEachDeclaration(from: 0, to: Int.max) { location, name, kind in
+                while next < scopes.count, scopes[next].start <= location {
+                    let scope = scopes[next]
+                    while let top = stack.last, top.index != scope.parent { stack.removeLast() }
+                    stack.append(scope)
+                    next += 1
+                }
+                while let top = stack.last, !contains(top, location) { stack.removeLast() }
+                guard let innermost = stack.last else { return }
+                switch kind {
+                case .parameter:
+                    if innermost.kind == .function || innermost.kind == .lambda {
+                        parameters[innermost.index, default: []].append(name)
+                    }
+                    return
+                case .import, .global, .nonlocal:
+                    return
+                default:
+                    break
+                }
+                let owner: Int
+                var ownScope: Int?
+                if innermost.kind == .module || isContainer(innermost) {
+                    owner = stack.count - 1
+                } else if kind == .function || kind == .method,
+                          innermost.kind == .function, innermost.name == name, stack.count >= 2,
+                          stack[stack.count - 2].kind == .module || isContainer(stack[stack.count - 2]) {
+                    // A Go method: its scope opens at the receiver `(`, before the name.
+                    owner = stack.count - 2
+                    ownScope = innermost.index
+                } else if kind == .property,
+                          let classPosition = stack.lastIndex(where: { $0.kind == .class }) {
+                    owner = classPosition
+                } else {
+                    return
+                }
+                var container: String?
+                for scope in stack[...owner] where isContainer(scope) {
+                    guard let part = scope.name else { continue }
+                    container = container.map { $0 + "." + part } ?? part
+                }
+                if ownScope != nil, container == nil, let receiver = goReceiverType(text, nameLocation: location) {
+                    // A Go method is filed under its receiver's base type (T17.14:
+                    // cross-file members find `func (s *Server) Start` by `Server`).
+                    container = receiver
+                }
+                advanceLine(to: location)
+                if let own = ownScope {
+                    signed.append((symbols.count, own))
+                } else if kind == .function || kind == .method {
+                    // First scope starting at or after the name.
+                    var low = 0, high = scopes.count
+                    while low < high {
+                        let mid = (low + high) / 2
+                        if scopes[mid].start < location { low = mid + 1 } else { high = mid }
+                    }
+                    if low < scopes.count, scopes[low].kind == .function || scopes[low].kind == .lambda,
+                       scopes[low].name == name {
+                        signed.append((symbols.count, scopes[low].index))
                     }
                 }
-                cursor += count
+                symbols.append(IndexedSymbol(name: name, kind: kind, container: container,
+                                             location: location, line: line, signature: nil))
             }
-            var signature: String?
-            if let own = item.ownScope {
-                signature = "(" + (parameters[own] ?? []).joined(separator: ", ") + ")"
-            } else if item.kind == .function || item.kind == .method {
-                // First scope starting at or after the name.
-                var low = 0, high = scopes.count
-                while low < high {
-                    let mid = (low + high) / 2
-                    if scopes[mid].start < item.location { low = mid + 1 } else { high = mid }
-                }
-                if low < scopes.count, scopes[low].kind == .function || scopes[low].kind == .lambda,
-                   scopes[low].name == item.name {
-                    signature = "(" + (parameters[scopes[low].index] ?? []).joined(separator: ", ") + ")"
-                }
-            }
-            symbols.append(IndexedSymbol(name: item.name, kind: item.kind, container: item.container,
-                                         location: item.location, line: line, signature: signature))
+        }
+        for (index, scope) in signed {
+            let symbol = symbols[index]
+            symbols[index] = IndexedSymbol(name: symbol.name, kind: symbol.kind, container: symbol.container,
+                                           location: symbol.location, line: symbol.line,
+                                           signature: "(" + (parameters[scope] ?? []).joined(separator: ", ") + ")")
         }
         return symbols
     }

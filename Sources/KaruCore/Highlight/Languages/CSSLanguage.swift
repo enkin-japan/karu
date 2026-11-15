@@ -48,8 +48,9 @@ public enum CSSLanguage {
                 LanguageRule(pattern: #"[A-Za-z_-][\w-]*(?=\()"#, kind: .builtin),
                 // Custom property (`--accent`), declared or used.
                 LanguageRule(pattern: #"--[\w-]+"#, kind: .symbolVariable),
-                // Property name (a word immediately before a colon).
-                LanguageRule(pattern: #"[\w-]+(?=\s*:)"#, kind: .property),
+                // Property name (a word immediately before a colon):
+                // `support.type.property-name.css` (T17.15d).
+                LanguageRule(pattern: #"[\w-]+(?=\s*:)"#, kind: .cssProperty),
                 // Number with optional unit / percentage.
                 LanguageRule(pattern: #"-?(?:\d*\.\d+|\d+)(?:[a-zA-Z%]+)?"#, kind: .number),
             ],

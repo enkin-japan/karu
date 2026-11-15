@@ -36,9 +36,15 @@ public struct HighlightTheme {
         case .comment:                return (0x6A9955, 0x008000)
         // `entity.name.type`, `support.type` (T17.0 found Karu's 0x4EC9B2 typo).
         case .type:                   return (0x4EC9B0, 0x267F99)
-        // Keys / member-style names (JSON keys, shell `$VAR`) read as the
-        // variable blue, VS Code's `variable` / property colour.
+        // Keys / member-style names (Markdown list markers, TOML keys, YAML
+        // quoted keys) read as the variable blue, VS Code's `variable` colour.
         case .property:               return (0x9CDCFE, 0x001080)
+        // `support.type.property-name.json` / `.css` (T17.15d): the variable
+        // blue in Dark Modern (`dark_vs`: `support.type.property-name`), two
+        // colours of their own in Light Modern (`light_vs`: `#e50000`, and
+        // `#0451a5` for `support.type.property-name.json`).
+        case .jsonKey:                return (0x9CDCFE, 0x0451A5)
+        case .cssProperty:            return (0x9CDCFE, 0xE50000)
         case .punctuation:            return (0xD4D4D4, 0x000000)
         // `entity.name.function`.
         case .symbolFunction:         return (0xDCDCAA, 0x795E26)
@@ -207,6 +213,8 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// language change, on a module toggle, and when all colour is cleared.
     /// Internal (not private) so unit tests can assert the invalidation.
     var paintedRange: NSRange?
+    /// Bands painted (not skipped) so far (tests, T17.15d-A).
+    private(set) var paintedPasses = 0
 
     /// The span in which this engine may currently hold foreground colour
     /// (plan §6 item 1). Each pass clears what lies outside its new band, so
@@ -339,11 +347,20 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         guard moduleEnabled else {
             language = nil
             symbolTable = nil
+            analysis.highlightCheckpointAdvancer = nil
             return
         }
         let id = analysis.languageIdentifier
         language = id.isEmpty ? nil : LanguageRegistry.definition(forIdentifier: id)
-        symbolTable = language == nil ? nil : analysis.ensureDeclarations().scan.table
+        // A large document's declarations arrive in slices (T17.15d-A): the
+        // first paint goes without names, `.declarations` repaints.
+        symbolTable = language == nil ? nil : analysis.declarationsUnlessPending()?.scan.table
+        // The tokenizer whose states `analysis.checkpoints` hold, for the
+        // analysis's sliced catch-up (T17.15d-A).
+        analysis.highlightCheckpointAdvancer = language.flatMap { definition in
+            if let scanner = definition.lexicalScanner { return .generic(scanner) }
+            return definition.identifier == "python" ? .python(definition) : nil
+        }
     }
 
     // MARK: - DocumentAnalysisConsumer
@@ -357,14 +374,49 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         case .declarations:
             // The post-edit rescan landed: refresh the table and repaint the
             // viewport (what the engine's own debounce tick did before T17.1).
-            guard moduleEnabled, language != nil, let snapshot = analysis.declarations else { return }
+            guard moduleEnabled, let language, let snapshot = analysis.declarations else { return }
+            let firstTable = symbolTable == nil
             symbolTable = snapshot.scan.table
+            // The first snapshot of a language (a large file's sliced scan,
+            // T17.15d-A): the band was painted without names. Repaint it only
+            // when the names change a colour in it — a repaint after the
+            // first display costs the window a second backing surface (about
+            // 7 MB of graphics memory on an idle window), which a data file
+            // without declarations should not pay for nothing.
+            if firstTable, let painted = paintedRange, namesChangeColours(in: painted, language: language) {
+                paintedRange = nil
+            }
             highlightVisibleRange()
         case .released:
             break
         }
     }
 
+    /// Whether the declarations now held would colour the painted band
+    /// `band` differently from a pass without them (no symbol table, no
+    /// roles) — what the band was painted with before the first snapshot.
+    /// Any doubt (the band's tokens no longer line up) counts as a change.
+    private func namesChangeColours(in band: NSRange, language: LanguageDefinition) -> Bool {
+        guard let textView else { return true }
+        let ns: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
+        guard NSMaxRange(band) <= ns.length else { return true }
+        let bounds = Self.bandBounds(raw: band, in: ns, threshold: LanguageDefinition.longLineThreshold)
+        let tokens = Self.bandTokens(in: ns, bounds: bounds, language: language, checkpoints: &analysis.checkpoints)
+        let range = tokens.painted
+        var plain = tokens.tokens
+        let plainNames = Self.identifierTokens(in: ns, range: range, tokens: &plain, roles: [], table: nil,
+                                               language: language, embedded: tokens.embedded)
+        var named = tokens.tokens
+        let roles = roleTokens(in: range, ns: ns, language: language, embedded: tokens.embedded)
+        let names = Self.identifierTokens(in: ns, range: range, tokens: &named, roles: roles, table: symbolTable,
+                                          language: language, embedded: tokens.embedded)
+        func same(_ a: [(range: NSRange, kind: TokenKind)], _ b: [(range: NSRange, kind: TokenKind)]) -> Bool {
+            a.count == b.count && zip(a, b).allSatisfy { NSEqualRanges($0.range, $1.range) && $0.kind == $1.kind }
+        }
+        return !(same(plain, named) && same(plainNames, names))
+    }
+
+    // MARK: - Appearance
     // MARK: - Appearance
 
     /// Invalidates the painted band and repaints the visible range. Public entry
@@ -408,6 +460,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// Releases all runtime state and clears painted colour.
     private func tearDown() {
         analysis.checkpoints.removeAll()
+        analysis.highlightCheckpointAdvancer = nil
         language = nil
         symbolTable = nil
         removeAllForegroundColour()
@@ -509,14 +562,14 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// stay exactly `wholeLineRange`'s.
     private nonisolated static let lineBreaks = CharacterSet(charactersIn: "\r\n\u{0085}\u{2028}\u{2029}")
 
-    private nonisolated static func isLineBreak(_ u: unichar) -> Bool {
+    nonisolated static func isLineBreak(_ u: unichar) -> Bool {
         u == 10 || u == 13 || u == 0x85 || u == 0x2028 || u == 0x2029
     }
 
     /// The last line-break unit in `[from, to)`, or nil. Unit by unit through a
     /// small buffer: a backward `rangeOfCharacter` reports composed ranges
     /// around CRLF and surrogate pairs, which can skip the last terminator.
-    private nonisolated static func lastLineBreak(in ns: NSString, from: Int, to: Int) -> Int? {
+    nonisolated static func lastLineBreak(in ns: NSString, from: Int, to: Int) -> Int? {
         let chunk = 1_024
         var buffer = [unichar](repeating: 0, count: chunk)
         var end = to
@@ -548,7 +601,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     }
 
     /// End of the line whose terminator starts at `t` (CRLF counts as one).
-    private nonisolated static func lineEnd(afterTerminatorAt t: Int, in ns: NSString) -> Int {
+    nonisolated static func lineEnd(afterTerminatorAt t: Int, in ns: NSString) -> Int {
         ns.character(at: t) == 13 && t + 1 < ns.length && ns.character(at: t + 1) == 10 ? t + 2 : t + 1
     }
 
@@ -708,6 +761,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         // Record the band we actually painted so subsequent scroll ticks that
         // stay within it can short-circuit.
         paintedRange = paintChars
+        paintedPasses += 1
         if PerfLog.isEnabled {
             PerfLog.record("highlight.pass", since: perfStart,
                            ["lang": language.identifier, "painted": paintChars.length, "skipped": 0,
@@ -931,6 +985,9 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// forward in line-aligned chunks of about `CheckpointStore.spacing`,
     /// recording a checkpoint at each chunk boundary, then advances to
     /// `start`. Logs `lexical.advance` (units scanned) when PerfLog is on.
+    /// The walk is `CheckpointStore.walk` (T17.15d-A: it also re-confirms the
+    /// store's pending entries after an edit, so it stops rescanning where
+    /// the lexical state agrees with the one before the edit again).
     ///
     /// Inside a line longer than the spacing, a tokenizer that can stop at a
     /// safe point (`advanceToSafePoint(from, to, target, &state)` returns the
@@ -939,7 +996,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// checkpoint there; without it (Python) the chunk runs to the line end
     /// as before. A `start` inside a line is reached the same way, so the
     /// returned position may lie after it; at a line start it is `start`.
-    // swiftlint:disable:next function_parameter_count function_body_length
+    // swiftlint:disable:next function_parameter_count
     nonisolated static func resumeLexicalState<State>(at start: Int, in ns: NSString, languageIdentifier: String,
                                                       initial: State, checkpoints: inout CheckpointStore,
                                                       unwrap: (LexicalState) -> State?,
@@ -949,14 +1006,6 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         -> (position: Int, state: State) {
         let perfStart = PerfLog.isEnabled ? PerfLog.now() : 0
         let length = ns.length
-        var offset = 0
-        var state = initial
-        if let checkpoint = checkpoints.nearest(atOrBefore: start), let saved = unwrap(checkpoint.state) {
-            offset = checkpoint.offset
-            state = saved
-        }
-        let resumedAt = offset
-        let spacing = CheckpointStore.spacing
         let midLine: Bool = {
             guard start > 0, start < length else { return false }
             let previous = ns.character(at: start - 1)
@@ -965,30 +1014,11 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         }()
         // A safe-point step never runs past a `start` at a line start (line
         // starts are safe points); towards a mid-line `start` it may.
-        let stepEnd = midLine ? length : start
-        while start - offset > spacing {
-            // The line start at or before `offset + spacing` (found by a
-            // bounded backward search, so a long line is not walked).
-            var next: Int
-            if let lineBreak = lastLineBreak(in: ns, from: offset, to: offset + spacing) {
-                next = Self.lineEnd(afterTerminatorAt: lineBreak, in: ns)
-            } else if let advanceToSafePoint {
-                // Inside a line longer than the spacing: the first safe point
-                // after `offset + spacing`.
-                next = advanceToSafePoint(offset, stepEnd, offset + spacing, &state)
-                guard next > offset else { break }
-                if next < start { checkpoints.record(offset: next, state: wrap(state)) }
-                offset = next
-                continue
-            } else {
-                // No safe points: the end of that line instead.
-                next = NSMaxRange(ns.lineRange(for: NSRange(location: offset, length: 0)))
-            }
-            guard next > offset, next < start else { break }
-            advance(offset, next, &state)
-            checkpoints.record(offset: next, state: wrap(state))
-            offset = next
-        }
+        let walked = checkpoints.walk(toward: start, in: ns, stepEnd: midLine ? length : start, initial: initial,
+                                      unwrap: unwrap, wrap: wrap, advance: advance,
+                                      advanceToSafePoint: advanceToSafePoint)
+        let offset = walked.offset
+        var state = walked.state
         var position = start
         if offset >= start {
             position = offset
@@ -999,8 +1029,8 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         }
         if PerfLog.isEnabled {
             PerfLog.record("lexical.advance", since: perfStart,
-                           ["lang": languageIdentifier, "units": position - resumedAt,
-                            "resumedAt": resumedAt, "checkpoints": checkpoints.entries.count])
+                           ["lang": languageIdentifier, "units": position - walked.resumedAt,
+                            "resumedAt": walked.resumedAt, "checkpoints": checkpoints.entries.count])
         }
         return (position, state)
     }

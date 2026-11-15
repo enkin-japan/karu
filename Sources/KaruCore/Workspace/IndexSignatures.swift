@@ -23,8 +23,10 @@ import Foundation
 
 enum IndexSignatures {
     /// `symbols` (from `IndexedSymbol.extract` over `text`) with richer
-    /// signatures where the language's summariser knows them.
-    static func enrich(_ symbols: [IndexedSymbol], text: NSString, language: String,
+    /// signatures where the language's summariser knows them. Updated in
+    /// place (T17.15d): a caller passing its last reference (`consume`) gets
+    /// the same storage back, no second array of the file's symbols.
+    static func enrich(_ symbols: consuming [IndexedSymbol], text: NSString, language: String,
                        path: String = "") -> [IndexedSymbol] {
         guard !symbols.isEmpty else { return symbols }
         let lookup: (IndexedSymbol) -> String?
@@ -52,12 +54,14 @@ enum IndexSignatures {
         } else {
             return symbols
         }
-        return symbols.map { symbol in
-            guard let rich = lookup(symbol), !rich.isEmpty else { return symbol }
-            return IndexedSymbol(name: symbol.name, kind: symbol.kind, container: symbol.container,
-                                 location: symbol.location, line: symbol.line,
-                                 signature: InferredMemberList.shortened(rich))
+        for index in symbols.indices {
+            let symbol = symbols[index]
+            guard let rich = lookup(symbol), !rich.isEmpty else { continue }
+            symbols[index] = IndexedSymbol(name: symbol.name, kind: symbol.kind, container: symbol.container,
+                                           location: symbol.location, line: symbol.line,
+                                           signature: InferredMemberList.shortened(rich))
         }
+        return symbols
     }
 
     // MARK: - Python

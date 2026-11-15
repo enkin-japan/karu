@@ -13,6 +13,14 @@ import Testing
 //     file-long logical line keeps is half the size;
 //   - the file is read straight into that string's storage (no `Data`);
 //   - an autorelease pool per indexed file.
+// T17.15d (the allocator keeps every freed block resident, so the index's
+// footprint is the high-water mark of one file's transient allocations):
+//   - `IndexedSymbol.extract` streams the scan's declarations in one pass
+//     (no materialised declaration list, no second "pending" array) and
+//     returns exactly what the two-pass version did;
+//   - `IndexSignatures.enrich` updates the symbols in place;
+//   - files above `IndexScope.richSignatureMaxBytes` keep the parameter-name
+//     signatures (no summariser pass).
 
 private let fixtureRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
     .appendingPathComponent("Fixtures/M17")
@@ -106,6 +114,96 @@ private func largeScript() -> String {
     return out
 }
 
+/// The two-pass `IndexedSymbol.extract` before T17.15d (materialised
+/// declarations, a pending list, then a line sweep): the reference the
+/// streaming version must match.
+private func referenceExtract(from scan: DeclarationScan, text: NSString) -> [IndexedSymbol] {
+    let scopes = scan.scopes
+    let declarations = scan.declarations
+    guard !declarations.isEmpty else { return [] }
+    let documentLength = scan.documentLength
+    func contains(_ scope: DeclarationScan.Scope, _ offset: Int) -> Bool {
+        scope.start <= offset
+            && (offset < scope.end || scope.end >= documentLength || scope.kind == .embedded && offset == scope.end)
+    }
+    func isContainer(_ scope: DeclarationScan.Scope) -> Bool {
+        scope.kind == .class || (scope.kind == .block && scope.name != nil)
+    }
+    var parameters: [Int: [String]] = [:]
+    var pending: [(name: String, kind: DeclarationScan.DeclarationKind, container: String?, location: Int, ownScope: Int?)] = []
+    var stack: [DeclarationScan.Scope] = []
+    var next = 0
+    for declaration in declarations {
+        let location = declaration.location
+        while next < scopes.count, scopes[next].start <= location {
+            let scope = scopes[next]
+            while let top = stack.last, top.index != scope.parent { stack.removeLast() }
+            stack.append(scope)
+            next += 1
+        }
+        while let top = stack.last, !contains(top, location) { stack.removeLast() }
+        guard let innermost = stack.last else { continue }
+        switch declaration.kind {
+        case .parameter:
+            if innermost.kind == .function || innermost.kind == .lambda {
+                parameters[innermost.index, default: []].append(declaration.name)
+            }
+            continue
+        case .import, .global, .nonlocal:
+            continue
+        default:
+            break
+        }
+        let owner: Int
+        var ownScope: Int?
+        if innermost.kind == .module || isContainer(innermost) {
+            owner = stack.count - 1
+        } else if declaration.kind == .function || declaration.kind == .method,
+                  innermost.kind == .function, innermost.name == declaration.name, stack.count >= 2,
+                  stack[stack.count - 2].kind == .module || isContainer(stack[stack.count - 2]) {
+            owner = stack.count - 2
+            ownScope = innermost.index
+        } else if declaration.kind == .property, let classPosition = stack.lastIndex(where: { $0.kind == .class }) {
+            owner = classPosition
+        } else {
+            continue
+        }
+        let names = stack[...owner].filter(isContainer).compactMap(\.name)
+        var container = names.isEmpty ? nil : names.joined(separator: ".")
+        if ownScope != nil, container == nil, let receiver = goReceiverType(text, nameLocation: location) {
+            container = receiver
+        }
+        pending.append((declaration.name, declaration.kind, container, location, ownScope))
+    }
+    var symbols: [IndexedSymbol] = []
+    var line = 1
+    var cursor = 0
+    let length = text.length
+    for item in pending {
+        let target = min(item.location, length)
+        while cursor < target {
+            let u = text.character(at: cursor)
+            if u == 10 {
+                line += 1
+            } else if u == 13, cursor + 1 >= length || text.character(at: cursor + 1) != 10 {
+                line += 1
+            }
+            cursor += 1
+        }
+        var signature: String?
+        if let own = item.ownScope {
+            signature = "(" + (parameters[own] ?? []).joined(separator: ", ") + ")"
+        } else if item.kind == .function || item.kind == .method,
+                  let first = scopes.first(where: { $0.start >= item.location }),
+                  first.kind == .function || first.kind == .lambda, first.name == item.name {
+            signature = "(" + (parameters[first.index] ?? []).joined(separator: ", ") + ")"
+        }
+        symbols.append(IndexedSymbol(name: item.name, kind: item.kind, container: item.container,
+                                     location: item.location, line: line, signature: signature))
+    }
+    return symbols
+}
+
 @Suite("IndexMemory", .serialized)
 struct IndexMemoryTests {
 
@@ -157,6 +255,75 @@ struct IndexMemoryTests {
         }
         #expect(cases.count > 40)
         #expect(symbols > 2_000)
+    }
+
+    /// T17.15d: the streaming `extract` returns exactly the two-pass
+    /// reference's symbols (names, kinds, containers, locations, lines and
+    /// parameter-name signatures) for every fixture in every language, the
+    /// generated large Python / TypeScript, Go methods, CRLF / CR line ends
+    /// and non-ASCII names.
+    @Test func streamingExtractMatchesTheTwoPassReference() throws {
+        var cases = try fixtureSources().map { ($0.0, $0.1, String(decoding: $0.2, as: UTF8.self)) }
+        cases.append(("large.py", "python", largePython()))
+        cases.append(("large.ts", "typescript", largeScript()))
+        cases += [
+            ("crlf.py", "python", "class A:\r\n    def m(self, x):\r\n        self.v = x\r\ndef f(a, b=1):\r\n    pass\r\n"),
+            ("cr.py", "python", "def f(a):\r    return a\rclass B:\r    y = 2\r"),
+            ("methods.go", "go", "package m\n\ntype S struct{ A int }\n\nfunc (s *S) Run(port int, h string) error { return nil }\nfunc (S) Name() string { return \"\" }\nfunc New(a int) *S { return nil }\n"),
+            ("café.py", "python", "def café(naïve, 名前=1):\n    return naïve\nclass Ünïcode:\n    x𝔸 = 1\n"),
+            ("ns.ts", "typescript", "namespace Outer { export namespace Inner { export function deep(a: number) {} } }\nclass K { m(x) {} p = 1 }\n"),
+        ]
+        var symbols = 0
+        for (name, language, text) in cases {
+            let ns = text as NSString
+            let scan = DeclarationScan.scan(text: text, languageIdentifier: language)
+            let streamed = IndexedSymbol.extract(from: scan, text: ns)
+            let reference = referenceExtract(from: scan, text: ns)
+            #expect(streamed == reference, "\(name)")
+            symbols += reference.count
+        }
+        #expect(cases.count > 40)
+        #expect(symbols > 2_000)
+    }
+
+    /// T17.15d: in-place `enrich` gives what mapping over a copy gave, and
+    /// leaves a caller's other reference to the array untouched.
+    @Test func inPlaceEnrichKeepsOtherReferences() {
+        let text = "def f(a: int, b: str = 'x') -> list[str]:\n    return [b]\nclass C:\n    def m(self, n: float) -> None: ...\n" as NSString
+        let plain = IndexedSymbol.extract(from: DeclarationScan.scan(text: text as String, languageIdentifier: "python"), text: text)
+        let kept = plain
+        let enriched = IndexSignatures.enrich(plain, text: text, language: "python")
+        #expect(kept == plain)
+        #expect(kept.first?.signature == "(a, b)")
+        #expect(enriched.map(\.name) == plain.map(\.name))
+        #expect(enriched.map(\.location) == plain.map(\.location))
+        #expect(enriched.first?.signature != nil && enriched.first?.signature != "(a, b)")
+    }
+
+    /// T17.15d: files above `richSignatureMaxBytes` are indexed with the
+    /// parameter-name signatures (no summariser), smaller ones with
+    /// summaries; the names, kinds and locations are the same either way.
+    @Test func largeFilesKeepParameterNameSignatures() async throws {
+        #expect(IndexScope().richSignatureMaxBytes == 64 * 1024)
+        let f = IndexFixture()
+        let small = "def small(a: int, b: str = 'x') -> int:\n    return a\n"
+        var large = "def large(a: int, b: str = 'x') -> int:\n    return a\n"
+        while large.utf8.count <= 400 { large += "# padding padding padding padding\n" }
+        f.write("small.py", small)
+        f.write("large.py", large)
+        let index = f.makeIndex(scope: IndexScope(richSignatureMaxBytes: 200))
+        index.start()
+        index.addFolder(f.folder)
+        #expect(await settle(index))
+        let smallRow = try #require(index.symbols(inFile: f.folder.appendingPathComponent("small.py").path).first)
+        let largeRow = try #require(index.symbols(inFile: f.folder.appendingPathComponent("large.py").path).first)
+        let rich = try #require(WorkspaceIndex.symbols(of: Data(small.utf8), language: "python").first)
+        let plain = try #require(WorkspaceIndex.symbols(of: Data(large.utf8), language: "python", rich: false).first)
+        #expect(smallRow.signature == rich.signature)
+        #expect(smallRow.signature != "(a, b)")
+        #expect(largeRow.signature == plain.signature)
+        #expect(largeRow.signature == "(a, b)")
+        #expect(largeRow.name == "large" && largeRow.line == 1)
     }
 
     /// `readText` (straight into the string's storage) reads what

@@ -34,6 +34,9 @@ private let env = ProcessInfo.processInfo.environment
 private let filesEnv = env["KARU_T1715B_FILES"]
 private let pairEnv = env["KARU_T1715B_PAIR"]
 private let outEnv = env["KARU_T1715B_OUT"]
+/// T17.15d-A: also list every main-thread gap over 20 ms with its end uptime
+/// (to match it against `KARU_PERFLOG` events).
+private let gapLogEnv = env["KARU_T1715B_GAPLOG"] != nil
 
 private func footprint() -> Int {
     var info = task_vm_info_data_t()
@@ -87,6 +90,8 @@ private final class PeakSampler: @unchecked Sendable {
 private final class MainGapMeter {
     private var last = now()
     private(set) var maxGap = 0.0
+    /// Gaps over 20 ms (end uptime, length) when `KARU_T1715B_GAPLOG` is set.
+    private(set) var longGaps: [(end: Double, gap: Double)] = []
     private var timer: Timer?
 
     init() {
@@ -100,9 +105,10 @@ private final class MainGapMeter {
     private func beat() {
         let n = now()
         maxGap = max(maxGap, n - last)
+        if gapLogEnv, n - last > 0.020 { longGaps.append((n, n - last)) }
         last = n
     }
-    func reset() { last = now(); maxGap = 0 }
+    func reset() { last = now(); maxGap = 0; longGaps = [] }
     /// Includes a stretch still running (a synchronous call that just returned).
     func read() -> Double { max(maxGap, now() - last) }
     func stop() { timer?.invalidate() }
@@ -162,6 +168,10 @@ private final class Run {
         line("phase \(name)\tstart_uptime \(String(format: "%.3f", t0))\tend_uptime \(String(format: "%.3f", now()))\t"
              + "\(detail)\tmaxMainStall_ms \(ms(max(gapNow, gap.read())))\tpeak_MB \(mb(peak.value - base))\t"
              + "settled_MB \(mb(s.bytes - base))\tmalloc_MB \(mb(mallocInUse() - mallocBase))\tsettledAfter_s \(String(format: "%.1f", s.seconds))\(s.stable ? "" : " UNSTABLE")")
+        if gapLogEnv, !gap.longGaps.isEmpty {
+            line("gaps \(name)\t" + gap.longGaps.map { String(format: "%.3f:%.1f", $0.end, $0.gap * 1000) }
+                .joined(separator: " "))
+        }
     }
 
     func cleanup() {

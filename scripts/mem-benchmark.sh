@@ -8,7 +8,12 @@
 # 并输出读数稳定的时刻（距启动秒数）。固定 3 s 采样会随启动时序落在一次
 # 数十 MB 阶跃之前或之后，造成假回归。可用环境变量调整：
 #   KARU_BENCH_STABLE_SECONDS（默认 2）、KARU_BENCH_STABLE_TOLERANCE_KB（默认 512）、
-#   KARU_BENCH_MAX_WAIT_SECONDS（默认 20）。
+#   KARU_BENCH_MAX_WAIT_SECONDS（默认 20）、KARU_BENCH_MIN_WAIT_SECONDS（默认 0）。
+# KARU_BENCH_MIN_WAIT_SECONDS（T17.15d）为最短观察时间：启动后这段时间内的读数
+# 不参与稳定判定，稳定区间必须整个落在它之后，因此读数最早在
+# 「最短观察时间 + 稳定窗口」时取得。用于主线程阻塞、内存暂时不动而被提前取值的
+# 构建（如 v0.12.0 打开 10 MB 时 1.2 s 取到台阶前的 63 MB，3.7 s 才跳到 104 MB）。
+# 最长等待不足「最短观察时间 + 稳定窗口」时自动延长到该值。默认 0 与旧版行为相同。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -132,6 +137,10 @@ sample_phys_footprint_kb() {
 STABLE_SECONDS="${KARU_BENCH_STABLE_SECONDS:-2}"
 STABLE_TOLERANCE_KB="${KARU_BENCH_STABLE_TOLERANCE_KB:-512}"
 MAX_WAIT_SECONDS="${KARU_BENCH_MAX_WAIT_SECONDS:-20}"
+MIN_WAIT_SECONDS="${KARU_BENCH_MIN_WAIT_SECONDS:-0}"
+# 最短观察时间之后至少还要留出一个稳定窗口。
+MAX_WAIT_SECONDS=$(awk -v m="$MAX_WAIT_SECONDS" -v n="$MIN_WAIT_SECONDS" -v w="$STABLE_SECONDS" \
+    'BEGIN{ x = n + w; if (m + 0 < x) print x; else print m }')
 
 now_seconds() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
 
@@ -147,10 +156,13 @@ wait_for_stable_footprint() {
             last_kb="$kb"
             ts="$ts $t"; kbs="$kbs $kb"
             # 从最新读数向前回看：区间内 max-min 不超过容差且跨度达到窗口即视为稳定。
-            settled=$(awk -v ts="$ts" -v kbs="$kbs" -v win="$STABLE_SECONDS" -v tol="$STABLE_TOLERANCE_KB" 'BEGIN{
+            # 早于最短观察时间（KARU_BENCH_MIN_WAIT_SECONDS）的读数不算进区间。
+            settled=$(awk -v ts="$ts" -v kbs="$kbs" -v win="$STABLE_SECONDS" -v tol="$STABLE_TOLERANCE_KB" \
+                -v minw="$MIN_WAIT_SECONDS" 'BEGIN{
                 n = split(ts, T, " "); split(kbs, K, " ")
                 mn = K[n]; mx = K[n]
                 for (i = n; i >= 1; i--) {
+                    if (T[i] + 0 < minw + 0) break
                     if (K[i] + 0 < mn) mn = K[i] + 0
                     if (K[i] + 0 > mx) mx = K[i] + 0
                     if (mx - mn > tol) break
@@ -216,6 +228,9 @@ stable_str() {
 
 echo ""
 echo "== [4/4] 三轮采样 =="
+if awk -v n="$MIN_WAIT_SECONDS" 'BEGIN{exit !(n + 0 > 0)}'; then
+    echo "最短观察时间 ${MIN_WAIT_SECONDS}s（KARU_BENCH_MIN_WAIT_SECONDS），最长等待 ${MAX_WAIT_SECONDS}s"
+fi
 
 read -r ROUND1_KB ROUND1_STABLE <<< "$(run_round "空文档启动基线")" || true
 echo "空文档启动基线 phys_footprint: ${ROUND1_KB:-N/A} KB（稳定于 $(stable_str "${ROUND1_STABLE:-}")）" >&2

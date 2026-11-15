@@ -12,7 +12,9 @@ import Foundation
 ///   own directory; see `GitIgnoreRule` for the supported subset.
 /// - **Files**: languages with declaration walkers only (`DeclarationScan`:
 ///   Python incl. `.pyi`, JS / JSX, TS / TSX, Swift, Go, Rust, Java, C#, C,
-///   C++); larger than `maxFileBytes` (2 MB) skipped.
+///   C++); larger than `maxFileBytes` (2 MB) skipped. Files larger than
+///   `richSignatureMaxBytes` (64 KB) keep the declaration-derived parameter
+///   names as signatures instead of `IndexSignatures` summaries (T17.15d).
 /// - **Cap**: at most `maxFiles` (50,000) indexable files per folder; past it
 ///   the walk stops and the folder is flagged over the limit.
 ///
@@ -20,6 +22,17 @@ import Foundation
 public struct IndexScope: Sendable, Equatable {
     public static let defaultMaxFileBytes = 2 * 1024 * 1024
     public static let defaultMaxFiles = 50_000
+    /// Largest file whose symbols get `IndexSignatures` summaries (T17.15d).
+    ///
+    /// The allocator keeps freed blocks resident (macOS 27's xzone malloc;
+    /// `malloc_zone_pressure_relief` releases nothing), so the index's
+    /// resident cost is the high-water mark of its per-file transient
+    /// allocations. A language summariser's peak is 15–25× the file
+    /// (typeshed's 331 KB `winerror.pyi`: 4.6 MB with summaries, 2.3 MB
+    /// names only); above this size only the declaration scan runs and the
+    /// parameter-name signatures stay. 99.7% of typeshed's and 96% of
+    /// CPython's indexable files are below it.
+    public static let defaultRichSignatureMaxBytes = 64 * 1024
 
     public static let skippedDirectoryNames: Set<String> = [
         ".git", "node_modules", ".build", "build", "dist", "out", "target", "DerivedData",
@@ -28,10 +41,14 @@ public struct IndexScope: Sendable, Equatable {
 
     public var maxFileBytes: Int
     public var maxFiles: Int
+    /// See `defaultRichSignatureMaxBytes`.
+    public var richSignatureMaxBytes: Int
 
-    public init(maxFileBytes: Int = IndexScope.defaultMaxFileBytes, maxFiles: Int = IndexScope.defaultMaxFiles) {
+    public init(maxFileBytes: Int = IndexScope.defaultMaxFileBytes, maxFiles: Int = IndexScope.defaultMaxFiles,
+                richSignatureMaxBytes: Int = IndexScope.defaultRichSignatureMaxBytes) {
         self.maxFileBytes = maxFileBytes
         self.maxFiles = maxFiles
+        self.richSignatureMaxBytes = richSignatureMaxBytes
     }
 
     /// The walker language of a file name, or nil when the file is not indexed.

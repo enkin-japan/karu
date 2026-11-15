@@ -223,7 +223,7 @@ struct LexicalProfilesTests {
         #expect(a.kinds(of: "\"x /* no */\"") == string)
         #expect(a.kinds(of: "'it\\'s'") == escaped)
         #expect(a.kinds(of: "/* multi \"q\"\n   line */") == comment)
-        #expect(a.kinds(of: "color") == [.property])
+        #expect(a.kinds(of: "color") == [.cssProperty])
         #expect(a.kinds(of: "\"line \\\ncontinued\"") == escaped)
     }
 

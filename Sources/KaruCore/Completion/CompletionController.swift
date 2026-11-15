@@ -349,12 +349,16 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             languageKeywords = []
             languageBuiltins = []
             contextScanner = nil
+            analysis.contextCheckpointAdvancer = nil
             return
         }
         languageIdentifier = def.identifier
         languageKeywords = def.keywords
         languageBuiltins = def.builtins
         contextScanner = CandidateEngine.contextScanner(for: def.identifier, definition: def)
+        // The scanner whose states `analysis.contextCheckpoints` hold, for the
+        // analysis's sliced catch-up (T17.15d-A).
+        analysis.contextCheckpointAdvancer = contextScanner.map { .generic($0) }
     }
 
     // MARK: - DocumentAnalysisConsumer
@@ -395,7 +399,9 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         wordJobPending = false
         var builder = WordIndexBuilder(dollar: IdentifierText.allowsDollar(languageIdentifier))
         installWordIndex(builder.finish(text))
-        if analysis.publishedDeclarations == nil { _ = analysis.ensureDeclarations() }
+        // A sliced scan in flight (a large file's open, T17.15d-A) publishes
+        // on its own; finishing it here would undo the slicing.
+        if analysis.publishedDeclarations == nil { _ = analysis.declarationsUnlessPending() }
         if PerfLog.isEnabled {
             PerfLog.record("completion.index", since: start,
                            ["docLen": text.length, "lang": languageIdentifier, "sliced": 0])
