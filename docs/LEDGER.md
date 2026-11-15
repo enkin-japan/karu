@@ -1352,6 +1352,17 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **偶发失败（与本阶段无关）**：全量一次 `LongLineSlicingEngineTests.minifiedJSONIsPaintedInSlicesThatMatchAFullPass` 的完整性断言
     「过期检查点给出错误结果」在并行负载下恰好不成立（单独 3 次、全量另 2 次通过）。来自 T17.15d-A 的测试：断言用的是界面实际绘制范围的起点，随后台补齐时机变化；已改为从 `probe` 起算（其前必有编辑点之后的过期检查点），单独与全量复跑通过。
 
+- `MallocSpaceEfficient=1` 评估（main，2026-11-15，只评估、未改代码与打包；明细见 `docs/M17-QUALITY-REPORT.md` 第 11 节）：
+  - **方法**：同一 release 二进制（`b80c92f`）只切换启动环境变量，关 / 开交替；真实 App 静置 3 轮、冷启动 5 轮、真实窗口验收套件与索引基准各 2 轮；
+    另用 `build/Karu.app`（Developer ID + hardened runtime）复核，并用探针 App 确认 Info.plist 的 `LSEnvironment` 能把变量交给经 LaunchServices 启动的进程。
+  - **内存**：空文档 30.2–31.2 → 22.5–22.7 MB；1 MB JSON 50.1–50.3 → 37.3–37.8；10 MB Python 93.0–93.9 → 59.3–59.7（签名版 98.0 → 63.7）；
+    10 MB 多样名字 116.5–117.0 → 68.2–68.8；两个 10 MB 窗口 152.0–152.7 → 101.2–102.0；5 MB 单行 JSON 257 → 215–219；
+    typeshed 索引相对空文档 +4.2–4.7 → −1.2 MB。真实窗口套件里 large.py 关窗后 +49–63 → +11 MB。
+  - **代价**：冷启动中位差 1–6 ms（噪声内）；每键 p95、主线程停顿、滚动、打开耗时无可见变化；建索引墙钟 / CPU 慢 4–7%（typeshed 4.9 → 5.1 s）。
+  - **采用需要**（待用户决定）：`bundle-macos.sh` 的 Info.plist 加 `LSEnvironment`（main 亲自改）；`RunPlan.environment` 一并滤掉该变量，
+    否则「运行」启动的用户程序会继承；`mem-benchmark.sh` 等直接执行二进制的基准要显式设置它，读数才与用户的 App 一致。
+  - **附带发现**（与该变量无关，待查）：5 MB 单行 JSON 关窗后 malloc 在用量仍 +150 MB，两种模式相同。
+
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 
 用户决策（2026-11-12）：常驻内存三场景上限统一上调为 99 MB，目标值不变，新增常驻内存仍须评估并汇报；
