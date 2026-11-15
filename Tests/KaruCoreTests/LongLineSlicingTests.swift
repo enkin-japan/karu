@@ -767,9 +767,13 @@ struct LongLineSlicingEngineTests {
         let after = painter.colours(in: NSRange(location: probe.location + 1, length: probe.length))
         #expect(after != before, "the edit did not change the colours downstream")
         // Resuming from the un-invalidated checkpoints would paint it wrong.
+        // From `probe` (not the painted band's start, which varies with the
+        // background catch-up's timing): a stale checkpoint after the edit
+        // lies before it (asserted above), so the stale walk starts in the
+        // flipped state.
         var staleStore = stale
-        let bounds = HighlightEngine.BandBounds(start: band.location, startMidLine: true,
-                                                end: NSMaxRange(band), endMidLine: true)
+        let bounds = HighlightEngine.BandBounds(start: probe.location, startMidLine: true,
+                                                end: max(NSMaxRange(band), NSMaxRange(probe)), endMidLine: true)
         let fromStale = HighlightEngine.bandTokens(in: painter.ns, bounds: bounds, language: def,
                                                    checkpoints: &staleStore)
         var freshStore = CheckpointStore()
