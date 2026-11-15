@@ -681,10 +681,11 @@ public final class WorkspaceIndex: @unchecked Sendable {
             lock.unlock()
             if full { postChange(); return (nil, false) }
         }
-        guard size <= Int64(scope.maxFileBytes), let data = FileManager.default.contents(atPath: path) else {
+        guard size <= Int64(scope.maxFileBytes), let text = Self.readText(atPath: path, size: Int(size)) else {
             return (nil, false)
         }
-        let symbols = Self.symbols(of: data, language: language)
+        // Per file: the scan's bridged strings do not pile up on the queue.
+        let symbols = autoreleasepool { Self.symbols(of: text, language: language) }
         folder.databaseLock.lock()
         let id = try? folder.database?.replaceFile(path: relative, language: language, size: size, mtime: mtime,
                                                     symbols: symbols)
@@ -700,11 +701,18 @@ public final class WorkspaceIndex: @unchecked Sendable {
 
     /// The indexed declarations of a file's bytes (UTF-8, a leading BOM
     /// dropped; invalid sequences replaced).
+    ///
+    /// The text is a native Swift string bridged to `NSString` (T17.15a):
+    /// its UTF-8 storage is one allocation the size of the file, where
+    /// `NSString(data:encoding:)` built a UTF-16 copy twice that size —
+    /// freed pages the allocator keeps after the largest file. Same text
+    /// (`NSString` decoding failed over to this for invalid UTF-8 anyway).
     static func symbols(of data: Data, language: String) -> [IndexedSymbol] {
-        var bytes = data
-        if bytes.starts(with: [0xEF, 0xBB, 0xBF]) { bytes = bytes.dropFirst(3) }
-        let text: NSString = NSString(data: bytes, encoding: String.Encoding.utf8.rawValue)
-            ?? (String(decoding: bytes, as: UTF8.self) as NSString)
+        symbols(of: decodedText(data) as NSString, language: language)
+    }
+
+    /// The indexed declarations of a file's text (`readText`, `decodedText`).
+    static func symbols(of text: NSString, language: String) -> [IndexedSymbol] {
         let scan = DeclarationScan.scan(text: text as String, languageIdentifier: language)
         // Signature summaries (T17.14) cost a summariser pass: skipped when
         // `richSignatures` is off (benchmarks compare both).
@@ -716,13 +724,55 @@ public final class WorkspaceIndex: @unchecked Sendable {
     /// the app; benchmarks switch it off for a before / after reading).
     nonisolated(unsafe) static var richSignatures = true
 
-    /// The text the index reads for a file (for tests comparing against
-    /// `DeclarationScan`).
+    /// A file's text as the index reads it, straight from the file into a
+    /// native string's UTF-8 storage (T17.15a: one allocation the size of
+    /// the file, no intermediate `Data`): a leading BOM dropped, invalid
+    /// UTF-8 repaired as `decodedText` does. A file that grew past `size`
+    /// since it was stat'ed is read whole. Nil when it cannot be read.
+    static func readText(atPath path: String, size: Int) -> NSString? {
+        let fd = open(path, O_RDONLY | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var failed = false
+        var grew = false
+        let capacity = max(0, size) + 1
+        let string = String(unsafeUninitializedCapacity: capacity) { buffer -> Int in
+            guard let base = buffer.baseAddress else { return 0 }
+            var total = 0
+            while total < capacity {
+                let n = read(fd, base + total, capacity - total)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    failed = true
+                    return 0
+                }
+                if n == 0 { break }
+                total += n
+            }
+            if total == capacity {
+                grew = true
+                return 0
+            }
+            if total >= 3, base[0] == 0xEF, base[1] == 0xBB, base[2] == 0xBF {
+                memmove(base, base + 3, total - 3)
+                total -= 3
+            }
+            return total
+        }
+        if failed { return nil }
+        if grew {
+            guard let data = FileManager.default.contents(atPath: path) else { return nil }
+            return decodedText(data) as NSString
+        }
+        return string as NSString
+    }
+
+    /// The text the index reads for a file's bytes (tests compare against
+    /// `DeclarationScan`; `CrossFileTypeService` reads files with it).
     static func decodedText(_ data: Data) -> String {
         var bytes = data
         if bytes.starts(with: [0xEF, 0xBB, 0xBF]) { bytes = bytes.dropFirst(3) }
-        return (NSString(data: bytes, encoding: String.Encoding.utf8.rawValue) as String?)
-            ?? String(decoding: bytes, as: UTF8.self)
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     // MARK: - Notifications

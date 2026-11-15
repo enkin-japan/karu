@@ -37,14 +37,14 @@ public struct DeclarationQueryIndex: Sendable {
     static let declarationStride = 128
     static let scopeStride = 256
 
-    struct ModuleEntry: Sendable {
+    struct ModuleEntry: Sendable, Equatable {
         var name: Int32
         var location: Int32
         var kind: DeclarationScan.DeclarationKind
     }
 
     /// A scope record with the stream position it was read from.
-    struct PositionedScope: Sendable {
+    struct PositionedScope: Sendable, Equatable {
         var record: DeclarationScan.ScopeRecord
         /// Reader index of the record's first byte.
         var byte: Int
@@ -52,13 +52,13 @@ public struct DeclarationQueryIndex: Sendable {
         var base: Int
     }
 
-    private struct DeclarationSeek: Sendable {
+    private struct DeclarationSeek: Sendable, Equatable {
         var byte: Int32
         var base: Int32
         var first: Int32
     }
 
-    private struct ScopeSeek: Sendable {
+    private struct ScopeSeek: Sendable, Equatable {
         var byte: Int32
         var base: Int32
         var index: Int32
@@ -68,7 +68,7 @@ public struct DeclarationQueryIndex: Sendable {
     }
 
     /// Named class scope (brace languages), sorted by name index.
-    private struct NamedClass: Sendable {
+    private struct NamedClass: Sendable, Equatable {
         var name: Int32
         /// The top-level group of its chain (`-1` outside regions).
         var group: Int32
@@ -86,90 +86,220 @@ public struct DeclarationQueryIndex: Sendable {
     private let scopeSeeks: [ScopeSeek]
     private let namedClasses: [NamedClass]
 
+    /// Whether `other` holds exactly the same tables (tests: a sliced or
+    /// prebuilt index against a fresh one-shot build). The scans are
+    /// compared by their streams.
+    func hasSameTables(as other: DeclarationQueryIndex) -> Bool {
+        module == other.module && groups == other.groups && declarationSeeks == other.declarationSeeks
+            && scopeSeeks == other.scopeSeeks && namedClasses == other.namedClasses
+            && scan.names == other.scan.names && scan.encodedLocations == other.scan.encodedLocations
+            && scan.outline == other.scan.outline && scan.documentLength == other.scan.documentLength
+    }
+
     // MARK: - Build
 
+    /// Builds the index of `scan` in one go (`Builder` run to completion).
     public init(scan: DeclarationScan) {
-        self.scan = scan
-        let documentLength = scan.documentLength
-        let brace = BraceLanguage(identifier: scan.languageIdentifier) != nil
-        let regions = scan.hasEmbeddedRegions
+        var builder = Builder(scan: scan)
+        while !builder.step(deadline: .max) {}
+        self = builder.finish()
+    }
 
-        // 1. Outline pass: scope seeks and named classes.
-        var scopeSeeks: [ScopeSeek] = []
-        var namedClasses: [NamedClass] = []
-        do {
-            var reader = DeclarationScan.Reader(scan.outline)
-            var nextStart = 0
-            var index = 0
-            var stack: [PositionedScope] = []
-            while !reader.atEnd {
-                let byte = reader.index
-                let base = nextStart
-                nextStart += reader.varint()
-                let packed = reader.varint()
-                let name = packed & 1 != 0 ? reader.varint() : -1
-                let record = DeclarationScan.ScopeRecord(
-                    index: index, start: nextStart, end: nextStart + (packed >> 4),
-                    kind: DeclarationScan.ScopeKind(rawValue: UInt8((packed >> 1) & 7)) ?? .block, name: name)
-                if index > 0, index % Self.scopeStride == 0 {
-                    scopeSeeks.append(ScopeSeek(byte: Int32(byte), base: Int32(base), index: Int32(index),
-                                                first: Int32(record.start), stack: stack))
+    private init(scan: DeclarationScan, module: [ModuleEntry], groups: [Int32: [ModuleEntry]],
+                 declarationSeeks: [DeclarationSeek], scopeSeeks: [ScopeSeek], namedClasses: [NamedClass]) {
+        self.scan = scan
+        self.module = module
+        self.groups = groups
+        self.declarationSeeks = declarationSeeks
+        self.scopeSeeks = scopeSeeks
+        self.namedClasses = namedClasses
+    }
+
+    /// Resumable construction (T17.15a): the same passes as one build, cut
+    /// into steps that stop at a deadline, so the analysis can build a new
+    /// snapshot's index in its ~4 ms slices instead of on the keystroke that
+    /// first queries it. Phases: the outline pass (scope seeks, named
+    /// classes), the declaration pass (declaration seeks, the first
+    /// module-owned declaration per name), case folding of the module names
+    /// into one flat buffer, and the sort. `step` with `.max` is the one-shot
+    /// build; any split yields an equal index.
+    ///
+    /// Transient memory is a handful of large buffers (per-name first-entry
+    /// table, flat folded names, sort keys) rather than one array per name.
+    public struct Builder: Sendable {
+        public let scan: DeclarationScan
+        private enum Phase: Sendable { case outline, declarations, fold, sort, done }
+        private var phase = Phase.outline
+
+        /// Records / declarations / names between deadline checks.
+        static let defaultChunk = 4_096
+        private let chunk: Int
+
+        // Outline pass.
+        private var outlineReader: DeclarationScan.Reader
+        private var outlineStart = 0
+        private var outlineIndex = 0
+        private var outlineStack: [PositionedScope] = []
+        private var scopeSeeks: [ScopeSeek] = []
+        private var namedClasses: [NamedClass] = []
+
+        // Declaration pass.
+        private var scopeReader: DeclarationScan.Reader
+        private var scopeStart = 0
+        private var scopeIndex = 0
+        private var pending: DeclarationScan.ScopeRecord?
+        private var declarationStack: [DeclarationScan.ScopeRecord] = []
+        private var reader: DeclarationScan.Reader
+        private var location = 0
+        private var count = 0
+        private var declarationSeeks: [DeclarationSeek] = []
+        /// Module-owned first declarations in document order; `firstEntry`
+        /// maps a name index to its position there (-1: none yet).
+        private var entries: [ModuleEntry] = []
+        private var firstEntry: [Int32] = []
+        private var firstInGroup: [Int32: [Int32: ModuleEntry]] = [:]
+        private var groupOrder: [Int32: [Int32]] = [:]
+
+        // Fold / sort.
+        private var foldPosition = 0
+        private var folded: [UInt16] = []
+        private var keys: [SortKey] = []
+        private var module: [ModuleEntry] = []
+        private var groups: [Int32: [ModuleEntry]] = [:]
+
+        /// A module entry's sort key: the first four folded units packed
+        /// (zero-padded) and its slice of the flat folded buffer.
+        fileprivate struct SortKey: Sendable {
+            var head: UInt64
+            var start: Int32
+            var length: Int32
+            var entry: Int32
+        }
+
+        public init(scan: DeclarationScan) {
+            self.init(scan: scan, chunk: Self.defaultChunk)
+        }
+
+        /// `chunk`: work items between deadline checks (tests use tiny ones).
+        init(scan: DeclarationScan, chunk: Int) {
+            self.scan = scan
+            self.chunk = max(1, chunk)
+            outlineReader = DeclarationScan.Reader(scan.outline)
+            scopeReader = DeclarationScan.Reader(scan.outline)
+            reader = DeclarationScan.Reader(scan.encodedLocations)
+        }
+
+        public var isFinished: Bool { phase == .done }
+
+        /// Works until `deadline` (`DispatchTime` uptime nanoseconds; `.max`:
+        /// to completion); true once the index is ready for `finish()`.
+        public mutating func step(deadline: UInt64) -> Bool {
+            while phase != .done {
+                switch phase {
+                case .outline: outlinePass(deadline)
+                case .declarations: declarationPass(deadline)
+                case .fold: foldPass(deadline)
+                case .sort: sortPass()
+                case .done: break
                 }
-                while let top = stack.last, record.start >= top.record.end, top.record.end < documentLength {
-                    stack.removeLast()
+                if phase != .done, deadline != .max, DispatchTime.now().uptimeNanoseconds >= deadline { return false }
+            }
+            return true
+        }
+
+        /// The built index (after `step` returned true).
+        public func finish() -> DeclarationQueryIndex {
+            precondition(phase == .done, "DeclarationQueryIndex.Builder.finish() before the last step")
+            return DeclarationQueryIndex(scan: scan, module: module, groups: groups,
+                                         declarationSeeks: declarationSeeks, scopeSeeks: scopeSeeks,
+                                         namedClasses: namedClasses)
+        }
+
+        @inline(__always)
+        private func pastDeadline(_ deadline: UInt64) -> Bool {
+            deadline != .max && DispatchTime.now().uptimeNanoseconds >= deadline
+        }
+
+        // MARK: Outline pass: scope seeks and named classes
+
+        private mutating func outlinePass(_ deadline: UInt64) {
+            let documentLength = scan.documentLength
+            let brace = BraceLanguage(identifier: scan.languageIdentifier) != nil
+            let regions = scan.hasEmbeddedRegions
+            var budget = chunk
+            while !outlineReader.atEnd {
+                if budget == 0 {
+                    if pastDeadline(deadline) { return }
+                    budget = chunk
+                }
+                budget -= 1
+                let byte = outlineReader.index
+                let base = outlineStart
+                outlineStart += outlineReader.varint()
+                let packed = outlineReader.varint()
+                let name = packed & 1 != 0 ? outlineReader.varint() : -1
+                let record = DeclarationScan.ScopeRecord(
+                    index: outlineIndex, start: outlineStart, end: outlineStart + (packed >> 4),
+                    kind: DeclarationScan.ScopeKind(rawValue: UInt8((packed >> 1) & 7)) ?? .block, name: name)
+                if outlineIndex > 0, outlineIndex % DeclarationQueryIndex.scopeStride == 0 {
+                    scopeSeeks.append(ScopeSeek(byte: Int32(byte), base: Int32(base), index: Int32(outlineIndex),
+                                                first: Int32(record.start), stack: outlineStack))
+                }
+                while let top = outlineStack.last, record.start >= top.record.end, top.record.end < documentLength {
+                    outlineStack.removeLast()
                 }
                 if record.kind == .class, name >= 0 {
                     // Brace languages: the document's, or an embedded region's child.
                     var group: Int32 = -1
-                    if regions, stack.count > 1, stack[1].record.kind == .embedded {
-                        group = Int32(stack[1].record.name)
+                    if regions, outlineStack.count > 1, outlineStack[1].record.kind == .embedded {
+                        group = Int32(outlineStack[1].record.name)
                     }
                     let isBrace = group >= 0 ? BraceLanguage(identifier: scan.names[Int(group)]) != nil : brace
                     if isBrace {
                         namedClasses.append(NamedClass(name: Int32(name), group: group, byte: Int32(byte),
-                                                       base: Int32(base), index: Int32(index),
+                                                       base: Int32(base), index: Int32(outlineIndex),
                                                        start: Int32(record.start), end: Int32(record.end)))
                     }
                 }
-                stack.append(PositionedScope(record: record, byte: byte, base: base))
-                index += 1
+                outlineStack.append(PositionedScope(record: record, byte: byte, base: base))
+                outlineIndex += 1
             }
+            outlineStack = []
+            namedClasses.sort { ($0.name, $0.start) < ($1.name, $1.start) }
+            firstEntry = [Int32](repeating: -1, count: scan.names.count)
+            pending = readScope()
+            phase = .declarations
         }
-        namedClasses.sort { ($0.name, $0.start) < ($1.name, $1.start) }
 
-        // 2. Declaration pass: seeks and module-owned bindings.
-        var declarationSeeks: [DeclarationSeek] = []
-        var firstModule: [Int32: ModuleEntry] = [:]
-        var order: [Int32] = []
-        var firstInGroup: [Int32: [Int32: ModuleEntry]] = [:]
-        var groupOrder: [Int32: [Int32]] = [:]
-        do {
-            var outline = DeclarationScan.Reader(scan.outline)
-            var nextStart = 0
-            var nextIndex = 0
-            func readNext() -> DeclarationScan.ScopeRecord? {
-                guard !outline.atEnd else { return nil }
-                nextStart += outline.varint()
-                let packed = outline.varint()
-                let name = packed & 1 != 0 ? outline.varint() : -1
-                let record = DeclarationScan.ScopeRecord(
-                    index: nextIndex, start: nextStart, end: nextStart + (packed >> 4),
-                    kind: DeclarationScan.ScopeKind(rawValue: UInt8((packed >> 1) & 7)) ?? .block, name: name)
-                nextIndex += 1
-                return record
-            }
-            var pending = readNext()
-            var stack: [DeclarationScan.ScopeRecord] = []
-            var reader = DeclarationScan.Reader(scan.encodedLocations)
-            var location = 0
-            var count = 0
+        // MARK: Declaration pass: seeks and module-owned bindings
+
+        private mutating func readScope() -> DeclarationScan.ScopeRecord? {
+            guard !scopeReader.atEnd else { return nil }
+            scopeStart += scopeReader.varint()
+            let packed = scopeReader.varint()
+            let name = packed & 1 != 0 ? scopeReader.varint() : -1
+            let record = DeclarationScan.ScopeRecord(
+                index: scopeIndex, start: scopeStart, end: scopeStart + (packed >> 4),
+                kind: DeclarationScan.ScopeKind(rawValue: UInt8((packed >> 1) & 7)) ?? .block, name: name)
+            scopeIndex += 1
+            return record
+        }
+
+        private mutating func declarationPass(_ deadline: UInt64) {
+            let documentLength = scan.documentLength
             let hasOutline = scan.scopeCount > 0
+            var budget = chunk
             while !reader.atEnd {
+                if budget == 0 {
+                    if pastDeadline(deadline) { return }
+                    budget = chunk
+                }
+                budget -= 1
                 let byte = reader.index
                 let base = location
                 location += reader.varint()
                 let nameKind = reader.varint()
-                if count % Self.declarationStride == 0 {
+                if count % DeclarationQueryIndex.declarationStride == 0 {
                     declarationSeeks.append(DeclarationSeek(byte: Int32(byte), base: Int32(base),
                                                             first: Int32(location)))
                 }
@@ -180,17 +310,19 @@ public struct DeclarationQueryIndex: Sendable {
                 var group: Int32 = -1
                 if hasOutline {
                     while let record = pending, record.start <= location {
-                        while let top = stack.last, record.start >= top.end, top.end < documentLength {
-                            stack.removeLast()
+                        while let top = declarationStack.last, record.start >= top.end, top.end < documentLength {
+                            declarationStack.removeLast()
                         }
-                        stack.append(record)
-                        pending = readNext()
+                        declarationStack.append(record)
+                        pending = readScope()
                     }
-                    while let top = stack.last, !scan.contains(top, location) { stack.removeLast() }
-                    if !stack.isEmpty {
-                        let floor = DeclarationScan.topLevelPosition(stack)
-                        moduleOwned = DeclarationScan.ownerPosition(of: kind, stack: stack) == floor
-                        if floor == 1 { group = Int32(stack[1].name) }
+                    while let top = declarationStack.last, !scan.contains(top, location) {
+                        declarationStack.removeLast()
+                    }
+                    if !declarationStack.isEmpty {
+                        let floor = DeclarationScan.topLevelPosition(declarationStack)
+                        moduleOwned = DeclarationScan.ownerPosition(of: kind, stack: declarationStack) == floor
+                        if floor == 1 { group = Int32(declarationStack[1].name) }
                     }
                 }
                 if moduleOwned, group >= 0 {
@@ -200,31 +332,91 @@ public struct DeclarationQueryIndex: Sendable {
                                                                                    kind: kind)
                         groupOrder[group, default: []].append(nameIndex)
                     }
-                } else if moduleOwned, firstModule[nameIndex] == nil {
-                    firstModule[nameIndex] = ModuleEntry(name: nameIndex, location: Int32(location), kind: kind)
-                    order.append(nameIndex)
+                } else if moduleOwned, firstEntry[Int(nameIndex)] < 0 {
+                    firstEntry[Int(nameIndex)] = Int32(entries.count)
+                    entries.append(ModuleEntry(name: nameIndex, location: Int32(location), kind: kind))
                 }
             }
+            declarationStack = []
+            firstEntry = []
+            folded.reserveCapacity(entries.count * 8)
+            keys.reserveCapacity(entries.count)
+            phase = .fold
         }
-        let lowered = scan.names.map(CaseFold.folded)
-        func sorted(_ entries: [ModuleEntry]) -> [ModuleEntry] {
-            entries.sorted { lhs, rhs in
-                let order = Self.compare(lowered[Int(lhs.name)], lowered[Int(rhs.name)])
-                if order != 0 { return order < 0 }
-                return Self.compare(Array(scan.names[Int(lhs.name)].utf16),
-                                    Array(scan.names[Int(rhs.name)].utf16)) < 0
+
+        // MARK: Fold and sort
+
+        /// Appends `name`'s folded units to `buffer`; returns its sort key.
+        private static func key(_ name: String, entry: Int, into buffer: inout [UInt16]) -> SortKey {
+            let start = buffer.count
+            var head: UInt64 = 0
+            var n = 0
+            for unit in name.utf16 {
+                let f = CaseFold.fold(unit)
+                buffer.append(f)
+                if n < 4 { head |= UInt64(f) << UInt64(48 - 16 * n) }
+                n += 1
             }
+            return SortKey(head: head, start: Int32(start), length: Int32(n), entry: Int32(entry))
         }
-        self.module = sorted(order.compactMap { firstModule[$0] })
-        var groups: [Int32: [ModuleEntry]] = [:]
-        for (group, names) in groupOrder {
-            let first = firstInGroup[group] ?? [:]
-            groups[group] = sorted(names.compactMap { first[$0] })
+
+        private mutating func foldPass(_ deadline: UInt64) {
+            var budget = chunk
+            while foldPosition < entries.count {
+                if budget == 0 {
+                    if pastDeadline(deadline) { return }
+                    budget = chunk
+                }
+                budget -= 1
+                let entry = entries[foldPosition]
+                keys.append(Self.key(scan.names[Int(entry.name)], entry: foldPosition, into: &folded))
+                foldPosition += 1
+            }
+            phase = .sort
         }
-        self.groups = groups
-        self.declarationSeeks = declarationSeeks
-        self.scopeSeeks = scopeSeeks
-        self.namedClasses = namedClasses
+
+        /// Sorts `keys` by folded name (`compare`), then by exact UTF-16
+        /// spelling — the order `moduleRange` binary-searches.
+        private static func sortedEntries(_ entries: [ModuleEntry], keys: inout [SortKey], folded: [UInt16],
+                                          names: [String]) -> [ModuleEntry] {
+            folded.withUnsafeBufferPointer { f in
+                keys.sort { a, b in
+                    if a.head != b.head { return a.head < b.head }
+                    let la = Int(a.length), lb = Int(b.length)
+                    let sa = Int(a.start), sb = Int(b.start)
+                    let n = min(la, lb)
+                    var i = 0
+                    while i < n {
+                        let x = f[sa + i], y = f[sb + i]
+                        if x != y { return x < y }
+                        i += 1
+                    }
+                    if la != lb { return la < lb }
+                    let ra = Array(names[Int(entries[Int(a.entry)].name)].utf16)
+                    let rb = Array(names[Int(entries[Int(b.entry)].name)].utf16)
+                    return DeclarationQueryIndex.compare(ra, rb) < 0
+                }
+            }
+            return keys.map { entries[Int($0.entry)] }
+        }
+
+        private mutating func sortPass() {
+            module = Self.sortedEntries(entries, keys: &keys, folded: folded, names: scan.names)
+            entries = []
+            keys = []
+            folded = []
+            // Embedded regions' groups (HTML / Markdown hosts; small).
+            for (group, order) in groupOrder {
+                let first = firstInGroup[group] ?? [:]
+                let list = order.compactMap { first[$0] }
+                var buffer: [UInt16] = []
+                var groupKeys = list.indices.map { Self.key(scan.names[Int(list[$0].name)], entry: $0, into: &buffer) }
+                groups[group] = Self.sortedEntries(list, keys: &groupKeys, folded: buffer, names: scan.names)
+            }
+            firstInGroup = [:]
+            groupOrder = [:]
+            phase = .done
+        }
     }
 
     /// Lexicographic UTF-16 comparison (−1, 0, 1): prefix-contiguous order.

@@ -268,7 +268,7 @@ struct WorkspaceNameRankingTests {
         #expect(candidate.detail == "other.py  (a) -> int")
         #expect(CompletionCategory.of(candidate) == .file)
         let row = CompletionRowContent(candidate: candidate, language: .zhHans)
-        #expect(row.label == "文件" && row.trailingText == "文件  other.py  (a) -> int")
+        #expect(row.label == "文件" && row.detail == "other.py  (a) -> int")
         #expect(CompletionRowContent(candidate: candidate, language: .en).label == "file")
     }
 

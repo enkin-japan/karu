@@ -114,6 +114,34 @@ public final class AnalysisScheduler {
         }
     }
 
+    /// Runs every pending job to completion now, without the run loop: a
+    /// delayed job is promoted without waiting for its delay, and each step
+    /// gets a deadline `budget` from its start (0: one minimal step at a
+    /// time). Jobs scheduled meanwhile (a completion publishing a snapshot
+    /// schedules its follow-up work) run too. Deterministic for tests, where
+    /// a timer-driven wait can starve behind other main-actor work.
+    func runPendingJobsForTesting(budget: TimeInterval = AnalysisScheduler.sliceBudget) {
+        while true {
+            for entry in delayed {
+                entry.item.cancel()
+                if !entry.job.isCancelled { ready.append(entry.job) }
+            }
+            delayed.removeAll()
+            guard !ready.isEmpty else { return }
+            let index = ready.firstIndex { $0.isInKeyWindow() } ?? 0
+            let job = ready[index]
+            running = job
+            let done = job.step(DispatchTime.now().uptimeNanoseconds + UInt64(budget * 1_000_000_000))
+            running = nil
+            if job.isCancelled {
+                ready.removeAll { $0 === job }
+            } else if done {
+                ready.removeAll { $0 === job }
+                job.completion()
+            }
+        }
+    }
+
     /// Runs steps until the slice deadline passes, then yields if work remains.
     private func runSlice() {
         sliceScheduled = false

@@ -17,6 +17,10 @@ public struct CompletionRequest {
     public var snapshot: DeclarationScan?
     public var snapshotVersion: UInt64 = 0
     public var snapshotJournal = EditJournal()
+    /// The query index of `snapshot` (same version) when the caller holds
+    /// one (`DocumentAnalysis.publishedQueryIndex()`, T17.15a); nil: the
+    /// engine builds it on first use.
+    public var snapshotIndex: DeclarationQueryIndex?
     /// The document word index, a generation that changes with every rebuild,
     /// and the edits since it was built.
     public var words: WordIndex?
@@ -110,7 +114,8 @@ public struct CompletionResult {
 /// **Bounds**: fuzzy matching only runs over bounded sources (scope, class,
 /// usage, keywords, and module names when there are at most `fuzzyLimit`);
 /// document words use the index's prefix ranges and initials only. Scope
-/// queries go through a `DeclarationQueryIndex` cached per snapshot and a
+/// queries go through a `DeclarationQueryIndex` cached per snapshot (the
+/// analysis's, built off the keystroke path, when the request carries it) and a
 /// scope cache per mapped caret; a growing prefix refilters the previous
 /// matched set (plan §5.3.6).
 public struct CandidateEngine {
@@ -145,6 +150,10 @@ public struct CandidateEngine {
 
     /// Diagnostics of the last request (tests, benchmarks).
     public private(set) var lastReusedMatches = false
+    /// Query indexes the engine built itself (no `snapshotIndex`), and the
+    /// last one's time (ns).
+    public private(set) var indexBuilds = 0
+    public private(set) var lastIndexBuildNanoseconds: UInt64 = 0
 
     public init() {}
 
@@ -235,7 +244,16 @@ public struct CandidateEngine {
            cached.index.scan.documentLength == scan.documentLength {
             return cached.index
         }
+        if let provided = request.snapshotIndex, provided.scan.documentLength == scan.documentLength,
+           provided.scan.languageIdentifier == scan.languageIdentifier {
+            queryIndex = (request.snapshotVersion, provided)
+            scopeCache = nil
+            return provided
+        }
+        let start = DispatchTime.now().uptimeNanoseconds
         let built = DeclarationQueryIndex(scan: scan)
+        lastIndexBuildNanoseconds = DispatchTime.now().uptimeNanoseconds &- start
+        indexBuilds += 1
         queryIndex = (request.snapshotVersion, built)
         scopeCache = nil
         return built

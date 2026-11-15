@@ -222,12 +222,40 @@ struct DeclToken: Sendable {
     var kind: DeclTokenKind
     var keyword: DeclKeyword = .none
     var flags: UInt8 = 0
-    var start: Int
-    var end: Int
+    // UTF-16 offsets and columns stored in 32 bits (T17.15a): a token is 20
+    // bytes instead of 40, which halves the buffer a long logical line keeps
+    // (a module-level literal spanning a whole file buffers every token of
+    // it) — the index scans files of up to 2 MB, the editor any size below
+    // 2 G units.
+    private var start32: Int32
+    private var end32: Int32
+    private var indent32: Int32 = 0
+    private var lineStart32: Int32 = 0
+
+    init(kind: DeclTokenKind, start: Int, end: Int) {
+        self.kind = kind
+        start32 = Int32(truncatingIfNeeded: start)
+        end32 = Int32(truncatingIfNeeded: end)
+    }
+
+    var start: Int {
+        get { Int(start32) }
+        set { start32 = Int32(truncatingIfNeeded: newValue) }
+    }
+    var end: Int {
+        get { Int(end32) }
+        set { end32 = Int32(truncatingIfNeeded: newValue) }
+    }
     /// Python, on a logical line start: the column (tabs to multiples of 8).
-    var indent: Int = 0
+    var indent: Int {
+        get { Int(indent32) }
+        set { indent32 = Int32(truncatingIfNeeded: newValue) }
+    }
     /// Python, on a logical line start: offset of its physical line start.
-    var lineStart: Int = 0
+    var lineStart: Int {
+        get { Int(lineStart32) }
+        set { lineStart32 = Int32(truncatingIfNeeded: newValue) }
+    }
 
     var isLineStart: Bool { flags & Self.lineStartFlag != 0 }
     var isLogicalStart: Bool { flags & Self.logicalStartFlag != 0 }

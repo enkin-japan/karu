@@ -419,8 +419,16 @@ struct CompletionRowTests {
         short.type("ab")
         #expect(short.isOpen)
         let shortWidth = try #require(short.controller.panelForTesting).frame.width
+        let shortRows = short.controller.currentCandidatesForTesting.map { CompletionRowContent(candidate: $0, language: .en) }
         short.close()
-        #expect(shortWidth == CompletionListMetrics.minimumWidth)
+        // Shared columns (T17.15a): the widest name plus the widest label
+        // (`AttributeError` and "parameter" here), at least the minimum.
+        let shortColumns = CompletionListMetrics.columns(rows: shortRows)
+        let shortNatural = shortColumns.name + CompletionListMetrics.gap + shortColumns.label
+            + CompletionListMetrics.leadingPadding + CompletionListMetrics.trailingPadding + CompletionListMetrics.border
+        #expect(shortColumns.detail == 0)
+        #expect(shortWidth == max(CompletionListMetrics.minimumWidth, ceil(shortNatural)))
+        #expect(shortWidth < CompletionListMetrics.minimumWidth + 20)
 
         let medium = "ab_" + String(repeating: "m", count: 30)
         let mid = UIHarness("def f(\(medium)):\n    \n", language: "python")
@@ -457,6 +465,88 @@ struct CompletionRowTests {
         let rows = [CompletionRowContent(candidate: Candidate(name: long, kind: .local, source: .scope), language: .en)]
         #expect(CompletionListMetrics.panelWidth(rows: rows, scroller: 0, screenWidth: 300) == CGFloat(292))
         #expect(CompletionListMetrics.panelWidth(rows: rows, scroller: 0, screenWidth: nil) == CGFloat(480))
+    }
+
+    /// T17.15a: the category label sits in a fixed right-hand column —
+    /// the same x on every row whatever the summary's length —, the details
+    /// start at one column and stop `gap` before it, names never run into
+    /// them, and VoiceOver still reads name, label, detail.
+    @Test func labelsLineUpInAFixedColumnWhateverTheDetail() throws {
+        func row(_ name: String, _ kind: CandidateKind, _ detail: String?, _ language: AppLanguage) -> CompletionRowContent {
+            var candidate = Candidate(name: name, kind: kind, source: kind == .member ? .inferredType : .scope)
+            candidate.detail = detail
+            return CompletionRowContent(candidate: candidate, language: language)
+        }
+        for language in [AppLanguage.en, .zhHans, .ja] {
+            let rows = [
+                row("total", .member, "(tax: float = 0.1, *, rounded: bool = True) -> float", language),
+                row("id", .member, "int", language),
+                row("user_name", .parameter, nil, language),
+                row("render_invoice_with_header", .function, "(invoice: Invoice, title: str, footer: str | None = None, "
+                    + "copies: int = 1) -> list[str]", language),
+                row("x", .local, nil, language),
+                row("label", .member, "", language),
+            ]
+            let columns = CompletionListMetrics.columns(rows: rows)
+            #expect(columns.detail == CompletionListMetrics.maximumDetailWidth)        // the long summary is capped
+            let width = CompletionListMetrics.panelWidth(columns: columns, scroller: 0, screenWidth: nil)
+            #expect(width >= CompletionListMetrics.minimumWidth && width <= CompletionListMetrics.maximumWidth)
+            let inset = CompletionListMetrics.textInset
+            let gap = CompletionListMetrics.gap
+            var labelX: Set<CGFloat> = []
+            var detailX: Set<CGFloat> = []
+            for content in rows {
+                let cell = CompletionCellView(frame: NSRect(x: 0, y: 0, width: width - 2,
+                                                            height: CompletionListMetrics.rowHeight))
+                cell.configure(content, columns: columns)
+                cell.layoutSubtreeIfNeeded()
+                labelX.insert(cell.labelField.frame.minX)
+                #expect(cell.labelField.stringValue == content.label)
+                #expect(cell.labelField.frame.width >= CompletionListMetrics.labelWidth(content.label) + 2 * inset)
+                #expect(cell.labelField.frame.maxX - inset <= cell.bounds.maxX - CompletionListMetrics.trailingPadding + 0.5)
+                if let detail = content.detail, !detail.isEmpty {
+                    #expect(!cell.detailField.isHidden && cell.detailField.stringValue == detail)
+                    detailX.insert(cell.detailField.frame.minX)
+                    #expect(cell.detailField.frame.maxX - inset <= cell.labelField.frame.minX + inset - gap + 0.5)
+                    #expect(cell.nameField.frame.maxX - inset <= cell.detailField.frame.minX + inset - gap + 0.5)
+                    #expect(cell.detailField.lineBreakMode == .byTruncatingTail)
+                } else {
+                    #expect(cell.detailField.isHidden)
+                    #expect(cell.nameField.frame.maxX - inset <= cell.labelField.frame.minX + inset - gap + 0.5)
+                }
+                #expect(cell.accessibilityLabel() == content.accessibilityLabel)
+            }
+            #expect(labelX.count == 1, "label column x per row: \(labelX)")
+            #expect(detailX.count == 1, "detail column x per row: \(detailX)")
+        }
+        #expect(row("total", .member, "() -> float", .en).accessibilityLabel == "total, member, () -> float")
+
+        // The same through the controller's popup: an inferred member list.
+        let h = UIHarness("""
+        class Invoice:
+            amount: float = 0.0
+            def total(self, tax: float = 0.1, *, rounded: bool = True, currency: str = "EUR") -> float:
+                return self.amount
+            def id(self) -> int:
+                return 1
+
+        def f(invoice: Invoice):
+            \n
+        """, language: "python")
+        defer { h.close() }
+        h.caret(after: "Invoice):\n    ")
+        h.type("invoice.")
+        let panel = try #require(h.controller.panelForTesting)
+        let count = h.controller.currentCandidatesForTesting.count
+        #expect(count >= 3)
+        var xs: Set<CGFloat> = []
+        for index in 0..<count {
+            let cell = try #require(h.controller.cellForTesting(row: index))
+            cell.frame = NSRect(x: 0, y: 0, width: panel.frame.width - 2, height: CompletionListMetrics.rowHeight)
+            cell.layoutSubtreeIfNeeded()
+            xs.insert(cell.labelField.frame.minX)
+        }
+        #expect(xs.count == 1, "\(xs)")
     }
 
     @Test func selectionSurvivesARefreshByIdentityNotRow() throws {

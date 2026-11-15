@@ -112,8 +112,13 @@ struct CompletionFreshnessTests {
         #expect(journal.mapFromBase(3) == 3)
     }
 
+    /// T17.15a: the debounced rescan is driven through the scheduler
+    /// (`runPendingJobsForTesting`) instead of waiting up to 3 s for its
+    /// timer — under a loaded parallel run other main-actor tests could hold
+    /// the main thread past that timeout, and the test failed although
+    /// nothing was wrong (the flake seen in the T17.14 full run).
     @MainActor
-    @Test func publishedSnapshotSurvivesEditsWithAJournal() async {
+    @Test func publishedSnapshotSurvivesEditsWithAJournal() {
         let center = NotificationCenter()
         let settings = ModuleSettings(defaults: isolatedDefaults(), center: center)
         let scheduler = AnalysisScheduler()
@@ -142,10 +147,44 @@ struct CompletionFreshnessTests {
         #expect(analysis.mapToSnapshot(offset: oneInScan + 4) == oneInScan)
 
         // The debounced rescan publishes a new snapshot and clears the journal.
-        await pump(until: { analysis.declarations != nil })
+        #expect(scheduler.pendingJobCount >= 1)                      // the rescan is queued, not run
+        let scans = analysis.declarationScanCount
+        scheduler.runPendingJobsForTesting()
+        #expect(analysis.declarationScanCount == scans + 1)
+        #expect(analysis.declarations != nil)
         #expect(analysis.publishedDeclarations?.snapshot.version == analysis.version)
         #expect(analysis.publishedDeclarations?.journal.isEmpty == true)
-        withExtendedLifetime(hub) {}
+        #expect(analysis.publishedDeclarations?.snapshot.scan.declarations.first { $0.name == "one" }?.location
+            == oneInScan + 4)
+        withExtendedLifetime((hub, textView)) {}
+    }
+
+    /// The drain helper the test above relies on runs a delayed job without
+    /// its delay, finishes a sliced job across many minimal steps, runs jobs
+    /// that completions schedule, and leaves nothing pending.
+    @MainActor
+    @Test func schedulerDrainRunsDelayedAndFollowUpJobs() {
+        let scheduler = AnalysisScheduler()
+        let owner = NSObject()
+        var log: [String] = []
+        var remaining = 5
+        let followUp = AnalysisJob(owner: ObjectIdentifier(scheduler), version: 2,
+                                   step: { _ in log.append("follow"); return true },
+                                   completion: { log.append("follow done") })
+        let job = AnalysisJob(owner: ObjectIdentifier(owner), version: 1,
+                              step: { _ in remaining -= 1; log.append("step"); return remaining == 0 },
+                              completion: { log.append("done"); scheduler.schedule(followUp) })
+        scheduler.schedule(job, after: 60)                             // never waited for
+        #expect(scheduler.pendingJobCount == 1)
+        scheduler.runPendingJobsForTesting(budget: 0)
+        #expect(log == ["step", "step", "step", "step", "step", "done", "follow", "follow done"])
+        #expect(scheduler.pendingJobCount == 0)
+        let cancelled = AnalysisJob(owner: ObjectIdentifier(owner), version: 3,
+                                    step: { _ in log.append("cancelled"); return true }, completion: {})
+        scheduler.schedule(cancelled, after: 60)
+        scheduler.cancel(owner: ObjectIdentifier(owner))
+        scheduler.runPendingJobsForTesting()
+        #expect(!log.contains("cancelled"))
     }
 
     // MARK: Query index

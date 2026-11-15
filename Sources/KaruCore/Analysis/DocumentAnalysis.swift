@@ -39,6 +39,16 @@ import AppKit
 /// - **Syntax** (T17.11a): the parser languages' syntax tree / module summary
 ///   lives in `syntaxAnalysis` (`SyntaxAnalysis`), held only while completion
 ///   and type inference are both on; see `syntax`.
+/// - **Query index** (T17.15a): completion's `DeclarationQueryIndex` for the
+///   published snapshot (`publishedQueryIndex()`). Once completion has
+///   queried an index, the indexes of the next `prebuildGenerations`
+///   published snapshots are built right after publishing, in their own
+///   ~4 ms slices (a job of its own owner, so edits do not cancel it),
+///   instead of on the keystroke that first needs them; a request arriving
+///   before one is done finishes it synchronously. Without queries (a paste
+///   or undo publishes without a keystroke request; completion unused) the
+///   prebuilding stops and the first request builds it, as before. Dropped
+///   with the snapshots and when completion is turned off.
 ///
 /// Register it on the window's `TextStorageObserverHub` **before** the
 /// highlighter, completion and folding so the version bump and checkpoint
@@ -102,6 +112,28 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         weak var consumer: DocumentAnalysisConsumer?
     }
 
+    /// The published snapshot's query index: in progress (`builder`) or built.
+    private struct QueryIndexState {
+        var version: UInt64
+        var builder: DeclarationQueryIndex.Builder?
+        var index: DeclarationQueryIndex?
+    }
+
+    private var queryIndexState: QueryIndexState?
+    /// Published snapshots whose index is still prebuilt without a query.
+    static let prebuildGenerations = 2
+    private var prebuildCredit = 0
+    /// Owner of the query-index jobs (distinct from the declaration job's).
+    private final class QueryIndexJobOwner {}
+    private let queryIndexOwner = QueryIndexJobOwner()
+
+    /// Query indexes finished or built synchronously by a request, and the
+    /// last one's time (ns; tests, benchmarks).
+    private(set) var queryIndexSynchronousBuilds = 0
+    private(set) var lastQueryIndexSynchronousNanoseconds: UInt64 = 0
+    /// Query indexes completed in background slices (tests, benchmarks).
+    private(set) var queryIndexSlicedBuilds = 0
+
     public init(textView: NSTextView,
                 moduleSettings: ModuleSettings = ModuleSettings(),
                 moduleCenter: NotificationCenter = .default,
@@ -153,7 +185,7 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
     /// state is held.
     public var isRuntimeStateReleased: Bool {
         snapshot == nil && published == nil && checkpoints.entries.isEmpty && contextCheckpoints.entries.isEmpty
-            && syntaxAnalysis.isReleased
+            && syntaxAnalysis.isReleased && queryIndexState == nil
     }
 
     /// Makes `fresh` the current and the published snapshot.
@@ -161,6 +193,15 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         snapshot = fresh
         published = fresh
         publishedJournal.reset()
+        // A recent snapshot's index was used: prebuild this one's.
+        let prebuild = prebuildCredit > 0 && moduleSettings.isEnabled(.completion)
+        prebuildCredit = max(0, prebuildCredit - 1)
+        dropQueryIndex()
+        if prebuild {
+            queryIndexState = QueryIndexState(version: fresh.version,
+                                              builder: DeclarationQueryIndex.Builder(scan: fresh.scan))
+            scheduleQueryIndexBuild(version: fresh.version)
+        }
     }
 
     /// Drops the current and the published snapshot.
@@ -168,6 +209,84 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
         snapshot = nil
         published = nil
         publishedJournal.reset()
+        dropQueryIndex()
+        prebuildCredit = 0
+    }
+
+    // MARK: - Query index (T17.15a)
+
+    /// The published snapshot's query index and its version: the one built
+    /// in the background, finishing an in-flight build, or built now when
+    /// none is held. Nil without a published snapshot. Marks the index as
+    /// used, so the next published snapshots' are prebuilt.
+    public func publishedQueryIndex() -> (version: UInt64, index: DeclarationQueryIndex)? {
+        guard let published else { return nil }
+        if queryIndexState?.version != published.version {
+            dropQueryIndex()
+            queryIndexState = QueryIndexState(version: published.version,
+                                              builder: DeclarationQueryIndex.Builder(scan: published.scan))
+        }
+        prebuildCredit = Self.prebuildGenerations
+        if let index = queryIndexState?.index { return (published.version, index) }
+        let start = DispatchTime.now().uptimeNanoseconds
+        // In place: the builder's buffers are uniquely referenced.
+        while queryIndexState?.builder?.step(deadline: .max) == false {}
+        guard let index = queryIndexState?.builder?.finish() else { return nil }
+        queryIndexState?.builder = nil
+        queryIndexState?.index = index
+        scheduler.cancel(owner: ObjectIdentifier(queryIndexOwner))
+        lastQueryIndexSynchronousNanoseconds = DispatchTime.now().uptimeNanoseconds &- start
+        queryIndexSynchronousBuilds += 1
+        if PerfLog.isEnabled {
+            PerfLog.record("analysis.queryIndex", durationSeconds: Double(lastQueryIndexSynchronousNanoseconds) / 1e9,
+                           ["docLen": published.scan.documentLength, "version": published.version, "sliced": 0])
+        }
+        return (published.version, index)
+    }
+
+    /// Whether a query index (built or in progress) is held (tests).
+    var holdsQueryIndex: Bool { queryIndexState != nil }
+
+    private func dropQueryIndex() {
+        guard queryIndexState != nil else { return }
+        queryIndexState = nil
+        scheduler.cancel(owner: ObjectIdentifier(queryIndexOwner))
+    }
+
+    /// Steps the in-flight builder of `version` in analysis slices.
+    private func scheduleQueryIndexBuild(version jobVersion: UInt64) {
+        var elapsed: UInt64 = 0
+        var slices = 0
+        var longest: UInt64 = 0
+        let job = AnalysisJob(
+            owner: ObjectIdentifier(queryIndexOwner),
+            version: jobVersion,
+            step: { [weak self] deadline in
+                guard let self, self.queryIndexState?.version == jobVersion,
+                      self.queryIndexState?.builder != nil else { return true }
+                let start = DispatchTime.now().uptimeNanoseconds
+                let done = self.queryIndexState?.builder?.step(deadline: deadline) ?? true
+                let time = DispatchTime.now().uptimeNanoseconds &- start
+                elapsed &+= time
+                longest = max(longest, time)
+                slices += 1
+                return done
+            },
+            completion: { [weak self] in
+                guard let self, self.queryIndexState?.version == jobVersion,
+                      let builder = self.queryIndexState?.builder, builder.isFinished else { return }
+                self.queryIndexState?.index = builder.finish()
+                self.queryIndexState?.builder = nil
+                self.queryIndexSlicedBuilds += 1
+                if PerfLog.isEnabled {
+                    PerfLog.record("analysis.queryIndex", durationSeconds: Double(elapsed) / 1e9,
+                                   ["docLen": builder.scan.documentLength, "version": jobVersion, "sliced": 1,
+                                    "slices": slices, "maxSliceUs": Int(longest / 1000)])
+                }
+            },
+            isInKeyWindow: { [weak textView] in textView?.window?.isKeyWindow == true }
+        )
+        scheduler.schedule(job)
     }
 
     /// Whether a module that consumes declarations is on (highlight or
@@ -406,8 +525,11 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
             checkpoints.removeAll()
         }
         if !moduleSettings.isEnabled(.completion) {
-            // Completion is the only user of the context checkpoints.
+            // Completion is the only user of the context checkpoints and
+            // of the query index.
             contextCheckpoints.removeAll()
+            dropQueryIndex()
+            prebuildCredit = 0
         }
         guard hasDeclarationConsumerModule else {
             // Nobody reads declarations: drop them (navigator use stays transient).
@@ -420,7 +542,17 @@ public final class DocumentAnalysis: NSObject, TextStorageObserving {
             // it to the new version instead of rescanning.
             let carried = DeclarationSnapshot(version: version, scan: held.scan)
             snapshot = carried
-            if published?.version == held.version { published = carried }
+            if published?.version == held.version {
+                published = carried
+                // Same scan: its query index stays valid.
+                if queryIndexState?.version == held.version {
+                    queryIndexState?.version = version
+                    if queryIndexState?.builder != nil {
+                        scheduler.cancel(owner: ObjectIdentifier(queryIndexOwner))
+                        scheduleQueryIndexBuild(version: version)
+                    }
+                }
+            }
         } else if declarationJobPending {
             // The pending job now carries a stale version; replace it.
             scheduleDeclarationScan()

@@ -56,15 +56,19 @@ private let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().d
 
 /// A member position: the offset of the end of a `SITE` marker line, the
 /// indentation, the receiver text and the access operator.
-private struct Site {
+struct BraceBenchSite {
     let lineEnd: Int
     let indent: String
     let receiver: String
     let op: String
 }
 
-/// Generated sources with distinct names (`p` is a copy prefix for 10 MB files).
-private enum Generator {
+private typealias Site = BraceBenchSite
+private typealias Generator = BraceBenchGenerator
+
+/// Generated sources with distinct names (`p` is a copy prefix for 10 MB
+/// files); shared with the T17.15 index-rebuild benchmark.
+enum BraceBenchGenerator {
     static let count = 48
 
     static func source(_ language: String, types n: Int = count, prefix p: String = "") -> String {
@@ -286,16 +290,16 @@ private enum Generator {
     }
 
     /// The `SITE` markers of `text`, every `stride`-th one.
-    static func sites(_ text: NSString, limit: Int = 24, from: Int = 0) -> [Site] {
+    static func sites(_ text: NSString, limit: Int = 24, from: Int = 0) -> [BraceBenchSite] {
         // swiftlint:disable:next force_try
         let regex = try! NSRegularExpression(pattern: #"^(\s*)(?://|/\*) SITE (\S+) (\S+)"#, options: [.anchorsMatchLines])
         let matches = regex.matches(in: text as String, range: NSRange(location: from, length: text.length - from))
         guard !matches.isEmpty else { return [] }
         let stride = max(1, matches.count / limit)
-        var out: [Site] = []
+        var out: [BraceBenchSite] = []
         for (k, m) in matches.enumerated() where k % stride == 0 && out.count < limit {
             let lineEnd = NSMaxRange(text.lineRange(for: m.range)) - 1
-            out.append(Site(lineEnd: lineEnd, indent: text.substring(with: m.range(at: 1)),
+            out.append(BraceBenchSite(lineEnd: lineEnd, indent: text.substring(with: m.range(at: 1)),
                             receiver: text.substring(with: m.range(at: 2)), op: text.substring(with: m.range(at: 3))))
         }
         return out

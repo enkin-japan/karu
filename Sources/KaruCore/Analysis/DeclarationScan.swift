@@ -294,7 +294,7 @@ public struct DeclarationScan: Sendable, Equatable {
         }
     }
 
-    struct ScopeRecord {
+    struct ScopeRecord: Equatable {
         var index: Int
         var start: Int
         var end: Int

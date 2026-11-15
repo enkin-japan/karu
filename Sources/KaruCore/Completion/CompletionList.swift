@@ -4,6 +4,11 @@ import AppKit
 // candidate's name with the typed characters emphasised, and a short, dimmed
 // category label in the UI language. Pure presentation; the controller owns
 // the panel and the table.
+//
+// T17.15a: three columns shared by every row of a list — the name, the
+// detail (signature summary, its own column, truncated at its end) and the
+// category label in a fixed column at the right edge — so the labels line
+// up whatever the summaries' lengths.
 
 /// The category label shown on the right of a completion row.
 public enum CompletionCategory: CaseIterable, Sendable {
@@ -68,9 +73,6 @@ struct CompletionRowContent: Equatable {
         detail = candidate.detail
     }
 
-    /// The right-hand text: the label, then the detail when there is one.
-    var trailingText: String { detail.map { label + "  " + $0 } ?? label }
-
     /// VoiceOver: name, category, detail.
     var accessibilityLabel: String { [name, label, detail].compactMap { $0 }.joined(separator: ", ") }
 
@@ -90,8 +92,10 @@ enum CompletionListMetrics {
     static let visibleRows = 10
     static let leadingPadding: CGFloat = 6
     static let trailingPadding: CGFloat = 6
-    /// Space between the name and the label.
+    /// Space between two columns (name, detail, label).
     static let gap: CGFloat = 14
+    /// The detail column's widest extent; a longer summary is cut at its end.
+    static let maximumDetailWidth: CGFloat = 240
     /// The scroll view's line border, both sides.
     static let border: CGFloat = 2
     static let minimumWidth: CGFloat = 180
@@ -112,31 +116,49 @@ enum CompletionListMetrics {
         ceil((name as NSString).size(withAttributes: [.font: nameFont]).width)
     }
 
+    /// Width of a label or a detail (both in the label font).
     static func labelWidth(_ label: String) -> CGFloat {
         ceil((label as NSString).size(withAttributes: [.font: labelFont]).width)
     }
 
-    /// The panel width fitting the widest row (name + gap + label), clamped to
-    /// [180, 480] and to the screen's visible width. `scroller`: width the
-    /// vertical scroller takes (0 for overlay scrollers / ≤ 10 rows).
-    static func panelWidth(rows: [CompletionRowContent], scroller: CGFloat, screenWidth: CGFloat?) -> CGFloat {
-        var labelWidths: [String: CGFloat] = [:]
-        var widest: CGFloat = 0
+    /// Text-extent widths of the three columns, shared by every row of one
+    /// list: the widest name, the widest detail up to `maximumDetailWidth`
+    /// (0 when no row has one) and the widest label. A detail is measured
+    /// only while the column is below its cap; each label once.
+    struct Columns: Equatable {
+        var name: CGFloat
+        var detail: CGFloat
+        var label: CGFloat
+    }
+
+    static func columns(rows: [CompletionRowContent]) -> Columns {
+        var columns = Columns(name: 0, detail: 0, label: 0)
+        var measuredLabels: Set<String> = []
         for row in rows {
-            let trailing = row.trailingText
-            let label: CGFloat
-            if let cached = labelWidths[trailing] {
-                label = cached
-            } else {
-                label = labelWidth(trailing)
-                labelWidths[trailing] = label
+            columns.name = max(columns.name, nameWidth(row.name))
+            if measuredLabels.insert(row.label).inserted { columns.label = max(columns.label, labelWidth(row.label)) }
+            if let detail = row.detail, !detail.isEmpty, columns.detail < maximumDetailWidth {
+                columns.detail = max(columns.detail, min(maximumDetailWidth, labelWidth(detail)))
             }
-            widest = max(widest, nameWidth(row.name) + gap + label)
         }
-        let natural = widest + leadingPadding + trailingPadding + border + scroller
+        return columns
+    }
+
+    /// The panel width fitting the columns (name + gap + [detail + gap] +
+    /// label), clamped to [180, 480] and to the screen's visible width.
+    /// `scroller`: width the vertical scroller takes (0 for overlay
+    /// scrollers / ≤ 10 rows).
+    static func panelWidth(columns: Columns, scroller: CGFloat, screenWidth: CGFloat?) -> CGFloat {
+        var content = columns.name + gap + columns.label
+        if columns.detail > 0 { content += columns.detail + gap }
+        let natural = content + leadingPadding + trailingPadding + border + scroller
         var upper = maximumWidth
         if let screenWidth { upper = min(upper, max(minimumWidth, screenWidth - 2 * screenMargin)) }
         return min(upper, max(minimumWidth, ceil(natural)))
+    }
+
+    static func panelWidth(rows: [CompletionRowContent], scroller: CGFloat, screenWidth: CGFloat?) -> CGFloat {
+        panelWidth(columns: columns(rows: rows), scroller: scroller, screenWidth: screenWidth)
     }
 
     /// The name as shown: matched ranges in the bold font; middle truncation.
@@ -151,29 +173,37 @@ enum CompletionListMetrics {
     }
 }
 
-/// One row: the name on the left (truncating in the middle), the label on the
-/// right. Colours follow the row's selection style.
+/// One row: the name on the left (truncating in the middle), the detail in
+/// its column (truncating at its end), the label in the fixed right-hand
+/// column (`columns`, shared by the list's rows). Colours follow the row's
+/// selection style. VoiceOver reads the row as one element: name, label,
+/// detail.
 @MainActor
 final class CompletionCellView: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("KaruCompletionCell")
 
     let nameField = NSTextField(labelWithString: "")
+    let detailField = NSTextField(labelWithString: "")
     let labelField = NSTextField(labelWithString: "")
     private(set) var content: CompletionRowContent?
+    /// The list's column widths (nil: this row's own).
+    private(set) var columns: CompletionListMetrics.Columns?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         identifier = Self.identifier
-        for field in [nameField, labelField] {
+        for field in [nameField, detailField, labelField] {
             field.usesSingleLineMode = true
             field.cell?.truncatesLastVisibleLine = true
             field.setAccessibilityElement(false)
             addSubview(field)
         }
         nameField.lineBreakMode = .byTruncatingMiddle
-        labelField.font = CompletionListMetrics.labelFont
-        labelField.lineBreakMode = .byTruncatingTail
-        labelField.alignment = .right
+        for field in [detailField, labelField] {
+            field.font = CompletionListMetrics.labelFont
+            field.lineBreakMode = .byTruncatingTail
+            field.alignment = .left
+        }
         textField = nameField
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
@@ -181,9 +211,12 @@ final class CompletionCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func configure(_ content: CompletionRowContent) {
+    func configure(_ content: CompletionRowContent, columns: CompletionListMetrics.Columns? = nil) {
         self.content = content
-        labelField.stringValue = content.trailingText
+        self.columns = columns
+        labelField.stringValue = content.label
+        detailField.stringValue = content.detail ?? ""
+        detailField.isHidden = content.detail?.isEmpty ?? true
         setAccessibilityLabel(content.accessibilityLabel)
         applyColors()
         needsLayout = true
@@ -197,9 +230,11 @@ final class CompletionCellView: NSTableCellView {
         let selected = backgroundStyle == .emphasized
         let nameColor: NSColor = selected ? .alternateSelectedControlTextColor : .labelColor
         if let content { nameField.attributedStringValue = CompletionListMetrics.attributedName(content, color: nameColor) }
-        labelField.textColor = selected
+        let secondary: NSColor = selected
             ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.8)
             : .secondaryLabelColor
+        labelField.textColor = secondary
+        detailField.textColor = secondary
     }
 
     override func layout() {
@@ -214,31 +249,37 @@ final class CompletionCellView: NSTableCellView {
         layoutFields()
     }
 
+    /// Text extents, left to right: the name from `leadingPadding`, its
+    /// column as wide as the list's widest name (less when the panel is
+    /// clamped; the label column always shows whole); the detail from the
+    /// end of the name column plus `gap` to `gap` before the label column;
+    /// the label column ending `trailingPadding` before the edge. Field
+    /// frames add the cell inset around their text.
     private func layoutFields() {
         let bounds = self.bounds
         let inset = CompletionListMetrics.textInset
-        var labelText = content.map { _ in CompletionListMetrics.labelWidth(labelField.stringValue) } ?? 0
-        if let content, content.detail != nil {
-            // The name keeps its width; a summary that does not fit is cut
-            // at its end (the category label itself always shows).
-            let available = bounds.width - CompletionListMetrics.leadingPadding - CompletionListMetrics.trailingPadding
-                - CompletionListMetrics.gap
-            let name = CompletionListMetrics.nameWidth(content.name)
-            let labelOnly = CompletionListMetrics.labelWidth(content.label)
-            labelText = max(min(labelOnly, available), min(labelText, available - name))
-        }
-        let labelHeight = labelField.intrinsicContentSize.height
-        let nameHeight = nameField.intrinsicContentSize.height
-        // Text extents: the label's text ends `trailingPadding` before the
-        // edge; the name's text starts `leadingPadding` in and ends `gap`
-        // before the label's text. Field frames add the cell inset around them.
+        let gap = CompletionListMetrics.gap
+        let columns = self.columns ?? content.map { CompletionListMetrics.columns(rows: [$0]) }
+            ?? CompletionListMetrics.Columns(name: 0, detail: 0, label: 0)
+        let inner = max(0, bounds.width - CompletionListMetrics.leadingPadding - CompletionListMetrics.trailingPadding)
+        let labelText = min(columns.label, inner)
         let labelTextX = bounds.maxX - CompletionListMetrics.trailingPadding - labelText
-        labelField.frame = NSRect(x: labelTextX - inset, y: floor((bounds.height - labelHeight) / 2),
-                                  width: labelText + 2 * inset, height: labelHeight)
         let nameTextX = CompletionListMetrics.leadingPadding
-        let nameText = max(0, labelTextX - CompletionListMetrics.gap - nameTextX)
-        nameField.frame = NSRect(x: nameTextX - inset, y: floor((bounds.height - nameHeight) / 2),
-                                 width: nameText + 2 * inset, height: nameHeight)
+        let nameRoom = max(0, labelTextX - gap - nameTextX)
+        let hasDetail = !detailField.isHidden
+        // Without a detail the name may use the whole room up to the label.
+        let nameText = hasDetail ? min(columns.name, nameRoom) : nameRoom
+        let detailTextX = nameTextX + min(columns.name, nameRoom) + gap
+        let detailText = max(0, labelTextX - gap - detailTextX)
+
+        func place(_ field: NSTextField, x: CGFloat, width: CGFloat) {
+            let height = field.intrinsicContentSize.height
+            field.frame = NSRect(x: x - inset, y: floor((bounds.height - height) / 2), width: width + 2 * inset,
+                                 height: height)
+        }
+        place(labelField, x: labelTextX, width: labelText)
+        place(nameField, x: nameTextX, width: nameText)
+        if hasDetail { place(detailField, x: detailTextX, width: detailText) }
     }
 }
 

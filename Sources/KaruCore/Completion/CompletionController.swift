@@ -165,6 +165,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     private var shownManual = false
     /// The rows shown for `suggestions` (labels resolved once per refresh).
     private var rows: [CompletionRowContent] = []
+    /// Their shared column widths (measured once per refresh, T17.15a).
+    private var columns = CompletionListMetrics.Columns(name: 0, detail: 0, label: 0)
     /// Guards our own completion insertion from being treated as a user action.
     private var isApplyingCompletion = false
     /// An edit-without-refresh check is queued for the next run-loop turn.
@@ -174,6 +176,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     /// Tests / screenshots: label language instead of the UI language.
     var labelLanguageOverride: AppLanguage?
+    /// Benchmarks: rows without their detail (paired popup memory, T17.15a).
+    var stripsRowDetailsForTesting = false
 
     // MARK: - Queryable state (tests / diagnostics)
 
@@ -200,6 +204,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
 
     /// The candidates the popup is showing (tests).
     var currentCandidatesForTesting: [Candidate] { panel == nil ? [] : suggestions }
+    /// The candidate engine's diagnostics (tests, benchmarks).
+    var engineForTesting: CandidateEngine { engine }
 
     /// The context of the shown popup (tests).
     var currentContextForTesting: CompletionContext? { panel == nil ? nil : shownContext }
@@ -639,6 +645,12 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
             request.snapshot = published.snapshot.scan
             request.snapshotVersion = published.snapshot.version
             request.snapshotJournal = published.journal
+            // The analysis's index of that snapshot (prebuilt in its slices
+            // after publishing, T17.15a; finished or built now otherwise).
+            if published.snapshot.scan.languageIdentifier == languageIdentifier,
+               let built = analysis.publishedQueryIndex(), built.version == published.snapshot.version {
+                request.snapshotIndex = built.index
+            }
         }
         request.words = wordIndex
         request.wordsGeneration = wordsGeneration
@@ -766,6 +778,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         suggestions = result.candidates
         let language = labelLanguageOverride ?? L10n.current
         rows = result.candidates.map { CompletionRowContent(candidate: $0, language: language) }
+        if stripsRowDetailsForTesting { for i in rows.indices { rows[i].detail = nil } }
+        columns = CompletionListMetrics.columns(rows: rows)
         shownContext = result.context
         shownVersion = analysis.version
         shownEditCount = editCount
@@ -890,7 +904,7 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         let scroller: CGFloat = suggestions.count > CompletionListMetrics.visibleRows
             && NSScroller.preferredScrollerStyle == .legacy
             ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
-        let width = CompletionListMetrics.panelWidth(rows: rows, scroller: scroller,
+        let width = CompletionListMetrics.panelWidth(columns: columns, scroller: scroller,
                                                      screenWidth: visibleFrame?.width)
         // Names line up with the typed prefix. Above the caret line (screen
         // coords: y grows upward): the IME candidate window sits *below* the
@@ -1016,7 +1030,7 @@ extension CompletionController: NSTableViewDataSource, NSTableViewDelegate {
                           row: Int) -> NSView? {
         let cell = tableView.makeView(withIdentifier: CompletionCellView.identifier, owner: self) as? CompletionCellView
             ?? CompletionCellView(frame: .zero)
-        if row < rows.count { cell.configure(rows[row]) }
+        if row < rows.count { cell.configure(rows[row], columns: columns) }
         return cell
     }
 
