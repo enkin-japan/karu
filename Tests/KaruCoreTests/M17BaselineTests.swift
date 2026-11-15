@@ -18,6 +18,9 @@ import Testing
 //   - Tests/Fixtures/M17/baseline/completion-baseline.tsv
 //   - Tests/Fixtures/M17/baseline/completion-summary.md
 //   - .build/m17-baseline/probes.txt (machine-dependent timings; not committed)
+//   - with `KARU_M17_OUT=<absolute dir>` (T17.15b) the colour dumps and the
+//     completion TSV / summary go to that directory instead, leaving the
+//     frozen T17.0 files under `baseline/` untouched (quality report runs)
 //
 // Language choice for the highlight dump: by file extension through
 // `LanguageRegistry` (the app's own path); since T17.8b that includes `.jsx`
@@ -37,6 +40,13 @@ private enum M17Paths {
     static let inference = fixtures.appendingPathComponent("inference", isDirectory: true)
     static let baseline = fixtures.appendingPathComponent("baseline", isDirectory: true)
     static let probes = root.appendingPathComponent(".build/m17-baseline", isDirectory: true)
+    /// Where the dumps are written: `KARU_M17_OUT` when set (T17.15b), else `baseline`.
+    static let output: URL = {
+        if let path = ProcessInfo.processInfo.environment["KARU_M17_OUT"], path.hasPrefix("/") {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return baseline
+    }()
 }
 
 private let baselineEnabled = ProcessInfo.processInfo.environment["KARU_M17_BASELINE"] != nil
@@ -429,7 +439,7 @@ struct M17BaselineTests {
 
             let runs = foregroundRuns(layoutManager, length: length, resolver: resolver)
             let tsv = runs.map { "\($0.0)\t\($0.1)\t\($0.2)\n" }.joined()
-            let out = M17Paths.baseline.appendingPathComponent("\(outDirectory)/\(file.relative).colors.tsv")
+            let out = M17Paths.output.appendingPathComponent("\(outDirectory)/\(file.relative).colors.tsv")
             try FileManager.default.createDirectory(at: out.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
             try tsv.write(to: out, atomically: true, encoding: .utf8)
@@ -458,10 +468,10 @@ struct M17BaselineTests {
             ]
             tsv += row.joined(separator: "\t") + "\n"
         }
-        try FileManager.default.createDirectory(at: M17Paths.baseline, withIntermediateDirectories: true)
-        try tsv.write(to: M17Paths.baseline.appendingPathComponent("completion-baseline.tsv"),
+        try FileManager.default.createDirectory(at: M17Paths.output, withIntermediateDirectories: true)
+        try tsv.write(to: M17Paths.output.appendingPathComponent("completion-baseline.tsv"),
                       atomically: true, encoding: .utf8)
-        try completionSummary(results).write(to: M17Paths.baseline.appendingPathComponent("completion-summary.md"),
+        try completionSummary(results).write(to: M17Paths.output.appendingPathComponent("completion-summary.md"),
                                              atomically: true, encoding: .utf8)
         #expect(results.count == cases.count)
     }

@@ -109,6 +109,17 @@
   采样会随时序落在启动期一次约 +20 MB 阶跃的前或后，产生假回归；与旧记录对比时注意口径不同。
   阈值可用 `KARU_BENCH_STABLE_SECONDS`、`KARU_BENCH_STABLE_TOLERANCE_KB`、`KARU_BENCH_MAX_WAIT_SECONDS` 调整。
   A/B 对照应交替运行 2–3 轮并记录负载（`uptime`）。
+- 与 `/Applications/Karu.app` 的已发布二进制做 A/B 时注意（T17.15b）：它用 `dev.enkin.TinyEditor` 偏好域，会读用户自己的窗口尺寸与字号，
+  诊断目录不隔离这些；裸二进制 `.build/release/KaruApp` 用 `KaruApp` 域（800×600、默认字号）。把已发布二进制拷出包外运行会因签名失效被 SIGKILL。
+  需要同口径时给候选在命令行参数域传同样的值（如 `-editor.fontSize 18 "-NSWindow Frame EditorWindow" "<基线的窗口串>"`，不写偏好域；
+  AppKit 之后可能把窗口尺寸写回 `KaruApp` 域，跑完要恢复）。另外稳定采样可能在主线程阻塞、内存暂时不动时提前取值（v0.12.0 打开 10 MB 时
+  1.2 s 取到 63 MB，3.7 s 才跳到 104 MB），对照大文件时同时看长窗口读数（启动后追 14 s，取最后 2 s 平均）。
+- M17 质量报告（T17.15b，`docs/M17-QUALITY-REPORT.md`）的复现：`KARU_M17_BASELINE=1 KARU_M17_OUT=<临时目录>` 让基线套件把着色导出与候选
+  TSV / 汇总写到该目录，冻结的 `Tests/Fixtures/M17/baseline/` 不被覆盖（不设时行为不变，仍写 baseline/）；再用 `compare-colors.py` 和 T17.0 的
+  `completion-baseline.tsv` 对比。真实窗口验收套件 `KARU_TYPE_TABLES=$PWD/assets/typetables KARU_PERFLOG=<日志> KARU_T1715B_FILES=<文件>[:<文件>…]
+  KARU_T1715B_OUT=<报告> swift test -c release -Xswiftc -enable-testing --filter M17AcceptanceBenchmark`（`KARU_T1715B_PAIR=<a>:<b>` 测双窗口）
+  逐段记录同步耗时、主线程最长停顿、峰值与在用量，并输出每段的 uptime 区间以切 PerfLog；测试进程里的 footprint 只作参考。
+  release 测试构建会覆盖 `.build/release/KaruApp`，跑完重新 `swift build -c release` 再做 App 内存测量。
 - 会启动 App 的验证先检查用户数据副作用。特别是草稿本探针会写示例内容，不能直接对
   用户真实草稿运行；使用现有隔离入口或由主会话先设计隔离，不声称环境变量天然隔离。
 - 内存以 ARCHITECTURE.md 的窗口尺寸和 phys_footprint 口径判断，记录系统/工具链与构建。
