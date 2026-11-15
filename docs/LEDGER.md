@@ -48,16 +48,16 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.3 | 其余 18 种语言接入；钩子与妥协入账 | T17.2 | implementer | ✅ 自动化通过；除 Python 外全部语言有档案，一致率 39.0% → 77.7% |
 | T17.4 | 声明与作用域：代码位置声明；Python、JS/TS 完整作用域；七种静态语言基础版；`=>` 修正 | T17.2 | implementer | ✅ 自动化通过；伪声明全部排除，一致率 77.7% → 80.7% |
 | T17.5 | 候选模型、匹配、排序、最近接受、大小写、用法证据、触发字符 | T17.4 | implementer | ✅ 自动化通过；作用域 top1 24/24，误弹 0 |
-| T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | 🔶 自动化通过；真实窗口与真实输入法实测待做 |
+| T17.6 | 候选界面与接受：身份保留、类别标签三语、自适应宽度、整词替换、一次撤销、输入法守卫、`complete(_:)`/Esc、菜单项 | T17.5 | implementer，main 实测输入法 | ✅ 自动化通过；T17.15c 真实窗口与中日输入法实测通过 |
 | T17.7 | 配色：新 TokenKind 与色板、按位置分类 | T17.3 | implementer | ✅ 自动化通过；一致率深色 94.9%、浅色 91.6% |
 | T17.8 | 嵌入语言：HTML script/style、Markdown 围栏、JSX/TSX 三类边界 | T17.3、T17.5 | implementer | ✅ T17.8a 子语言、T17.8b JSX/TSX、T17.8c 光标处子语言；一致率深色 97.3%、浅色 94.2% |
 | T17.9 | 解析器选型：手写与 tree-sitter 原型实测 | T17.2 | main | ✅ 选手写解析器（内存约 1/10、时延约 1/5，容错 58/58 对 57/58） |
 | T17.10 | 内置类型表：typeshed 与 TS ES/DOM 生成脚本、懒加载、许可证 | T17.9 | implementer | ✅ 两张表共 1.27 MB；常用组合解码后约 0.8 MB；声明随包分发 |
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ✅ 11a 解析器、11b Python、11c JS/TS、11d 静态语言；50 条成员门槛：禁用 0、前十召回 100% |
-| T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 T17.15d-B 后达标（typeshed 5,451 文件 +4.0–4.5 MB，>64 KB 的文件不做签名摘要）；TCC 与三语布局待真机 |
-| T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ✅ 夹具 33/33；无外部进程；保存后 ≤1 s；真实 venv/node_modules 与 TCC 待真机 |
-| T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ✅ 自动化通过；夹具 36/36；⌘T 面板与刷新观感待真机 |
-| T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | 🔶 15a 超标项已修（查询索引、索引内存、弹窗对齐、偶发测试）；15b 读数完成（[质量报告](M17-QUALITY-REPORT.md)）；15d-A 主线程长段已切片（重扫、打开时扫描、检查点推进）；15d-B 索引常驻达标、浅色 JSON 键 / CSS 属性名配色（浅色一致率 95.4%）、mem-benchmark 最短观察时间；压力项超 99 MB 经用户判定通过；15c 真机与 VS Code 卸载待做 |
+| T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | ✅ 自动化通过；大文件夹常驻 T17.15d-B 后达标（typeshed 5,451 文件 +4.0–4.5 MB，>64 KB 的文件不做签名摘要）；T17.15c 真机：三语布局（修两处显示缺陷）、「文稿」文件夹重启后仍可读 |
+| T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ✅ 夹具 33/33；无外部进程；保存后 ≤1 s；T17.15c 真实 venv（click、fastapi）与外接盘 node_modules（express）通过，修文档路径写法与新建 venv 失效两处缺陷 |
+| T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ✅ 自动化通过；夹具 36/36；T17.15c ⌘T 面板真机通过 |
+| T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | 🔶 15a 超标项已修；15b 读数完成（[质量报告](M17-QUALITY-REPORT.md)）；15d 主线程长段切片、索引常驻达标、浅色配色；压力项超 99 MB 经用户判定通过；15c 真机验收通过（修 3 处缺陷）；VS Code 卸载按用户决定推迟到候选缺陷修复之后 |
 
 - T17.0 进展（main，2026-11-13）：
   - **VS Code 对照环境**：官方更新服务器 darwin-arm64 包，1.146.0（commit `69047191`，2026-11-10），Microsoft Developer ID 签名、
@@ -1259,6 +1259,37 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     若以后要让正式场景读数回落，可在打开时同步扫文档开头一段、给首帧临时声明。
   - `MallocSpaceEfficient=1`（空文档 31 → 22.5 MB）等 M17 完全落地后再评估。
   - 遗留另记：10 MB 文件最后一键约 1.5 s 后的崩溃草稿刷新在主线程两次复制全文（52–56 ms 停顿），属保存 / 恢复路径，不在 M17 范围。
+
+- T17.15c 真机验收（main 操作，用户实测输入法，2026-11-15）：
+  - **环境**：候选版 `bundle-macos.sh` 打包（Developer ID 签名，13 MB），先正常退出用户的 Karu 再替换 `/Applications/Karu.app`；
+    交互由 main 以全屏控制发真实按键（真实键盘事件，弹窗、Tab / 回车 / 小键盘回车 / 双击、菜单、⌥⎋ 都经过 AppKit 正常路径），输入法由用户手动操作。
+    测试文件在 scratch 目录；真实依赖用符号链接引用 `quickQR/.venv`、`finalTaskWeb/node_modules`，没有改动用户项目。
+  - **清单结果**（`Tests/Fixtures/M17/interaction-checklist.md`）：
+    - 接受与收起 ACC-01–06、08–11、14、15 通过；ACC-07 菜单项通过（改键未测）；ACC-12（切到其他 App）、ACC-13（滚动出可见区）未单独测，有自动化覆盖。
+      弹窗出现在光标上方是 T14 起的设计（避免遮住输入法候选窗）。
+    - 安全写入 SAFE-01–08、12、13 通过：词中替换整词、一次撤销与重做、emoji 与 é、CRLF 保存后仍 CRLF、文件末尾无换行保持、空文档不弹；SAFE-09–11 有自动化覆盖，未在真机重复。
+    - 输入法 IME-01–10 用户实测全部通过。IME-09 的期望改写：提交中文后直接键入英文时，中文和英文连成一个标识符（Python / JS 允许中文标识符），
+      所以不弹；中间有空格或换行时正常弹出。用户认为合理，判通过。
+    - 模块开关：MOD-02、07、08 真机通过（关补全时弹窗立即收起、重开后恢复；关高亮清色、重开一致）；其余组合有自动化覆盖。
+    - 成员补全带签名（`URLValue.to` → `toFixed (fractionDigits?: number) -> string` 等）；标准库 `os.` 走内置 typeshed 表。
+    - 设置窗口与项目文件夹子窗口三语布局；⌘T 列出项目符号并跳转选中；「文稿」下的项目文件夹（`~/Documents/KaruTCCProbe`）重启后状态「最新」、可读。
+      重启时出现过一次系统对话框，用户已处理（推测为「文稿」访问授权）；之后不再出现。
+  - **发现并修复的缺陷**（`de28b81`，回归测试已加）：
+    1. **JS / TS 包与 Python 相对导入在 App 内全部无候选**：AppKit 打开的文件路径是 `/private/tmp/…`，项目文件夹按 `standardizingPath` 存成 `/tmp/…`，
+       导入服务按字符串比较，判定文档不在项目里。符号链接的项目文件夹同理。`ImportService.path(_:spelledUnder:)` 把文档路径换成项目根的写法。
+    2. **项目打开后才建的 `.venv` 要重启才生效**：搜索路径只以找到的 site-packages 作失效依据，没有 venv 时无从失效，缺失的模块一直缺失。
+       改为同时以项目根目录的修改时间作依据。
+    3. **项目文件夹窗口**：`NSGridView.removeRow` 不移除格内视图，状态刷新后新旧文字与按钮叠在一起；中文界面窗口宽度按表格算，比说明文字的 600 pt 换行宽度窄，右侧截断。
+  - **已知限制（未改）**：
+    - Node 内置模块（`require('path')`）无候选：它们来自 `@types/node` 的环境模块声明（`declare module "path"`），方案未覆盖。
+    - venv 只在项目根目录找；`Agent/backend/.venv` 这类子目录 venv 在以 `Agent` 为项目文件夹时找不到。是否改为从文件所在目录逐层向上查找，待用户决定。
+    - 代码中的 `xxx.to`、`xxx.jo` 被链接识别加下划线（原有功能，与 M17 无关）。
+  - **清理**：两个测试用项目文件夹已从设置移除（索引一并删除）；`~/Documents/KaruTCCProbe` 已移到废纸篓（「文稿」为 iCloud 脱离状态，Finder 报需下载，改用 `NSFileManager.trashItem`）。
+    界面语言测试后已改回「跟随系统」。
+  - **VS Code 卸载推迟**（用户决定，2026-11-15）：接下来要修候选缺陷，VS Code 语言服务仍是 §13 的参照，`scripts/m17/vscode-tokens.js` 也依赖它生成着色参照。
+    待删清单已与安装前快照核对：`/Volumes/enkin/project-support/KaruM17-VSCode/`（1.3 GB）、`~/KaruM17-VSCode` 符号链接、
+    `~/Library/Preferences/com.microsoft.VSCode.plist`、`~/Library/Application Support/Microsoft/`（仅 `DeveloperTools/deviceid`）、`~/.vscode/`、`~/.vscode-shared/`。
+    `~/Library` 下没有 VS Code 的 Caches、Saved Application State、HTTPStorages 或 `Application Support/Code`（用的是独立 user-data 目录）。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 
