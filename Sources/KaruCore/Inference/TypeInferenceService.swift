@@ -49,6 +49,13 @@ import Foundation
 ///   when the summaries arrive). When the service's generation changes, the
 ///   session, the reused answer and the return-type cache are dropped (they
 ///   may hold types computed before a module arrived).
+/// - **Cross-file types (T17.14).** With a `CrossFileTypeService` and a
+///   document inside a project folder, static-language receivers whose type
+///   (or base, or extension) lives in another file of the folder resolve
+///   through a `BraceForeignResolver`. A lookup still loading marks the
+///   request pending (same refresh as imports); when the service's
+///   generation changes, the document model's text-derived caches and the
+///   reused answer are dropped.
 @MainActor
 final class TypeInferenceService {
     static let returnCacheBytes = 512 * 1024
@@ -72,6 +79,15 @@ final class TypeInferenceService {
     let scriptTables: ScriptTypeTables
     /// Import resolution (T17.13); nil: built-in tables only.
     let imports: ImportService?
+    /// Cross-file static-language types (T17.14); nil: this file only.
+    let crossFile: CrossFileTypeService?
+    private var crossFileGeneration: UInt64?
+    private var crossFileFolder: String?
+    /// The document (project folder + path) the brace view's foreign types
+    /// were resolved for, and its import context (parsed once per version).
+    private var crossFileContext: (path: String, version: UInt64, context: BraceFileContext)?
+    /// The last static-language request looked up a cross-file type still loading.
+    private(set) var lastRequestPendingCrossFile = false
     private var importGeneration: UInt64?
     /// The last request looked up an import that is still loading.
     private(set) var lastRequestPendingImports = false
@@ -96,16 +112,18 @@ final class TypeInferenceService {
     var budgetMilliseconds = InferenceBudget.defaultMilliseconds
     var budgetSteps = InferenceBudget.defaultSteps
 
-    init(tables: PythonTypeTables, scriptTables: ScriptTypeTables? = nil, imports: ImportService? = nil) {
+    init(tables: PythonTypeTables, scriptTables: ScriptTypeTables? = nil, imports: ImportService? = nil,
+         crossFile: CrossFileTypeService? = nil) {
         self.tables = tables
         self.scriptTables = scriptTables ?? .shared
         self.imports = imports
+        self.crossFile = crossFile
         imports?.register(python: tables, script: self.scriptTables)
     }
 
     var isReleased: Bool {
         session == nil && last == nil && returnCache.isEmpty && names.isEmpty && braceView == nil
-            && braceScanner == nil && ownIndex == nil
+            && braceScanner == nil && ownIndex == nil && crossFileContext == nil
     }
 
     /// Bytes this window's inference holds (the shared tables are separate;
@@ -126,6 +144,7 @@ final class TypeInferenceService {
         braceView = nil
         braceScanner = nil
         ownIndex = nil
+        crossFileContext = nil
     }
 
     /// A character edit (`editedRange` in the new text, as the text storage
@@ -153,8 +172,28 @@ final class TypeInferenceService {
     func memberCandidates(analysis: DocumentAnalysis, text: NSString, dot: Int,
                           queryIndex: (version: UInt64, index: DeclarationQueryIndex)? = nil,
                           documentPath: String? = nil) -> [Candidate]? {
+        let reusedBefore = statistics.reused
+        let result = computeMemberCandidates(analysis: analysis, text: text, dot: dot, queryIndex: queryIndex,
+                                             documentPath: documentPath)
+        if statistics.reused != reusedBefore {
+            // A reused answer is still waiting for what its request was waiting for.
+            lastRequestPendingImports = lastAnswerPending.imports
+            lastRequestPendingCrossFile = lastAnswerPending.crossFile
+        } else {
+            lastAnswerPending = (lastRequestPendingImports, lastRequestPendingCrossFile)
+        }
+        return result
+    }
+
+    /// Whether the request that produced `last` waited for imports / cross-file types.
+    private var lastAnswerPending = (imports: false, crossFile: false)
+
+    private func computeMemberCandidates(analysis: DocumentAnalysis, text: NSString, dot: Int,
+                                         queryIndex: (version: UInt64, index: DeclarationQueryIndex)?,
+                                         documentPath: String?) -> [Candidate]? {
         statistics.requests += 1
         lastRequestPendingImports = false
+        lastRequestPendingCrossFile = false
         if let imports, importGeneration != imports.generation {
             // Summaries changed: answers computed before may be stale.
             importGeneration = imports.generation
@@ -164,7 +203,7 @@ final class TypeInferenceService {
         }
         if let brace = BraceLanguage(identifier: analysis.languageIdentifier) {
             return braceMemberCandidates(analysis: analysis, language: brace, text: text, dot: dot,
-                                         queryIndex: queryIndex)
+                                         queryIndex: queryIndex, documentPath: documentPath)
         }
         guard dot >= 0, dot < text.length,
               let dialect = SyntaxDialect(languageIdentifier: analysis.languageIdentifier) else { return nil }
@@ -271,8 +310,18 @@ final class TypeInferenceService {
     static let braceSynchronousScanLimit = 256 * 1024
 
     private func braceMemberCandidates(analysis: DocumentAnalysis, language: BraceLanguage, text: NSString, dot: Int,
-                                       queryIndex: (version: UInt64, index: DeclarationQueryIndex)?) -> [Candidate]? {
+                                       queryIndex: (version: UInt64, index: DeclarationQueryIndex)?,
+                                       documentPath: String?) -> [Candidate]? {
         guard let op = BraceEvaluator.accessOperator(at: dot, in: text, language: language) else { return nil }
+        // Cross-file answers changed, or the document entered / left a project
+        // folder (the index toggled): what the model resolved may be stale.
+        let folder = documentPath.flatMap { crossFile?.projectFolder(containing: $0) }
+        if let crossFile, crossFileGeneration != crossFile.generation || crossFileFolder != folder {
+            crossFileGeneration = crossFile.generation
+            crossFileFolder = folder
+            last = nil
+            braceView?.dropTextDerivedCaches()
+        }
         let opEnd = dot + (op == "." || op == "?." ? 1 : 2)
         let lineStart = Self.lineStart(of: dot, in: text)
         let linePrefix = text.substring(with: NSRange(location: lineStart, length: opEnd - lineStart))
@@ -341,6 +390,20 @@ final class TypeInferenceService {
         }
         view.budget = InferenceBudget(maxSteps: budgetSteps,
                                       milliseconds: Double(budgetNanoseconds - spent) / 1_000_000)
+        // Cross-file types (T17.14): the document's project folder, if any.
+        let resolver = braceResolver(documentPath: documentPath, language: language, text: text,
+                                     version: snapshot.version)
+        if (resolver == nil) != (view.foreign == nil) || resolver?.documentPath != view.foreign?.documentPath {
+            view.dropTextDerivedCaches()
+        }
+        view.foreign = resolver
+        defer {
+            if let resolver, resolver.hasPending {
+                lastRequestPendingCrossFile = true
+                lastRequestPendingImports = true
+            }
+            crossFile?.flush()
+        }
         let evaluator = BraceEvaluator(view: view)
         var members = evaluator.members(atOperator: dot, operator: op)
         if evaluator.isAborted {
@@ -352,6 +415,25 @@ final class TypeInferenceService {
         if candidates != nil { statistics.inferred += 1 }
         last = (dot, lineStart, linePrefix, candidates)
         return candidates
+    }
+
+    /// The cross-file resolver of a static-language request (T17.14): nil
+    /// without the service or outside a project folder. The document's
+    /// import context is parsed once per snapshot version.
+    private func braceResolver(documentPath: String?, language: BraceLanguage, text: NSString,
+                               version: UInt64) -> BraceForeignResolver? {
+        guard let crossFile, let documentPath else {
+            crossFileContext = nil
+            return nil
+        }
+        let context: BraceFileContext
+        if let cached = crossFileContext, cached.path == documentPath, cached.version == version {
+            context = cached.context
+        } else {
+            context = BraceFileContext.parse(text, language: language)
+            crossFileContext = (documentPath, version, context)
+        }
+        return crossFile.resolver(documentPath: documentPath, language: language, text: text, context: context)
     }
 
     /// The script `.member` node whose `.` (or the `.` of `?.`) is at `dot`.

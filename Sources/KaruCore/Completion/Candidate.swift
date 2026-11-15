@@ -46,9 +46,9 @@ public enum CandidateKind: String, Sendable, CaseIterable {
     }
 }
 
-/// Where a candidate comes from, in ranking order (plan §5.3 step 3). The
-/// reserved sources are seams for T17.12–13 (imports) and T17.14 (workspace
-/// index); nothing produces them yet.
+/// Where a candidate comes from, in ranking order (plan §5.3 step 3).
+/// `importedModule` is a seam (imports reach completion as inferred
+/// members); `workspace` holds the other files' names (T17.14).
 public enum CandidateSource: UInt8, Sendable, CaseIterable, Comparable {
     /// A binding visible in the current scope chain (current function first).
     case scope
@@ -65,7 +65,7 @@ public enum CandidateSource: UInt8, Sendable, CaseIterable, Comparable {
     case fileDeclaration
     /// Reserved: an imported module's export (T17.12–13).
     case importedModule
-    /// Reserved: another file of the workspace (T17.14).
+    /// A top-level name of another file of the project folder (T17.14).
     case workspace
     /// A keyword or builtin of the language.
     case keyword

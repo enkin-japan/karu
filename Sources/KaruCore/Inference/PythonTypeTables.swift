@@ -327,7 +327,7 @@ final class PythonTypeTables {
 
     /// Summary of a table member: a method's first overload (without `self`
     /// / `cls`), a field's or property's type.
-    static func detail(_ m: TypeTable.Member, bindings: [String: String]) -> String? {
+    nonisolated static func detail(_ m: TypeTable.Member, bindings: [String: String]) -> String? {
         switch m.kind {
         case .method, .classMethod, .staticMethod:
             // The general overload: `self` not narrowed by an annotation
@@ -341,7 +341,7 @@ final class PythonTypeTables {
     }
 
     /// `(a: T, *args: U, key: V = ...) -> R` from a table signature.
-    static func signatureText(_ sig: TypeTable.Signature, dropFirst: Bool, bindings: [String: String]) -> String {
+    nonisolated static func signatureText(_ sig: TypeTable.Signature, dropFirst: Bool, bindings: [String: String]) -> String {
         var params = sig.parameters
         if dropFirst, let first = params.first, first.kind != .variadic, first.kind != .keywordVariadic {
             params.removeFirst()
@@ -372,7 +372,7 @@ final class PythonTypeTables {
     }
 
     /// `text` with type-variable names replaced (`_T` → `str`).
-    static func substituted(_ text: String, _ bindings: [String: String]) -> String {
+    nonisolated static func substituted(_ text: String, _ bindings: [String: String]) -> String {
         guard !bindings.isEmpty, bindings.keys.contains(where: { text.contains($0) }),
               let expr = TypeExpr.parse(text, syntax: .python) else { return text }
         return PythonTypeConverter.text(expr, replacing: bindings)
@@ -530,7 +530,7 @@ struct PythonTypeConverter {
     }
 
     /// Python text of `expr`, names in `replacing` substituted.
-    static func text(_ expr: TypeExpr, replacing: [String: String] = [:]) -> String {
+    nonisolated static func text(_ expr: TypeExpr, replacing: [String: String] = [:]) -> String {
         switch expr {
         case .name(let n):
             if let r = replacing[n] { return r }

@@ -75,6 +75,10 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuFind, menuFindEllipsis, menuFindNext, menuFindPrevious, menuUseSelectionForFind
     // Jump-to-symbol navigator.
     case menuJumpToSymbol, symbolFilterPlaceholder, symbolNone
+    // Workspace symbols navigator (M17 T17.14, ⌘T): search the project
+    // folder's index; disabled states.
+    case menuWorkspaceSymbols, workspaceSymbolPlaceholder, workspaceSymbolNone
+    case workspaceSymbolNotInFolder, workspaceSymbolIndexOff, workspaceSymbolIndexing
     // Go-to-line panel.
     case menuGoToLine, goToLinePlaceholder
     // Title-bar rename (filename capsule) errors.

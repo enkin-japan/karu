@@ -350,7 +350,9 @@ struct WorkspaceIndexStorageTests {
             #expect(stored.map(\.kind) == expected.map(\.kind), "\(path)")
             #expect(stored.map(\.location) == expected.map(\.location), "\(path)")
             #expect(stored.map(\.container) == expected.map(\.container), "\(path)")
-            #expect(stored.map(\.signature) == expected.map(\.signature), "\(path)")
+            // Signatures: the summaries `IndexSignatures` adds (T17.14).
+            let enriched = WorkspaceIndex.symbols(of: Data(text.utf8), language: language)
+            #expect(stored.map(\.signature) == enriched.map(\.signature), "\(path)")
             #expect(stored.map(\.line) == expected.map(\.line), "\(path)")
             #expect(stored.allSatisfy { $0.languageIdentifier == language && $0.relativePath == path })
             // Every stored symbol is a declaration of the scan at that location.
@@ -364,9 +366,10 @@ struct WorkspaceIndexStorageTests {
         let py = index.symbols(inFile: f.folder.appendingPathComponent("pkg/models.py").path)
         let byName = Dictionary(py.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
         #expect(byName["User"]?.kind == .class && byName["User"]?.container == nil)
-        #expect(byName["greet"]?.container == "User" && byName["greet"]?.signature == "(self, args, kw)")
-        #expect(byName["__init__"]?.signature == "(self, name, age)")
-        #expect(byName["make_user"]?.signature == "(name)" && byName["make_user"]?.line == 11)
+        #expect(byName["greet"]?.container == "User" && byName["greet"]?.signature == "(*args, **kw)")
+        #expect(byName["__init__"]?.signature == "(name, age = ...)")
+        #expect(byName["User"]?.signature == "(name, age = ...)")
+        #expect(byName["make_user"]?.signature == "(name) -> User" && byName["make_user"]?.line == 11)
         #expect(byName["role"]?.container == "User")
         #expect(byName["name"]?.container == "User" && byName["name"]?.kind == .property)   // self.name
         #expect(byName["local"] == nil && byName["os"] == nil && byName["age"] == nil)
@@ -376,8 +379,12 @@ struct WorkspaceIndexStorageTests {
         let go = index.symbols(inFile: f.folder.appendingPathComponent("cmd/main.go").path)
         #expect(names(go).isSuperset(of: ["Server", "Start", "NewServer", "Default", "Version", "Addr"]), "\(go.map(\.name))")
         #expect(!names(go).contains("x"))
-        #expect(go.first { $0.name == "Start" }?.signature == "(s, port)")
-        #expect(go.first { $0.name == "Start" }?.container == nil)
+        #expect(go.first { $0.name == "Start" }?.signature == "(port int) error")
+        #expect(go.first { $0.name == "Start" }?.container == "Server")   // T17.14: filed under the receiver
+        // Without summaries (`extract` alone) the parameter names stay.
+        let plain = IndexedSymbol.extract(from: DeclarationScan.scan(text: samples["cmd/main.go"]!, languageIdentifier: "go"),
+                                          text: samples["cmd/main.go"]! as NSString)
+        #expect(plain.first { $0.name == "Start" }?.signature == "(s, port)")
     }
 }
 

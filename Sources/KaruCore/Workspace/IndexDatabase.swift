@@ -16,15 +16,18 @@ import SQLite3
 /// symbols(file_id INTEGER, name TEXT, folded TEXT,  -- folded: CaseFold per UTF-16 unit
 ///         kind INTEGER, container TEXT, location INTEGER, line INTEGER,
 ///         signature TEXT)                           -- nullable summary
-/// INDEX symbols(folded), symbols(file_id)
+/// INDEX symbols(folded), symbols(file_id),
+///       symbols(container) WHERE container IS NOT NULL      -- T17.14
 /// ```
+/// Version 2 (T17.14): richer `signature` summaries (`IndexSignatures`),
+/// Go methods filed under their receiver type, the container index.
 /// No file contents and no ordinary words are stored. A version or folder
 /// mismatch, or an unreadable file, is handled by deleting and recreating
 /// the database (migration by rebuild); the index is derived data.
 ///
 /// Not thread-safe: the owner (`WorkspaceIndex`) serialises access.
 final class IndexDatabase {
-    static let schemaVersion: Int32 = 1
+    static let schemaVersion: Int32 = 2
     /// Page-cache cap per connection (plan §11 ④: ≤ 2 MB per open database).
     static let cacheKiB = 1024
 
@@ -158,6 +161,7 @@ final class IndexDatabase {
                                  line INTEGER NOT NULL, signature TEXT);
             CREATE INDEX symbols_folded ON symbols(folded);
             CREATE INDEX symbols_file ON symbols(file_id);
+            CREATE INDEX symbols_container ON symbols(container) WHERE container IS NOT NULL;
             """)
         for (key, value) in [("schema", String(Self.schemaVersion)), ("folder", folderPath)] {
             let insert = try prepare("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)")
@@ -397,6 +401,60 @@ final class IndexDatabase {
         bind(statement, 2, foldedPrefix + "\u{10FFFF}")
         bind(statement, 3, excludingPath)
         bind(statement, 4, Int64(limit))
+        var rows: [SymbolRow] = []
+        readRows(statement, limit: limit, into: &rows)
+        return rows
+    }
+
+    /// Top-level symbols (no container) of files in `languages` whose folded
+    /// name starts with `foldedPrefix`, excluding `excludingPath`, ordered by
+    /// name, at most `limit` — examining at most `scanLimit` index entries
+    /// of the prefix range (a bounded query for completion on the main
+    /// thread, T17.14). `truncated`: the scan or the limit cut the answer.
+    func topLevelSymbols(foldedPrefix: String, excludingPath: String?, languages: [String], limit: Int,
+                         scanLimit: Int) throws -> (rows: [SymbolRow], truncated: Bool) {
+        let statement = try prepare("""
+            SELECT f.path, f.language, s.name, s.kind, s.container, s.location, s.line, s.signature
+            FROM (SELECT rowid AS rid FROM symbols WHERE folded >= ?1 AND folded < ?2 AND container IS NULL
+                  ORDER BY folded LIMIT ?5) r
+            JOIN symbols s ON s.rowid = r.rid JOIN files f ON f.id = s.file_id
+            WHERE s.container IS NULL AND (?3 IS NULL OR f.path <> ?3)
+              AND f.language IN (?6, ?7, ?8)
+            ORDER BY s.folded, s.name, f.path, s.location LIMIT ?4
+            """)
+        defer { sqlite3_reset(statement) }
+        bind(statement, 1, foldedPrefix)
+        bind(statement, 2, foldedPrefix + "\u{10FFFF}")
+        bind(statement, 3, excludingPath)
+        bind(statement, 4, Int64(limit + 1))
+        bind(statement, 5, Int64(scanLimit))
+        for k in 0..<3 { bind(statement, Int32(6 + k), k < languages.count ? languages[k] : nil) }
+        var rows: [SymbolRow] = []
+        readRows(statement, limit: limit + 1, into: &rows)
+        var truncated = rows.count > limit
+        if truncated { rows.removeLast() }
+        if !truncated, rows.count < limit {
+            // Did the scan cap cut the prefix range short?
+            let count = try prepare("""
+                SELECT count(*) FROM (SELECT 1 FROM symbols WHERE folded >= ?1 AND folded < ?2 LIMIT ?3)
+                """)
+            defer { sqlite3_reset(count) }
+            bind(count, 1, foldedPrefix)
+            bind(count, 2, foldedPrefix + "\u{10FFFF}")
+            bind(count, 3, Int64(scanLimit + 1))
+            if sqlite3_step(count) == SQLITE_ROW, sqlite3_column_int64(count, 0) > Int64(scanLimit) { truncated = true }
+        }
+        return (rows, truncated)
+    }
+
+    /// Symbols filed under `container` (exact), at most `limit`.
+    func symbols(container: String, limit: Int) throws -> [SymbolRow] {
+        let statement = try prepare(Self.symbolColumns + """
+             WHERE s.container = ?1 ORDER BY f.path, s.location LIMIT ?2
+            """)
+        defer { sqlite3_reset(statement) }
+        bind(statement, 1, container)
+        bind(statement, 2, Int64(limit))
         var rows: [SymbolRow] = []
         readRows(statement, limit: limit, into: &rows)
         return rows

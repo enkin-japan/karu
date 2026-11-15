@@ -1,0 +1,49 @@
+{
+  "comment": "M17 T17.14 cross-file samples (plan §13 「导入与跨文件」). The project folder is project/; outside/ is never part of it. A caret sits right after the first occurrence of `after` in `file`. names: other files' names offered within the first `top` candidates; members: inferred members (cross-file types, extensions / impls in other files, bases), `forbid` never listed; signatures: a candidate's detail; symbols: workspace symbol search hits within the first `top` rows; negatives: nothing from outside the folder, ambiguous names give no members.",
+  "names": [
+    {"id": "py-name-make", "file": "python/app.py", "after": "    make_", "expect": ["make_admin"], "top": 5},
+    {"id": "py-name-util", "file": "python/app.py", "after": "    pars", "expect": ["parse_age"], "top": 5},
+    {"id": "ts-name-make", "file": "ts/main.ts", "after": "makeC", "expect": ["makeCircle"], "top": 5},
+    {"id": "swift-name-make", "file": "swift/main.swift", "after": "makeAd", "expect": ["makeAdmin"], "top": 5},
+    {"id": "c-name-header", "file": "c/main.c", "after": "return poin", "expect": ["point_len"], "top": 5}
+  ],
+  "members": [
+    {"id": "py-import-class", "file": "python/app.py", "after": "User(\"x\").", "expect": ["greet", "birthday"], "forbid": ["make_user", "format_name"]},
+    {"id": "ts-import-class", "file": "ts/main.ts", "after": "c.", "expect": ["area", "scale", "radius"], "forbid": ["makeCircle"]},
+    {"id": "swift-ext", "file": "swift/main.swift", "after": "user.", "expect": ["name", "email", "describe", "greet"], "forbid": ["secret", "hidden", "balance"]},
+    {"id": "swift-base", "file": "swift/main.swift", "after": "admin.", "expect": ["level", "ban", "balance", "deposit"], "forbid": ["name", "describe"]},
+    {"id": "go-methods", "file": "go/main.go", "after": "s.", "expect": ["Addr", "Start", "timeout", "stop"], "forbid": ["Greet"]},
+    {"id": "go-pkg-literal", "file": "go/main.go", "after": "u.", "expect": ["Name", "Greet"], "forbid": ["age", "secret", "Start"]},
+    {"id": "go-pkg-var", "file": "go/main.go", "after": "v.", "expect": ["Name", "Greet"], "forbid": ["age", "secret"]},
+    {"id": "rust-impl-use", "file": "rust/src/main.rs", "after": "u.", "expect": ["name", "greet"], "forbid": ["secret", "new"]},
+    {"id": "rust-path", "file": "rust/src/main.rs", "after": "c.", "expect": ["path", "verbose"], "forbid": ["name"]},
+    {"id": "java-import", "file": "java/com/example/app/Main.java", "after": "c.", "expect": ["getEmail", "getName"], "forbid": ["secret", "packagePrivate", "wrongCustomer", "guest", "age"]},
+    {"id": "java-package", "file": "java/com/example/app/Main.java", "after": "o.", "expect": ["total", "owner"], "forbid": ["getEmail"]},
+    {"id": "csharp-partial", "file": "csharp/Program.cs", "after": "    p.", "expect": ["Name", "Price"], "forbid": ["secret"]},
+    {"id": "c-tag", "file": "c/main.c", "after": "p.", "expect": ["x", "y"], "forbid": ["dx"]},
+    {"id": "c-typedef", "file": "c/main.c", "after": "v.", "expect": ["dx", "dy"], "forbid": ["x"]},
+    {"id": "cpp-ns", "file": "cpp/main.cpp", "after": "s.", "expect": ["area", "sides"], "forbid": ["secret", "radius"]},
+    {"id": "cpp-base", "file": "cpp/main.cpp", "after": "    c.", "expect": ["radius", "area", "sides"], "forbid": ["secret"]},
+    {"id": "cpp-pointer", "file": "cpp/main.cpp", "after": "pc->", "expect": ["radius", "area"], "forbid": ["secret"]}
+  ],
+  "signatures": [
+    {"id": "py-sig", "file": "python/app.py", "after": "    make_", "name": "make_admin", "detail": "models.py  (name: str, level: int = ...) -> User"},
+    {"id": "ts-sig", "file": "ts/main.ts", "after": "makeC", "name": "makeCircle", "detail": "shapes.ts  (radius: number) -> Circle"},
+    {"id": "swift-sig", "file": "swift/main.swift", "after": "makeAd", "name": "makeAdmin", "detail": "Admin.swift  (level: Int) -> Admin"},
+    {"id": "swift-member-sig", "file": "swift/main.swift", "after": "user.", "name": "greet", "detail": "(times: Int) -> String"},
+    {"id": "go-member-sig", "file": "go/main.go", "after": "s.", "name": "Start", "detail": "(port int) error"},
+    {"id": "java-member-sig", "file": "java/com/example/app/Main.java", "after": "c.", "name": "getEmail", "detail": "() : String"}
+  ],
+  "symbols": [
+    {"id": "sym-greet", "query": "greet", "expect": [["greet", "python/models.py"], ["Greet", "go/models/user.go"], ["greet", "swift/UserExtensions.swift"]], "top": 10},
+    {"id": "sym-fuzzy", "query": "mkcir", "expect": [["makeCircle", "ts/shapes.ts"]], "top": 5},
+    {"id": "sym-partial", "query": "Product", "expect": [["Product", "csharp/Models/Product.cs"], ["Product", "csharp/Models/Product.Pricing.cs"]], "top": 5},
+    {"id": "sym-prefix", "query": "make_", "expect": [["make_user", "python/models.py"], ["make_admin", "python/models.py"]], "top": 5}
+  ],
+  "negatives": [
+    {"id": "neg-outside-name", "kind": "names", "file": "python/negative.py", "after": "outside_only", "forbid": ["outside_only_function"]},
+    {"id": "neg-outside-symbol", "kind": "symbols", "query": "outside_only", "forbid": ["outside_only_function"]},
+    {"id": "neg-ambiguous-swift", "kind": "members", "file": "ambiguous/use.swift", "after": "w.", "forbid": ["alpha", "beta"]},
+    {"id": "neg-ambiguous-cpp", "kind": "members", "file": "ambiguous/use.cpp", "after": "b.", "forbid": ["press", "click"]}
+  ]
+}

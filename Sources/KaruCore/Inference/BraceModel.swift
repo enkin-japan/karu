@@ -6,10 +6,12 @@ import Foundation
 // (Swift extensions, Rust `impl` blocks, C# partial parts), its bases and
 // its members with their modifiers, written types and signature summaries.
 // Plan §8.1: members come from same-named type declarations of this file
-// only; cross-file declarations are T17.14.
+// and — T17.14 — of the other files of the project folder
+// (`BraceForeignResolver`: types not declared here, extensions / `impl`s /
+// Go methods / C# partial parts of types declared here, bases).
 
 /// One member of a document type.
-struct BraceMember {
+struct BraceMember: Sendable {
     let name: String
     var kind: InferredMemberKind
     var isStatic: Bool
@@ -21,8 +23,12 @@ struct BraceMember {
     /// Swift `let x = Foo()` fields: the initializer's live range.
     var initializer: Range<Int>?
     var detail: String?
-    /// Snapshot offset of the name.
-    let location: Int
+    /// Snapshot offset of the name (`BraceModuleView.foreignLocation` for a
+    /// member read from another file).
+    var location: Int
+    /// Read from another file of the project folder (T17.14): private /
+    /// file-private members are not visible from this file.
+    var isForeign = false
 
     var approximateBytes: Int {
         96 + name.utf8.count * 2 + (detail?.utf8.count ?? 0) + (type?.text.utf8.count ?? 0) * 2
@@ -61,6 +67,12 @@ final class BraceTypeInfo {
     var bodies: [Body] = []
     var bases: [Base] = []
     var isPartial = false
+    /// A type declared in another file of the project folder (T17.14).
+    var isForeign = false
+    /// Members read from other files (a foreign type's own, or the
+    /// extensions / `impl`s / Go methods / partial parts of a type of this
+    /// file found elsewhere), listed before this file's bodies.
+    var foreignMembers: [BraceMember] = []
     /// Own members (all bodies), filled on first use.
     var members: [BraceMember]?
     var byName: [String: Int] = [:]
@@ -81,6 +93,7 @@ final class BraceTypeInfo {
 
     var approximateBytes: Int {
         160 + name.utf8.count + containers.count * 48 + bodies.count * 64 + bases.count * 96
+            + foreignMembers.reduce(0) { $0 + $1.approximateBytes }
             + (members?.reduce(0) { $0 + $1.approximateBytes } ?? 0) + byName.count * 48
     }
 }
@@ -113,6 +126,11 @@ final class BraceModuleView {
     private(set) var reader: BraceTokenReader
     private(set) var decls: BraceDeclReader
     var budget = InferenceBudget()
+    /// Cross-file types of the project folder (T17.14); nil: this file only.
+    var foreign: BraceForeignResolver?
+    /// The context offset of what was read from another file: names in it
+    /// resolve against the other files first, then this file's top level.
+    static let foreignLocation = -1
 
     // Structural (per snapshot version).
     private var classNameCache: [String: Int?] = [:]
@@ -127,6 +145,8 @@ final class BraceModuleView {
     var bindingCache: [Int: [String: DeclarationScan.ScopedBinding]] = [:]
     private var functionHeads: [Int: BraceDeclInfo] = [:]
     private var lineageCache: [Int: [(id: Int, rank: Int, access: BraceAccess)]] = [:]
+    /// Written path (and C tag) → the foreign type registered for it.
+    private var foreignTypeCache: [String: Int?] = [:]
 
     private(set) var statistics = (bodiesRead: 0, typesBuilt: 0, classNamesNanoseconds: UInt64(0),
                                    goMethodsNanoseconds: UInt64(0))
@@ -162,6 +182,7 @@ final class BraceModuleView {
         functionHeads = [:]
         lineageCache = [:]
         anonymous = [:]
+        foreignTypeCache = [:]
     }
 
     var approximateBytes: Int {
@@ -184,7 +205,9 @@ final class BraceModuleView {
 
     // MARK: - Scopes
 
-    func chain(at offset: Int) -> [DeclarationQueryIndex.PositionedScope] { index.positionedChain(at: offset) }
+    func chain(at offset: Int) -> [DeclarationQueryIndex.PositionedScope] {
+        offset < 0 ? [] : index.positionedChain(at: offset)
+    }
 
     func contains(_ scope: DeclarationScan.ScopeRecord, _ offset: Int) -> Bool { scan.contains(scope, offset) }
 
@@ -217,29 +240,8 @@ final class BraceModuleView {
     /// units while the statement continues (open brackets, a trailing
     /// operator or comma).
     func tokens(atDeclaration location: Int, extra: Int = 2048) -> ([DeclToken], Int)? {
-        guard let at = live(location), at < reader.text.length else { return nil }
-        let lineEnd = reader.lineEnd(of: at)
-        var tk = reader.tokens(anchor: at, to: min(reader.text.length, lineEnd + 1))
-        let n = BraceTokens.index(atOrAfter: at, in: tk)
-        guard n < tk.count, tk[n].start == at, tk[n].kind == .ident else { return nil }
-        if continues(tk, from: n), lineEnd + 1 < reader.text.length {
-            tk = reader.tokens(anchor: at, to: min(reader.text.length, lineEnd + extra))
-        }
-        return (tk, n)
-    }
-
-    /// The statement from `n` does not end within `tk`.
-    private func continues(_ tk: [DeclToken], from n: Int) -> Bool {
-        var depth = 0
-        for t in tk[n...] {
-            if BraceTokens.isOpener(t.kind) { depth += 1 } else if BraceTokens.isCloser(t.kind) { depth -= 1 }
-        }
-        if depth > 0 { return true }
-        guard let last = tk.last else { return false }
-        switch last.kind {
-        case .assign, .walrus, .comma, .dot, .thinArrow, .arrow, .colon, .op, .star, .less: return true
-        default: return last.keyword == .new || last.keyword == .return
-        }
+        guard let at = live(location) else { return nil }
+        return BraceSummary.tokens(reader: reader, atName: at, extra: extra)
     }
 
     /// The declaration info of a function / method (cached).
@@ -425,7 +427,7 @@ final class BraceModuleView {
 
     // MARK: - Type registry
 
-    private func classNameIndex(_ name: String) -> Int? {
+    func classNameIndex(_ name: String) -> Int? {
         if let cached = classNameCache[name] { return cached }
         let started = DispatchTime.now().uptimeNanoseconds
         let found = index.classNameIndex(named: name)
@@ -508,8 +510,40 @@ final class BraceModuleView {
                 t.bases.append(BraceTypeInfo.Base(type: trait, context: scope.record.start, access: .public))
             }
         }
+        // Extensions, `impl`s, Go methods and partial parts in other files (T17.14).
+        if let foreign {
+            for id in ids where types[id].containers.allSatisfy(isNamespaceScope) {
+                let t = types[id]
+                guard let parts = foreign.extensions(of: name, isPartial: t.isPartial,
+                                                     namespaces: t.containerNames) else { continue }
+                t.foreignMembers += parts.members
+                t.bases += parts.bases.map { BraceTypeInfo.Base(type: $0.type, context: Self.foreignLocation, access: $0.access) }
+            }
+        }
         primaryCache[name] = budget.exhausted ? nil : ids
         return ids
+    }
+
+    /// Whether the class scope `record` is a C# / C++ namespace body (the
+    /// walker opens it at the `{` after `namespace A.B`; no declaration
+    /// names it).
+    func isNamespaceScope(_ record: DeclarationScan.ScopeRecord) -> Bool {
+        guard record.kind == .class, language == .csharp || language == .cpp, let start = live(record.start),
+              start <= reader.text.length else { return false }
+        let from = max(0, start - 256)
+        let before = reader.text.substring(with: NSRange(location: from, length: start - from))
+        guard let range = before.range(of: "namespace", options: .backwards) else { return false }
+        let rest = before[range.upperBound...]
+        guard let first = rest.first, first == " " || first == "\t" || first == "\n" || first == "\r" else { return false }
+        return rest.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." || $0 == ":" || $0.isWhitespace }
+    }
+
+    /// Registers a type that is not a declaration of this file (a foreign
+    /// type, or one built from another file's parts); returns its id.
+    func appendType(_ info: (Int) -> BraceTypeInfo) -> Int {
+        let built = info(types.count)
+        types.append(built)
+        return built.id
     }
 
     /// A Go `type Name T` without a body of its own (its methods only).
@@ -535,6 +569,15 @@ final class BraceModuleView {
             where types[id].bodies.contains(where: { $0.scope.record.index == scope.record.index }) {
                 result = id
             }
+            // An extension / `impl` of a type declared in another file (T17.14).
+            if result == nil, head.role == .extension, foreign != nil {
+                var written = BraceWrittenType()
+                written.path = head.path
+                if let id = foreignType(written),
+                   types[id].bodies.contains(where: { $0.scope.record.index == scope.record.index }) {
+                    result = id
+                }
+            }
         }
         scopeType[scope.record.index] = result
         return result
@@ -548,6 +591,8 @@ final class BraceModuleView {
         if path.count == 1, name == "Self", language == .swift || language == .rust {
             return enclosingTypes(at: context).first
         }
+        // A type read from another file names its types from there first.
+        if context == Self.foreignLocation, let id = foreignType(written) { return id }
         var candidates = primaryTypes(named: name).filter { id in
             let t = types[id]
             if language == .c {
@@ -570,8 +615,46 @@ final class BraceModuleView {
         if candidates.count == 1 { return candidates[0] }
         if !candidates.isEmpty { return nil }
         // Aliases: `typedef`, `typealias`, `type X = …`, `using X = …`.
-        guard path.count == 1 else { return nil }
-        return aliasTarget(name: name, tag: written.tag, context: context, depth: depth)
+        guard path.count == 1 else { return foreignType(written) }
+        if let alias = aliasTarget(name: name, tag: written.tag, context: context, depth: depth) { return alias }
+        // Declared in another file of the project folder (T17.14).
+        return context == Self.foreignLocation ? nil : foreignType(written)
+    }
+
+    /// The type `written` names in the other files of the project folder
+    /// (T17.14), registered once per written path; nil when none, ambiguous
+    /// or still loading (`foreign.hasPending`). Extension / `impl` bodies of
+    /// this file are attached to it.
+    func foreignType(_ written: BraceWrittenType) -> Int? {
+        guard let foreign, written.isNominal else { return nil }
+        let key = written.path.joined(separator: "\u{1}") + (written.tag ? "\u{2}" : "")
+        if let cached = foreignTypeCache[key] { return cached }
+        foreignTypeCache[key] = .some(nil)   // cycle guard
+        guard let merged = foreign.type(path: written.path, tag: written.tag) else { return nil }
+        let id = appendType { id in
+            let info = BraceTypeInfo(id: id, name: merged.name, keyword: merged.keyword, primary: nil,
+                                     location: Self.foreignLocation, containers: [],
+                                     containerNames: merged.typeContainers)
+            info.isForeign = true
+            info.foreignMembers = merged.members
+            info.bases = merged.bases.map { BraceTypeInfo.Base(type: $0.type, context: Self.foreignLocation, access: $0.access) }
+            return info
+        }
+        foreignTypeCache[key] = .some(id)
+        // This file's extensions / `impl`s of it (role `.extension`, same name).
+        if let nameIndex = classNameIndex(merged.name) {
+            for scope in index.classScopes(nameIndex: nameIndex) {
+                let head = head(of: scope)
+                guard head.role == .extension, head.path.last == merged.name,
+                      head.path.count == 1 || Array(head.path.dropLast()) == Array(written.path.dropLast()) else { continue }
+                types[id].bodies.append(BraceTypeInfo.Body(scope: scope, trait: head.trait))
+                types[id].bases += head.bases.map { BraceTypeInfo.Base(type: $0.0, context: scope.record.start, access: $0.1) }
+                if let trait = head.trait {
+                    types[id].bases.append(BraceTypeInfo.Base(type: trait, context: scope.record.start, access: .public))
+                }
+            }
+        }
+        return id
     }
 
     private func aliasTarget(name: String, tag: Bool, context: Int, depth: Int) -> Int? {
@@ -736,6 +819,7 @@ final class BraceModuleView {
                 out.append(m)
             }
         }
+        for m in t.foreignMembers { add(m) }
         for body in t.bodies {
             guard budget.exhausted == false else { break }
             for m in readBody(body, of: t) { add(m) }
@@ -853,6 +937,9 @@ final class BraceModuleView {
         case .cpp: defaultAccess = keyword == .class ? .private : .public
         case .csharp: defaultAccess = keyword == .interface || keyword == .enum ? .public : .private
         case .rust: defaultAccess = t.keyword == .trait ? .public : .private
+        // Java package-private stays unspecified (visible here; another
+        // package's file hides it, T17.14).
+        case .java: defaultAccess = .unspecified
         default: defaultAccess = .public
         }
         if head.role == .extension, language == .rust, body.trait != nil { defaultAccess = .public }
@@ -1003,6 +1090,15 @@ final class BraceModuleView {
         if inherited == .private { access = .private } else if inherited == .protected, access != .private {
             access = .protected
         }
+        if member.isForeign, access == .private || access == .fileprivate {
+            // Read from another file (T17.14): Swift `private` / `fileprivate`,
+            // Java / Rust private are file- or module-scoped; C# partial parts
+            // and C++ out-of-class definitions share the class's privates.
+            switch language {
+            case .csharp, .cpp: return contextTypes.contains(owner)
+            default: return false
+            }
+        }
         switch access {
         case .public, .internal, .fileprivate, .unspecified:
             return true
@@ -1034,27 +1130,7 @@ final class BraceModuleView {
     /// A member's signature summary in its language's syntax (plan §5.5),
     /// fitted into `InferredMemberList.detailLimit`.
     func summary(_ info: BraceDeclInfo, tokens tk: [DeclToken], name n: Int) -> String? {
-        if !info.isFunction { return info.type?.text.isEmpty == false ? info.type?.text : nil }
-        let params = info.parameters.map { r in reader.compact(from: tk[r.lowerBound].start, to: tk[r.upperBound - 1].end) }
-        switch language {
-        case .swift, .rust:
-            let tail = info.type.map { " -> " + $0.text } ?? ""
-            return BraceSummary.fit(head: "", params: params, tail: tail)
-        case .go:
-            var tail = ""
-            if info.results.count == 1, let r = info.results[0] { tail = " " + r.text }
-            else if info.results.count > 1 {
-                tail = " (" + info.results.map { $0?.text ?? "?" }.joined(separator: ", ") + ")"
-            }
-            return BraceSummary.fit(head: "", params: params, tail: tail)
-        case .java, .csharp, .c, .cpp:
-            // Type-first languages: the return type after the parameters,
-            // as VS Code's Java completion shows it (`(int n) : String`),
-            // so every row reads parameters first (main, T17.11d).
-            var tail = info.suffix.isEmpty ? "" : " " + info.suffix
-            if let type = info.type { tail += " : " + type.text }
-            return BraceSummary.fit(head: "", params: params, tail: tail)
-        }
+        BraceSummary.signature(info, tokens: tk, reader: reader)
     }
 }
 
@@ -1062,6 +1138,63 @@ final class BraceModuleView {
 /// with `InferredMemberList.shortened`: trailing parameters are dropped for
 /// `, …`, the head and tail are kept short).
 enum BraceSummary {
+    /// Tokens around the declaration whose name starts at live offset `at`
+    /// and the name's index in them: its line, extended by up to `extra`
+    /// units while the statement continues (open brackets, a trailing
+    /// operator or comma).
+    static func tokens(reader: BraceTokenReader, atName at: Int, extra: Int = 2048) -> ([DeclToken], Int)? {
+        guard at >= 0, at < reader.text.length else { return nil }
+        let lineEnd = reader.lineEnd(of: at)
+        var tk = reader.tokens(anchor: at, to: min(reader.text.length, lineEnd + 1))
+        let n = BraceTokens.index(atOrAfter: at, in: tk)
+        guard n < tk.count, tk[n].start == at, tk[n].kind == .ident else { return nil }
+        if continues(tk, from: n), lineEnd + 1 < reader.text.length {
+            tk = reader.tokens(anchor: at, to: min(reader.text.length, lineEnd + extra))
+        }
+        return (tk, n)
+    }
+
+    /// The statement from `n` does not end within `tk`.
+    private static func continues(_ tk: [DeclToken], from n: Int) -> Bool {
+        var depth = 0
+        for t in tk[n...] {
+            if BraceTokens.isOpener(t.kind) { depth += 1 } else if BraceTokens.isCloser(t.kind) { depth -= 1 }
+        }
+        if depth > 0 { return true }
+        guard let last = tk.last else { return false }
+        switch last.kind {
+        case .assign, .walrus, .comma, .dot, .thinArrow, .arrow, .colon, .op, .star, .less: return true
+        default: return last.keyword == .new || last.keyword == .return
+        }
+    }
+
+    /// A member's signature summary in its language's syntax (plan §5.5),
+    /// fitted into `InferredMemberList.detailLimit`: a function's
+    /// parameters and result, a field's written type.
+    static func signature(_ info: BraceDeclInfo, tokens tk: [DeclToken], reader: BraceTokenReader) -> String? {
+        if !info.isFunction { return info.type?.text.isEmpty == false ? info.type?.text : nil }
+        let params = info.parameters.map { r in reader.compact(from: tk[r.lowerBound].start, to: tk[r.upperBound - 1].end) }
+        switch reader.language {
+        case .swift, .rust:
+            let tail = info.type.map { " -> " + $0.text } ?? ""
+            return fit(head: "", params: params, tail: tail)
+        case .go:
+            var tail = ""
+            if info.results.count == 1, let r = info.results[0] { tail = " " + r.text }
+            else if info.results.count > 1 {
+                tail = " (" + info.results.map { $0?.text ?? "?" }.joined(separator: ", ") + ")"
+            }
+            return fit(head: "", params: params, tail: tail)
+        case .java, .csharp, .c, .cpp:
+            // Type-first languages: the return type after the parameters,
+            // as VS Code's Java completion shows it (`(int n) : String`),
+            // so every row reads parameters first (main, T17.11d).
+            var tail = info.suffix.isEmpty ? "" : " " + info.suffix
+            if let type = info.type { tail += " : " + type.text }
+            return fit(head: "", params: params, tail: tail)
+        }
+    }
+
     static func fit(head: String, params: [String], tail: String,
                     limit: Int = InferredMemberList.detailLimit) -> String {
         let full = head + "(" + params.joined(separator: ", ") + ")" + tail

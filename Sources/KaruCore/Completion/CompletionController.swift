@@ -120,6 +120,17 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
     /// The document's file (import resolution: its project folder and, for
     /// relative imports, its position); nil for an unsaved buffer.
     public var documentURLProvider: (() -> URL?)?
+    /// The project-folder index (T17.14): other files' names for identifier
+    /// completion. nil: none (tests, probes); the editor window passes
+    /// `.shared`. With the `crossFileIndex` module off it knows no folder,
+    /// so these candidates disappear at once.
+    let workspaceIndex: WorkspaceIndex?
+    /// Cross-file types of the static languages (T17.14); nil: none.
+    let crossFileTypes: CrossFileTypeService?
+    private let crossFileCenter: NotificationCenter?
+    /// Main-thread time of the last workspace-name query (tests, benchmarks).
+    private(set) var lastWorkspaceQueryNanoseconds: UInt64 = 0
+    private(set) var workspaceQueryCount = 0
     /// A member request that looked up an import still loading: when the
     /// summaries arrive and the caret, version and edits are unchanged, the
     /// popup is refreshed (opened if the first answer had nothing to show).
@@ -244,10 +255,15 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
                 moduleCenter: NotificationCenter = .default,
                 analysis: DocumentAnalysis? = nil,
                 scheduler: AnalysisScheduler = .shared,
-                importService: ImportService? = nil) {
+                importService: ImportService? = nil,
+                workspaceIndex: WorkspaceIndex? = nil,
+                crossFileTypes: CrossFileTypeService? = nil) {
         self.textView = textView
         self.importService = importService
         self.importCenter = importService?.configuration.center
+        self.workspaceIndex = workspaceIndex
+        self.crossFileTypes = crossFileTypes
+        self.crossFileCenter = crossFileTypes?.center
         self.moduleSettings = moduleSettings
         self.moduleCenter = moduleCenter
         self.scheduler = scheduler
@@ -271,15 +287,23 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
                 name: ImportService.didUpdateNotification, object: importService
             )
         }
+        if let crossFileTypes, let crossFileCenter {
+            crossFileCenter.addObserver(
+                self, selector: #selector(importsDidUpdate(_:)),
+                name: CrossFileTypeService.didUpdateNotification, object: crossFileTypes
+            )
+        }
     }
 
     deinit {
         moduleCenter.removeObserver(self)
         importCenter?.removeObserver(self)
+        crossFileCenter?.removeObserver(self)
     }
 
-    /// Import summaries arrived (T17.13): refresh the popup a pending member
-    /// request was answered for, if nothing changed since.
+    /// Import summaries (T17.13) or cross-file types (T17.14) arrived:
+    /// refresh the popup a pending member request was answered for, if
+    /// nothing changed since.
     @objc private func importsDidUpdate(_ note: Notification) {
         guard let pending = pendingImportRefresh else { return }
         pendingImportRefresh = nil
@@ -622,7 +646,53 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         request.recent = recent
         request.scanner = contextScanner
         request.inferredMembers = inferredMembers(text: text, caret: selection.location, request: request)
+        request.workspaceNames = workspaceNamesProvider()
         return request
+    }
+
+    /// Languages whose files share names with a document of `language`
+    /// (T17.14): the JavaScript family, C with C++ (headers), else itself.
+    nonisolated static func workspaceLanguages(for language: String) -> [String] {
+        switch language {
+        case "javascript", "typescript", "typescriptreact": return ["typescript", "typescriptreact", "javascript"]
+        case "c", "cpp": return ["c", "cpp"]
+        default: return [language]
+        }
+    }
+
+    /// The other files' names of the document's project folder (T17.14):
+    /// nil without an index, a saved document inside a project folder, or a
+    /// language the index reads.
+    private func workspaceNamesProvider() -> ((String) -> WorkspaceNameBatch?)? {
+        guard let index = workspaceIndex, !languageIdentifier.isEmpty, DeclarationScan.usesWalker(languageIdentifier),
+              let path = documentURLProvider?()?.path, let folder = index.projectFolder(containing: path) else {
+            return nil
+        }
+        let languages = Self.workspaceLanguages(for: languageIdentifier)
+        return { [weak self] prefix in
+            let start = DispatchTime.now().uptimeNanoseconds
+            defer {
+                self?.lastWorkspaceQueryNanoseconds = DispatchTime.now().uptimeNanoseconds &- start
+                self?.workspaceQueryCount += 1
+            }
+            guard let answer = index.topLevelNames(withPrefix: prefix, inFolder: folder, excludingFile: path,
+                                                   languages: languages) else { return nil }
+            var seen = Set<String>()
+            var names: [WorkspaceNameBatch.Name] = []
+            for symbol in answer.symbols where seen.insert(symbol.name).inserted {
+                names.append(WorkspaceNameBatch.Name(name: symbol.name, kind: CandidateKind.from(symbol.kind, scoped: false),
+                                                     detail: Self.workspaceDetail(symbol)))
+            }
+            return WorkspaceNameBatch(names: names, truncated: answer.truncated)
+        }
+    }
+
+    /// `models.py  (name: str) -> User`: the declaring file, then the
+    /// signature summary when the index has one (plan §5.5).
+    nonisolated static func workspaceDetail(_ symbol: WorkspaceSymbol) -> String {
+        let file = (symbol.relativePath as NSString).lastPathComponent
+        guard let signature = symbol.signature, !signature.isEmpty else { return file }
+        return file + "  " + signature
     }
 
     /// Members of the receiver's inferred type when the caret types a
@@ -649,7 +719,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         } else {
             return nil
         }
-        let service = typeInference ?? TypeInferenceService(tables: .shared, imports: importService)
+        let service = typeInference ?? TypeInferenceService(tables: .shared, imports: importService,
+                                                             crossFile: crossFileTypes)
         typeInference = service
         let begin = PerfLog.isEnabled ? PerfLog.now() : 0
         var index: (version: UInt64, index: DeclarationQueryIndex)?

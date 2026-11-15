@@ -706,8 +706,15 @@ public final class WorkspaceIndex: @unchecked Sendable {
         let text: NSString = NSString(data: bytes, encoding: String.Encoding.utf8.rawValue)
             ?? (String(decoding: bytes, as: UTF8.self) as NSString)
         let scan = DeclarationScan.scan(text: text as String, languageIdentifier: language)
-        return IndexedSymbol.extract(from: scan, text: text)
+        // Signature summaries (T17.14) cost a summariser pass: skipped when
+        // `richSignatures` is off (benchmarks compare both).
+        let symbols = IndexedSymbol.extract(from: scan, text: text)
+        return richSignatures ? IndexSignatures.enrich(symbols, text: text, language: language) : symbols
     }
+
+    /// Whether indexed symbols carry `IndexSignatures` summaries (always in
+    /// the app; benchmarks switch it off for a before / after reading).
+    nonisolated(unsafe) static var richSignatures = true
 
     /// The text the index reads for a file (for tests comparing against
     /// `DeclarationScan`).
@@ -750,12 +757,21 @@ public final class WorkspaceIndex: @unchecked Sendable {
         return best?.path
     }
 
-    private func withDatabase<T>(_ folderPath: String, _ body: (IndexDatabase, Folder) throws -> T) -> T? {
+    /// Runs `body` under the folder's database lock. `wait`: how long to
+    /// wait for the lock at most (the indexer holds it for one file's
+    /// transaction; a main-thread query gives up instead of blocking —
+    /// nil then); nil waits as long as it takes.
+    private func withDatabase<T>(_ folderPath: String, wait: TimeInterval? = nil,
+                                 _ body: (IndexDatabase, Folder) throws -> T) -> T? {
         lock.lock()
         let folder = enabled ? folders[ProjectFolderStore.standardize(folderPath)] : nil
         lock.unlock()
         guard let folder else { return nil }
-        folder.databaseLock.lock()
+        if let wait {
+            guard folder.databaseLock.lock(before: Date(timeIntervalSinceNow: wait)) else { return nil }
+        } else {
+            folder.databaseLock.lock()
+        }
         defer { folder.databaseLock.unlock() }
         guard let database = folder.database, database.isOpen else { return nil }
         return try? body(database, folder)
@@ -777,6 +793,47 @@ public final class WorkspaceIndex: @unchecked Sendable {
             return try database.symbols(foldedPrefix: IndexDatabase.folded(prefix), excludingPath: excluded, limit: limit)
                 .map { symbol($0, folder: owner) }
         } ?? []
+    }
+
+    /// The answer to a completion-name query (T17.14).
+    public struct NameQuery: Sendable {
+        public let symbols: [WorkspaceSymbol]
+        /// The scan cap or the limit cut the answer (more may match).
+        public let truncated: Bool
+    }
+
+    /// Top-level names of other files in `folder` (no container: functions,
+    /// classes, variables of a module — not members), in files of
+    /// `languages` (up to three identifiers), whose name starts with
+    /// `prefix` (case-insensitive), ordered by name; at most `limit`, after
+    /// examining at most `scanLimit` index entries. Gives up (nil) when the
+    /// indexer holds the database longer than `wait` — the cost on the
+    /// main thread stays bounded (completion, plan §5.3 step 5).
+    public func topLevelNames(withPrefix prefix: String, inFolder folder: String, excludingFile: String? = nil,
+                              languages: [String], limit: Int = 64, scanLimit: Int = 512,
+                              wait: TimeInterval? = 0.004) -> NameQuery? {
+        guard !prefix.isEmpty, !languages.isEmpty else { return NameQuery(symbols: [], truncated: false) }
+        return withDatabase(folder, wait: wait) { database, owner in
+            let excluded = excludingFile.flatMap { owner.relativePath(ProjectFolderStore.standardize($0)) }
+            let (rows, truncated) = try database.topLevelSymbols(
+                foldedPrefix: IndexDatabase.folded(prefix), excludingPath: excluded, languages: Array(languages.prefix(3)),
+                limit: limit, scanLimit: scanLimit)
+            return NameQuery(symbols: rows.map { symbol($0, folder: owner) }, truncated: truncated)
+        }
+    }
+
+    /// Symbols filed under `container` (exact: members of a class, `impl`
+    /// block, Go receiver type) in `folder`.
+    public func symbols(container: String, inFolder folder: String, limit: Int = 500) -> [WorkspaceSymbol] {
+        withDatabase(folder) { database, owner in
+            try database.symbols(container: container, limit: limit).map { symbol($0, folder: owner) }
+        } ?? []
+    }
+
+    /// The state of the project folder `path` (nil: not a project folder).
+    public func state(ofFolder path: String) -> State? {
+        lock.lock(); defer { lock.unlock() }
+        return folders[ProjectFolderStore.standardize(path)]?.state
     }
 
     /// Symbols named exactly `name` in `folder`.
@@ -807,7 +864,14 @@ public final class WorkspaceIndex: @unchecked Sendable {
         lock.lock()
         let targets = folder.map { [ProjectFolderStore.standardize($0)] } ?? Array(folders.keys)
         lock.unlock()
+        func ordered(_ a: WorkspaceSymbolMatch, _ b: WorkspaceSymbolMatch) -> Bool {
+            (a.tier, a.symbol.name.utf16.count, a.symbol.name, a.symbol.relativePath, a.symbol.location)
+                < (b.tier, b.symbol.name.utf16.count, b.symbol.name, b.symbol.relativePath, b.symbol.location)
+        }
         var matches: [WorkspaceSymbolMatch] = []
+        // Memory stays O(limit) (T17.14): the best `limit` are kept as rows
+        // stream by, trimming whenever four times as many have gathered.
+        let trimAt = max(limit * 4, 256)
         for target in targets {
             _ = withDatabase(target) { database, owner in
                 var examined = 0
@@ -816,15 +880,16 @@ public final class WorkspaceIndex: @unchecked Sendable {
                     if let match = matcher.match(row.name, allowFuzzy: true) {
                         matches.append(WorkspaceSymbolMatch(symbol: symbol(row, folder: owner), tier: match.tier,
                                                             ranges: match.ranges))
+                        if matches.count >= trimAt {
+                            matches.sort(by: ordered)
+                            matches.removeLast(matches.count - limit)
+                        }
                     }
                     return examined < scanLimit
                 }
             }
         }
-        matches.sort {
-            ($0.tier, $0.symbol.name.utf16.count, $0.symbol.name, $0.symbol.relativePath, $0.symbol.location)
-                < ($1.tier, $1.symbol.name.utf16.count, $1.symbol.name, $1.symbol.relativePath, $1.symbol.location)
-        }
+        matches.sort(by: ordered)
         return Array(matches.prefix(limit))
     }
 
@@ -855,6 +920,22 @@ public final class WorkspaceIndex: @unchecked Sendable {
         folder.databaseLock.lock()
         defer { folder.databaseLock.unlock() }
         return (stream, folder.database?.isOpen ?? false)
+    }
+
+    /// Holds `path`'s database lock on another thread (as the indexer does
+    /// during a file's transaction) until `until` is signalled; `signal`
+    /// fires once it is held (tests of the main-thread query bound).
+    func holdDatabaseLockForTesting(_ path: String, signal: DispatchSemaphore, until: DispatchSemaphore) {
+        lock.lock()
+        let folder = folders[ProjectFolderStore.standardize(path)]
+        lock.unlock()
+        guard let folder else { signal.signal(); return }
+        Thread.detachNewThread {
+            folder.databaseLock.lock()
+            signal.signal()
+            until.wait()
+            folder.databaseLock.unlock()
+        }
     }
 
     var writeCount: Int {

@@ -32,11 +32,45 @@ public struct CompletionRequest {
     /// mixed in (plan §5.4); when non-empty, document words are left out
     /// too (plan §13: nothing that does not belong to the type).
     public var inferredMembers: [Candidate]?
+    /// Top-level names exported by the other files of the document's project
+    /// folder (T17.14, `WorkspaceIndex.topLevelNames`): called with the
+    /// typed prefix (never empty) when the engine gathers identifier
+    /// candidates in the document's own language — not for member access,
+    /// strings, comments or embedded regions, and not when a growing prefix
+    /// reuses the previous matched set. nil: no project folder, or the
+    /// index is off. The provider answers nil when the index was busy (the
+    /// next keystroke asks again).
+    public var workspaceNames: ((String) -> WorkspaceNameBatch?)?
 
     public init(text: NSString, caret: Int, languageIdentifier: String) {
         self.text = text
         self.caret = caret
         self.languageIdentifier = languageIdentifier
+    }
+}
+
+/// Names from other files of the project folder for one prefix (T17.14).
+public struct WorkspaceNameBatch: Sendable {
+    public struct Name: Sendable, Equatable {
+        public let name: String
+        public let kind: CandidateKind
+        /// The declaring file's name and signature summary (`models.py  (a) -> int`).
+        public let detail: String?
+
+        public init(name: String, kind: CandidateKind, detail: String?) {
+            self.name = name
+            self.kind = kind
+            self.detail = detail
+        }
+    }
+
+    public let names: [Name]
+    /// More names may start with the prefix than were returned.
+    public let truncated: Bool
+
+    public init(names: [Name], truncated: Bool) {
+        self.names = names
+        self.truncated = truncated
     }
 }
 
@@ -604,6 +638,20 @@ public struct CandidateEngine {
             }
         }
         if emptyManual { return }
+        // Other files of the project folder (T17.14): exact prefix tiers only
+        // (the index's prefix range, no fuzzy matching over it), ranked below
+        // this file's declarations and imports (`CandidateSource.workspace`).
+        if caretLanguage.embed == 0, let provider = request.workspaceNames {
+            if let batch = provider(context.prefix) {
+                for entry in batch.names {
+                    out.items.append(SourceItem(name: entry.name, kind: entry.kind, source: .workspace, scopeDepth: nil,
+                                                location: nil, fuzzy: false, detail: entry.detail))
+                }
+                if batch.truncated { out.truncated = true }
+            } else {
+                out.truncated = true
+            }
+        }
         // Keywords and builtins.
         for keyword in request.keywords {
             out.items.append(SourceItem(name: keyword, kind: .keyword, source: .keyword, scopeDepth: nil,

@@ -56,6 +56,17 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// it closes, so it keeps no resident symbol index (ARCHITECTURE.md §3.4).
     private var symbolNavigator: SymbolNavigator?
 
+    /// Transient "Workspace Symbols" navigator (T17.14, ⌘T), held only while
+    /// its panel is on screen.
+    private var workspaceSymbolNavigator: WorkspaceSymbolNavigator?
+    /// The project-folder index the navigator searches (tests inject one).
+    var workspaceIndex: WorkspaceIndex = .shared
+    /// Opens a file from the workspace-symbol navigator through the app's
+    /// usual open path (de-duplicating against open windows) and returns
+    /// its window; installed by `AppDelegate` at launch (nil: unbundled
+    /// probes / tests, which then only reveal symbols of this document).
+    public static var fileOpener: (@MainActor (URL) -> EditorWindowController?)?
+
     /// Transient "Go to Line" panel (T11.5). Like the symbol navigator, held only
     /// while its panel is on screen and dropped the moment it closes, so it keeps
     /// no resident state (ARCHITECTURE.md §3.4).
@@ -257,8 +268,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
         // Prefix completion: shares the observer hub for edit notifications and
         // routes keys through the text view's completion hook. Module-gated.
-        let completion = CompletionController(textView: textView, analysis: analysis, importService: .shared)
-        // Import resolution (T17.13) reads the document's project folder.
+        let completion = CompletionController(textView: textView, analysis: analysis, importService: .shared,
+                                              workspaceIndex: .shared, crossFileTypes: .shared)
+        // Import resolution (T17.13), other files' names and cross-file types
+        // (T17.14) read the document's project folder.
         completion.documentURLProvider = { [weak self] in self?.documentController.fileURL }
         observerHub.add(completion)
         (textView as? EditorTextView)?.completionKeyHandler = completion
@@ -1015,6 +1028,78 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
     }
 
+    // MARK: - Workspace Symbols (first-responder target, T17.14)
+
+    /// Opens the workspace-symbol navigator (⌘T). Outside a project folder or
+    /// with the index off the menu item is disabled; reached anyway (a
+    /// rebound key), the status bar says why.
+    @objc public func showWorkspaceSymbols(_ sender: Any?) {
+        guard workspaceSymbolNavigator == nil else { return }
+        let path = documentController.fileURL?.path
+        let availability = WorkspaceSymbolNavigator.availability(index: workspaceIndex, documentPath: path)
+        switch availability {
+        case .notInProjectFolder, .indexOff:
+            statusBar.flashMessage(L10n.t(availability == .indexOff ? .workspaceSymbolIndexOff : .workspaceSymbolNotInFolder))
+            NSSound.beep()
+            return
+        case .available, .indexing:
+            break
+        }
+        let navigator = WorkspaceSymbolNavigator(textView: textView, index: workspaceIndex, documentPath: path) {
+            [weak self] symbol in
+            self?.openWorkspaceSymbol(symbol)
+        }
+        workspaceSymbolNavigator = navigator
+        navigator.present { [weak self] in self?.workspaceSymbolNavigator = nil }
+    }
+
+    /// The navigator and the editor text view (tests).
+    var workspaceSymbolNavigatorForTesting: WorkspaceSymbolNavigator? { workspaceSymbolNavigator }
+    var textViewForTesting: NSTextView { textView }
+
+    /// Opens `symbol`'s file (this window when it is this document) and
+    /// selects its name.
+    func openWorkspaceSymbol(_ symbol: WorkspaceSymbol) {
+        if let current = documentController.fileURL,
+           ProjectFolderStore.standardize(current.path) == ProjectFolderStore.standardize(symbol.path) {
+            reveal(symbol)
+            return
+        }
+        guard let opener = Self.fileOpener, let controller = opener(URL(fileURLWithPath: symbol.path)) else {
+            NSSound.beep()
+            return
+        }
+        controller.reveal(symbol)
+    }
+
+    /// Selects `symbol`'s name: its line from the index, the occurrence of
+    /// the name on it nearest the indexed column (the index counts the file
+    /// as read from disk, the editor may differ in line endings).
+    func reveal(_ symbol: WorkspaceSymbol) {
+        let text = textView.string as NSString
+        let line = min(max(symbol.line, 1), max(1, lineIndex.lineCount))
+        let lineRange = lineIndex.offsetRange(ofLine: line)
+        var target = NSRange(location: min(lineRange.lowerBound, text.length), length: 0)
+        if lineRange.upperBound <= text.length, lineRange.upperBound > lineRange.lowerBound {
+            let searchRange = NSRange(location: lineRange.lowerBound, length: lineRange.upperBound - lineRange.lowerBound)
+            var best: NSRange?
+            var from = searchRange
+            while true {
+                let found = text.range(of: symbol.name, options: [.literal], range: from)
+                guard found.location != NSNotFound else { break }
+                if best == nil || abs(found.location - symbol.location) < abs(best!.location - symbol.location) { best = found }
+                let next = NSMaxRange(found)
+                guard next < NSMaxRange(searchRange) else { break }
+                from = NSRange(location: next, length: NSMaxRange(searchRange) - next)
+            }
+            if let best { target = best }
+        }
+        textView.setSelectedRange(target)
+        textView.scrollRangeToVisible(target)
+        window?.makeKeyAndOrderFront(nil)
+        window?.makeFirstResponder(textView)
+    }
+
     // MARK: - Go to Line (first-responder target)
 
     /// Opens the transient "Go to Line" panel (Ctrl+G). Reuses the window's
@@ -1326,6 +1411,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if let verdict = validateRunMenuItem(menuItem) { return verdict }
+        if menuItem.action == #selector(showWorkspaceSymbols(_:)) {
+            switch WorkspaceSymbolNavigator.availability(index: workspaceIndex,
+                                                          documentPath: documentController.fileURL?.path) {
+            case .available, .indexing: return true
+            case .notInProjectFolder, .indexOff: return false
+            }
+        }
         if menuItem.action == #selector(reopenWithEncoding(_:)) {
             // Reopening reads from disk, so an untitled (never-saved) document
             // has nothing to reopen — grey the whole submenu out.

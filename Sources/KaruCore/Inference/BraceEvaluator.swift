@@ -34,6 +34,9 @@ enum BraceValue {
     /// A type used as a value (`Foo.` / `Foo::`).
     case typeLevel(Int)
     case callable(BraceCallable)
+    /// A package / module / namespace path before `.` / `::` (T17.14: Go
+    /// `pkg.T`, Rust `crate::m::T`, C++ `ns::T`): only a type can follow.
+    case namespace([String])
 }
 
 /// Evaluates one member-access request over a `BraceModuleView`.
@@ -170,7 +173,8 @@ final class BraceEvaluator {
                 }
                 return t.kind == .rparen ? open : start
             case .ident:
-                guard t.keyword == .none || isReceiverKeyword(t) else { return start }
+                guard t.keyword == .none || isReceiverKeyword(t) || (language == .rust && t.keyword == .crate)
+                else { return start }
                 start = k
                 guard k > 0 else { return start }
                 let p = tk[k - 1]
@@ -273,6 +277,11 @@ final class BraceEvaluator {
             }
             value = evaluate(tk, k + 1, close, context: context)
             k = close + 1
+        } else if language == .rust, t.kind == .ident, t.keyword == .crate || t.keyword == .super
+                    || t.keyword == .selfValue, k + 1 < to, view.decls.types.isPathSeparator(tk[k + 1]) {
+            // `crate::` / `super::` / `self::`: a module path (T17.14).
+            value = .namespace([])
+            k += 1
         } else if t.kind == .ident, t.keyword == .none || isReceiverKeyword(t) {
             if let smart = smartFactory(tk, k, to, context: context) {
                 value = smart.0
@@ -280,6 +289,12 @@ final class BraceEvaluator {
             } else {
                 value = resolveName(tk[k], context: context)
                 k += 1
+                // An unresolved name before a path separator: a package /
+                // module / namespace (T17.14, cross-file types only).
+                if case .unknown = value, view.foreign != nil, t.keyword == .none, k + 1 < to, tk[k + 1].kind == .ident,
+                   isNamespaceSeparator(tk[k], name: reader.string(t), context: context) {
+                    value = .namespace([reader.string(t)])
+                }
                 // Composite / struct literals `Foo{…}` (Go, Rust, C++).
                 if k < to, tk[k].kind == .lbrace, case .typeLevel(let id) = value,
                    language == .go || language == .rust || language == .cpp,
@@ -322,6 +337,13 @@ final class BraceEvaluator {
                 guard let close = BraceTokens.matching(tk, k, limit: to) else { return .unknown }
                 if case .callable = value { value = call(value, resultIndex: close + 1 == to ? resultIndex : nil) }
                 else if case .typeLevel = value { value = call(value, resultIndex: nil) }
+                k = close + 1
+            case .lbrace where language == .go || language == .rust || language == .cpp:
+                // A composite / struct literal of a qualified type (`pkg.T{…}`, `m::T {…}`).
+                guard case .typeLevel(let id) = value, let close = BraceTokens.matching(tk, k, limit: to) else {
+                    return .unknown
+                }
+                value = .instance(BraceInstance(type: id))
                 k = close + 1
             case .bang where language == .swift:
                 guard case .instance(var inst) = value else { return .unknown }
@@ -554,11 +576,29 @@ final class BraceEvaluator {
         }
     }
 
+    /// `.` (Go, no binding of that name) / `::` (Rust, C++) after a name.
+    private func isNamespaceSeparator(_ t: DeclToken, name: String, context: Int) -> Bool {
+        switch language {
+        case .go: return view.decls.types.isPlainDot(t) && binding(named: name, at: context) == nil
+        case .rust, .cpp: return view.decls.types.isPathSeparator(t)
+        default: return false
+        }
+    }
+
     /// `value op name`.
     private func access(_ value: BraceValue, op: String, name t: DeclToken, context: Int, calls: Bool,
                         inOptionalChain: Bool) -> BraceValue {
         let name = reader.string(t)
         switch value {
+        case .namespace(let path):
+            switch (language, op) {
+            case (.go, "."), (.rust, "::"), (.cpp, "::"): break
+            default: return .unknown
+            }
+            var written = BraceWrittenType()
+            written.path = path + [name]
+            if let id = view.resolveType(written, context: context) { return .typeLevel(id) }
+            return language == .go ? .unknown : .namespace(path + [name])
         case .instance(var inst):
             if inOptionalChain { inst.optional = false }
             guard accessAllowed(inst, op: op) else { return .unknown }

@@ -581,7 +581,7 @@ final class ScriptTypeTables {
     // MARK: - Summaries
 
     /// A lib member's summary: a method's first overload, a property's type.
-    static func detail(_ m: TypeTable.Member, bindings: [String: String]) -> String? {
+    nonisolated static func detail(_ m: TypeTable.Member, bindings: [String: String]) -> String? {
         switch m.kind {
         case .method, .classMethod, .staticMethod:
             return m.overloads.first.map { signatureText($0, bindings: bindings) }
@@ -595,7 +595,7 @@ final class ScriptTypeTables {
     /// callback parameter lists keep their first parameter only, then
     /// callback return types become `…` (the shared shortening then drops
     /// trailing parameters, keeping the return type).
-    static func signatureText(_ sig: TypeTable.Signature, bindings: [String: String]) -> String {
+    nonisolated static func signatureText(_ sig: TypeTable.Signature, bindings: [String: String]) -> String {
         func render(compact: Int) -> String {
             var parts: [String] = []
             for p in sig.parameters where p.name != "this" {

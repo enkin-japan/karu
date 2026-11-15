@@ -56,7 +56,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.11 | 深层推断（Python、JS/TS）与静态语言显式声明，接入成员候选与签名摘要 | T17.9、T17.10、T17.4 | implementer，main 审查 | ✅ 11a 解析器、11b Python、11c JS/TS、11d 静态语言；50 条成员门槛：禁用 0、前十召回 100% |
 | T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | 🔶 自动化通过；大文件夹常驻 +5–6 MB 超 5 MB 目标（分配器保留页，T17.15 处理）；TCC 与三语布局待真机 |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ✅ 夹具 33/33；无外部进程；保存后 ≤1 s；真实 venv/node_modules 与 TCC 待真机 |
-| T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ⬜ |
+| T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ✅ 自动化通过；夹具 36/36；⌘T 面板与刷新观感待真机 |
 | T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | ⬜ |
 
 - T17.0 进展（main，2026-11-13）：
@@ -992,6 +992,48 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     - 非成员补全的跨文件名字、工作区符号搜索、静态语言的导入。
     - JS/TS：Node 内置模块（`@types/node` 的环境模块）、`tsconfig` 的 `paths` / `baseUrl`、`typesVersions`、三斜线引用、JSON 导入。
     - Python：模块级 `__getattr__`；未注解的返回值只覆盖少数确定的写法。
+
+- T17.14 跨文件接入（main 定范围，implementer 实现，main 审查并复验，2026-11-15）：
+  - **补全里其他文件的名字**：
+    - 文档在项目文件夹里时，标识符补全多一个来源 `CandidateSource.workspace`：同文件夹其他文件的顶层名字（无容器），只取同语言族（JS/TS 一族、C/C++ 一族），排除文档自身。
+    - 排序在本文件声明和导入之后、关键字和文档词之前（方案 §5.3）；只用精确前缀两档（索引的前缀区间），不对索引做模糊匹配；成员访问、字符串、注释、嵌入区不查。
+    - 标签沿用「文件 / file / ファイル」；detail 为 `文件名  签名`（`models.py  (name: str) -> User`）。
+    - 主线程开销有界：`WorkspaceIndex.topLevelNames` 只扫前缀区间的 512 条索引项、取 64 个；索引线程持锁超过 4 ms 就放弃本次（返回 nil，引擎标记截断，下一键重查）。代价是同前缀的别种语言名字很多时，要多敲一个字符才出现。
+  - **索引签名**（schema 2，旧库自动重建）：
+    - `IndexSignatures` 用推断层同样的摘要填 `signature`：Python 走 T17.13 的 `PythonModuleSummarizer`（类给 `__init__` 去掉 self），JS/TS 走 `ScriptModuleSummarizer`，七种静态语言走声明（`BraceStaticFile` + `BraceSummary.signature`）。
+    - Go 方法改挂在接收者类型下（container = `Server`）；新增 `symbols(container)` 部分索引。
+    - 合成 5,000 文件（release，负载 ~4）：只要参数名 2.31 s / 25.45 MB，加摘要 3.21 s / 27.21 MB（T17.12 时 schema 1 为 22.2 MB）。
+  - **静态语言的跨文件成员**（T17.11d 留下的缺口）：
+    - `CrossFileTypeService`（Workspace/）：类型名不在本文件时，按索引找声明或扩展它的文件（`symbols(named:)` + `symbols(container:)`，每个名字最多 16 个文件），在独立 utility 队列 `dev.enkin.Karu.crossfile` 读文件、建 `BraceModuleView`、只留摘要（`BraceForeignPart`），LRU 上限 2 MB；FSEvents 到达时丢弃该文件夹的答案。
+    - `BraceForeignResolver`（Inference/BraceForeign.swift）在主线程选择：限定名（`pkg.T`、`crate::m::T`、`ns::T`）按包/模块/命名空间匹配；不限定时 Go 只认同目录，多于一个候选再按 Java import/同包、C# using、C++ using namespace、Rust use 过滤；仍多于一个就当未知。
+    - 合并：其他文件的 Swift extension、Rust impl、同包 Go 方法、C# partial、基类；本文件类型也会合并其他文件的 extension / impl / Go 方法 / partial（同名有别的声明时不合并）。
+    - 可见性：其他文件的 private/fileprivate 不列（C#/C++ 仅在所属类内）；Go 小写名跨包不列；Java 跨包不列包私有和 protected（Java 包私有现在保持 `.unspecified`，本文件行为不变）。
+    - `BraceValue.namespace` 让 `models.User{}`、`crate::m::T::new()`、`m::Config {..}` 这类限定表达式能解析。
+    - 到达后与 T17.13 一样刷新同一位置的弹窗；修正了复用答案时丢失「仍在等待」标记的问题（导入同样受益）。
+  - **工作区符号**：编辑菜单「工作区符号… / Workspace Symbols… / ワークスペースシンボル…」，⌘T（原来空闲，可在快捷键设置里改）。
+    - 查询在后台串行队列跑，最新的查询生效；`searchSymbols` 改为边扫边截断，内存 O(limit)。
+    - 行显示名字（匹配字符加粗）和「类别 · 容器 · 路径:行」；选中后经 `openFromFinder` 打开文件（已开就前置），按索引的行与列附近定位并选中名字。
+    - 不在项目文件夹或索引关闭时菜单置灰（快捷键直达时状态栏说明）；建索引中面板打开但禁用并提示，完成后自动可用。新增 6 个三语词条。
+  - **开关**：crossFileIndex 关闭后，名字、成员、工作区符号立即消失（服务全部释放，推断缓存按文件夹变化丢弃）；打开并补齐索引后恢复。typeInference 或 completion 关闭也释放服务。
+  - **夹具** `Tests/Fixtures/M17/crossfile/`（project/ 七种语言 + Python/TS，outside/ 不在文件夹里）：名字 5/5、成员 17/17、签名 6/6、工作区符号 4/4、负例 4/4（文件夹外的名字、Swift/C++ 歧义名）。
+  - **时延**（release，合成 5,000 文件，负载 ~4）：
+    - 名字补全按键到候选 p50 3.35 ms、p95 11.4 ms（同样输入不接索引的对照 p50 1.0、p95 6.6）；其中索引查询 p50 0.23 ms、p95 0.37 ms。
+    - 工作区符号搜索（后台）p50 12.5 ms、p95 38.5 ms。
+    - 跨文件成员首次结果（请求→队列→再请求）p50 0.9 ms、p95 1.7 ms，不含主线程回调那一轮。
+    - 保存另一文件后成员更新：调试构建单测约 60 ms（测试的 FSEvents 合并延迟 0.1 s；App 用 0.3 s，预计约 0.3 s），满足 ≤1 s。
+  - **内存**（同进程配对，每键排空 autorelease 池）：带索引名字的输入比同样输入的对照多约 4.6 MB，来源是带 detail 的更宽弹窗行（去掉 detail 后与对照相同）；索引查询本身 400 次 +0.1 MB；工作区搜索 +0.1–0.2 MB；跨文件摘要 640 B。T17.15 的 App 内 A/B 复核。
+  - **测试**：新增 `CrossFileTests`（15 个，8 个套件）、可选基准 `KARU_T1714_BENCH`、截图 `KARU_T1714_SHOTS`；`WorkspaceIndexTests` 改为对照加摘要后的签名。全量 1573 tests / 171 suites，只有已知的工具链计时测试失败，单独重跑通过；visual-smoke VISUAL OK、FOLD GEOMETRY OK；补全基线与 HEAD 重新生成的结果逐字节相同。
+  - **待 main 在真实窗口验证**：⌘T 面板的真实绘制（截图是合成的）、打开另一个文件并定位、弹窗随跨文件结果刷新的观感、三语面板布局。
+  - **缺口**：
+    - C 头文件 `.h` 按 C 建索引，其中的 C++ `class` 不会被找到（`.hpp` 可以）。
+    - 泛型实参、跨包函数返回值（`pkg.NewUser()`）、嵌套类型的不限定引用、Java 子类访问跨包 protected、Rust `pub(crate)` 细分仍按未知或保守处理。
+    - Python/TS 名字补全不自动补 import。
+  - **main 复验**：
+    - 全量测试在负载约 7 时被工具链计时测试中途打断。跳过工具链后 1513 tests / 164 suites 全部通过；工具链单独 60/60 通过。visual-smoke VISUAL OK、FOLD GEOMETRY OK。
+    - 新出现的偶发失败：`CompletionFreshnessTests.publishedSnapshotSurvivesEditsWithAJournal` 在高负载下失败过一次，单独跑通过。
+  - **留给 T17.15**：
+    - T17.11b、c、d 和 T17.14 都测到同一现象：弹窗行带摘要后，进程内存多出 1.6–4.6 MB，常驻状态本身只有几 KB。要在 Release App 里做配对 A/B，确认是暂时的绘制分配还是常驻。
+    - 若是常驻，处理办法是缩短 detail，或复用行视图。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

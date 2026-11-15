@@ -94,6 +94,15 @@ enum MainMenu {
                                             action: #selector(EditorWindowController.jumpToSymbol(_:)),
                                             keyEquivalent: "o")
         jumpToSymbol.keyEquivalentModifierMask = [.command, .shift]
+        // Workspace Symbols (⌘T, M17 T17.14): the project folder's symbols
+        // through the cross-file index. ⌘T is free in Karu (no Fonts panel),
+        // and matches VS Code's "Go to Symbol in Workspace". Rebindable in
+        // the shortcut settings like every menu item; greyed out outside a
+        // project folder or with the index off (EditorWindowController).
+        let workspaceSymbols = editMenu.addItem(withTitle: L10n.t(.menuWorkspaceSymbols),
+                                                action: #selector(EditorWindowController.showWorkspaceSymbols(_:)),
+                                                keyEquivalent: "t")
+        workspaceSymbols.keyEquivalentModifierMask = [.command]
 
         // Go to Line (Ctrl+G): aligns with VS Code's macOS key binding. Targets
         // the first responder (EditorWindowController).

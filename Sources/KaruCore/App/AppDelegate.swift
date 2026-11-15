@@ -102,6 +102,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             WorkspaceIndex.shared.start()
         }
+        // Workspace Symbols (T17.14) opens files through the Finder path
+        // (de-duplicated against open windows).
+        EditorWindowController.fileOpener = { [weak self] url in
+            guard let self else { return nil }
+            self.openFromFinder(url)
+            return self.windowControllers.first { controller in
+                controller.currentFileURL.map { UbiquitousFile.sameFile($0, url) } ?? false
+            }
+        }
 
         // Restore policy (T14.9, user decision): only an update relaunch or an
         // exit that never marked itself clean (crash / force quit) restores the
