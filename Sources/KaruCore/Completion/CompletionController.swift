@@ -53,6 +53,10 @@ public protocol CompletionKeyHandler: AnyObject {
 ///   and after an edit pause (0.15 s) rebuilt by a sliced `AnalysisScheduler`
 ///   job (4 ms slices, dropped on the next edit); words typed since are found
 ///   by the engine's nearby-line scan.
+/// - **Import statements** (T17.16): at an import site the import service's
+///   candidates are the only ones (`CompletionRequest.importCandidates`);
+///   `/` in a JS / TS module specifier also opens the popup; answers still
+///   loading refresh it like member requests do.
 /// - **Requests**: a typed letter / `_` / (JS / TS at the caret) `$` or `.`
 ///   opens the popup when the engine's trigger rules allow it (plan §5.1);
 ///   `requestCompletion(manual:)` is the manual entry (T17.6: ⌥⎋ through
@@ -575,7 +579,8 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
                   let first = chars.first,
                   first.isLetter || first == "_" || first == "."
                     || (first == "$" && IdentifierText.allowsDollar(caretLanguageIdentifier()))
-                    || ((first == ">" || first == ":") && completesAfterAccessOperator()) else { return }
+                    || ((first == ">" || first == ":") && completesAfterAccessOperator())
+                    || (first == "/" && completesInModuleSpecifier()) else { return }
             updatePopup(manual: false)
         }
         if PerfLog.isEnabled { logRequest(event, lazyIndex: lazyIndex) }
@@ -665,7 +670,31 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         request.scanner = contextScanner
         request.inferredMembers = inferredMembers(text: text, caret: selection.location, request: request)
         request.workspaceNames = workspaceNamesProvider()
+        request.importCandidates = importCandidatesProvider(caret: selection.location, manual: manual)
         return request
+    }
+
+    /// Import-statement candidates (T17.16, plan §9): module names, `from x
+    /// import` names, JS / TS specifiers and `import { … }` names, through
+    /// the import service. nil without one, with type inference off (import
+    /// resolution is released then) or in another language. A listing or
+    /// summary still loading arms the same refresh as a member request.
+    private func importCandidatesProvider(caret: Int, manual: Bool) -> ((ImportSiteMatch) -> ImportCandidateBatch?)? {
+        guard let service = importService, moduleSettings.isEnabled(.typeInference),
+              ImportSiteDetector.isPython(languageIdentifier) || ImportSiteDetector.isScript(languageIdentifier)
+        else { return nil }
+        return { [weak self] match in
+            guard let self else { return nil }
+            let inference = self.typeInference ?? TypeInferenceService(tables: .shared, imports: service,
+                                                                        crossFile: self.crossFileTypes)
+            self.typeInference = inference
+            let answer = service.importCompletions(match, documentPath: self.documentURLProvider?()?.path,
+                                                   pythonTables: inference.tables,
+                                                   scriptTables: inference.scriptTables)
+            self.pendingImportRefresh = answer.pending
+                ? (caret, self.analysis.version, self.editCount, manual) : nil
+            return answer.batch
+        }
     }
 
     /// Languages whose files share names with a document of `language`
@@ -730,6 +759,9 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         if text.character(at: start - 1) == 46 {
             dot = start - 1
             if dot > 0, text.character(at: dot - 1) == 46 { return nil }
+            // `import os.pa│` is a module position, not a member access (T17.16).
+            if importService != nil, ImportSiteDetector.isPython(languageIdentifier),
+               ImportSiteDetector.python(text: text, caret: caret) != nil { return nil }
         } else if brace != nil,
                   let op = CompletionContext.accessOperator(before: start, in: text,
                                                             languageIdentifier: languageIdentifier) {
@@ -765,6 +797,16 @@ public final class CompletionController: NSObject, TextStorageObserving, Complet
         guard selection.length == 0, selection.location <= text.length else { return false }
         return CompletionContext.accessOperator(before: selection.location, in: text,
                                                 languageIdentifier: languageIdentifier)?.length == 2
+    }
+
+    /// The caret is in a JS / TS module specifier string right after a `/`
+    /// (T17.16): an automatic request lists that directory's entries.
+    private func completesInModuleSpecifier() -> Bool {
+        guard let textView, importService != nil, ImportSiteDetector.isScript(languageIdentifier) else { return false }
+        let selection = textView.selectedRange()
+        let text: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
+        guard selection.length == 0, selection.location <= text.length else { return false }
+        return ImportSiteDetector.scriptSpecifier(text: text, caret: selection.location) != nil
     }
 
     /// Recomputes the candidates at the caret, then shows / refilters /

@@ -58,6 +58,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ✅ 夹具 33/33；无外部进程；保存后 ≤1 s；T17.15c 真实 venv（click、fastapi）与外接盘 node_modules（express）通过，修文档路径写法与新建 venv 失效两处缺陷 |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ✅ 自动化通过；夹具 36/36；T17.15c ⌘T 面板真机通过 |
 | T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | 🔶 15a 超标项已修；15b 读数完成（[质量报告](M17-QUALITY-REPORT.md)）；15d 主线程长段切片、索引常驻达标、浅色配色；压力项超 99 MB 经用户判定通过；15c 真机验收通过（修 3 处缺陷）；VS Code 卸载按用户决定推迟到候选缺陷修复之后 |
+| T17.16 | 导入语句补全（Python 模块名与 `from x import`、JS/TS 模块字符串与花括号导出名）；venv 逐层查找 | T17.13、T17.15c | implementer | 🔶 实现完成，自动化通过（新增 20 个测试；全量 1566 + 工具链 60）；按键到弹窗 p95 10.5 ms；待 main 审查与真机确认 |
 
 - T17.0 进展（main，2026-11-13）：
   - **VS Code 对照环境**：官方更新服务器 darwin-arm64 包，1.146.0（commit `69047191`，2026-11-10），Microsoft Developer ID 签名、
@@ -1290,6 +1291,66 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     待删清单已与安装前快照核对：`/Volumes/enkin/project-support/KaruM17-VSCode/`（1.3 GB）、`~/KaruM17-VSCode` 符号链接、
     `~/Library/Preferences/com.microsoft.VSCode.plist`、`~/Library/Application Support/Microsoft/`（仅 `DeveloperTools/deviceid`）、`~/.vscode/`、`~/.vscode-shared/`。
     `~/Library` 下没有 VS Code 的 Caches、Saved Application State、HTTPStorages 或 `Application Support/Code`（用的是独立 user-data 目录）。
+
+- T17.16 导入语句补全与 venv 逐层查找（main 定规格，implementer 实现，main 审查，2026-11-15；真机确认待做）：
+  - **代码**：
+    - 新增 `Imports/ImportCompletion.swift`：`ImportSiteDetector` 只读文本判断光标所在的导入位置（Python 的 `\` 续行与 `from x import (` 括号多行、
+      JS/TS 当前行的模块字符串、花括号及其后的 `from '…'`），引擎传入词法位置类：Python 只认代码，JS/TS 模块字符串是唯一会弹的字符串。
+      `ImportService.importCompletions` 在主线程汇总候选；`ImportWorker.list` 在导入队列上生成目录列表；`NodeBuiltinModules` 为内置静态表（54 个，另 4 个只能带 `node:`）。
+    - `ImportService`：Python 查找的上下文改按「项目文件夹 + venv」区分（JS/TS 仍用不带 venv 的上下文）；目录列表以 `<上下文>#…` 键存入摘要 LRU，计入 8 MB，
+      按目录 mtime 复核（与 site-packages 相同，最多每 2 s 一次）；列表到达或失效不清推断的派生缓存。标准库模块名表首次用到时读一次，随 `release()` 释放。
+    - `PythonSearchPaths`：新增 `PythonVenvProbe`，从文档目录向上逐层找 `.venv` / `venv`（有 `pyvenv.cfg`），到项目根为止，取最近的；
+      记录途经各级目录与所找到 venv 的 mtime。`derive(projectRoot:venv:…)` 用探测结果；T17.15c 的项目根 mtime 依据保留。旧签名 `derive(projectRoot:interpreter:fs:)` 只看项目根。
+    - 探测在导入队列上进行，只在 Python 查找时触发（JS/TS 文档不探测）。探测结果未到时只解析标准库，其余标记待定，到达后按 §9 规则刷新弹窗；
+      已有结果使用中每 2 s 按 mtime 复核，变化时重新探测，文档换到新上下文（`generation` 递增，推断的旧答案作废）。
+    - `CandidateEngine`：`CompletionRequest.importCandidates`。导入位置只给这些候选（来源 `importedModule`，导出名排在子模块前），不混入作用域名字、关键字和文档词；
+      没有候选就不弹。自动请求要两个字符的前缀，或前缀紧跟在触发字符后（Python 模块位置的 `.`、模块字符串里的 `/`）；Python 名字在 2,000 项以内允许模糊匹配，
+      JS/TS 模块路径只用前缀与词首。
+    - `CompletionController`：提供上述回调（需要 typeInference 开着；与导入解析一样，关闭即释放）；JS/TS 模块字符串里键入 `/` 触发；
+      Python 导入语句里的 `os.pa` 不再走成员推断。
+    - `ImportPath.resolvingDots`：按文本解析 `.` / `..`，不像 `standardizingPath` 那样把 `/private/var/…` 改写成 `/var/…`，列表路径保持项目根的写法。
+  - **各位置的行为**：
+    - `import ti` → `time`、`timeit`…；`import a, ti`、`import x as` 之前同样；`import os.pa` → `path`；`import xml.etree.` → `ElementTree` 等；`from xml.` → 子包。
+      标准库名字与子模块只读内置表，不读盘；项目根、venv、解释器（含其标准库目录）与 `.pth` 路径列顶层的 `.py` / `.pyi` 和含 `__init__.py(i)` 的目录，
+      site-packages 的 `x-stubs` 按 `x` 列出。
+    - `from os import pa` → `path`、`pathsep`、`pardir`；`from time import sl` → `sleep`（带签名）；`from pkg import` 先列导出名，再列未导出的子模块；
+      `from . import` / `from .` 列同包模块（文档须在项目文件夹内），在项目根则列根目录的模块。
+    - 下划线开头的模块只在前缀以 `_` 开头时列出（`import thr` 不出 `_thread`，`import _th` 出）。
+    - JS/TS `from 'mi'` → `mini`；`'@sc'` → `@scope/pkg`；`'@scope/'` → `pkg`；`@types/x` 列为 `x`，`@types/scope__pkg` 列为 `@scope/pkg`；
+      `'./'` 列同目录文件（去掉 `.ts/.tsx/.d.ts/.js/.jsx/.mjs/.cjs`，目录带 `/`，跳过点文件、`node_modules` 和文档自身，其他文件保留扩展名，如 `data.json`）；
+      `'pkg/'` 列包内文件；`require('f')`、`import('…')`、`import '…'`、`export … from` 同样；`'node:f'` → `node:fs`；`'fs/'` → `promises`。
+    - `import { he } from 'mini'` → `hello`、`helper`（含多行、`import type { … }`、`import def, { … }`）；`a as b` 之后不算导入位置。
+    - 替换范围：Python 为光标所在的整个标识符（点号分隔的最后一段）；模块字符串为最后一个 `/` 之后到光标，不动引号与扩展名。
+    - 无项目文件夹：Python 只有内置表和解释器路径，JS/TS 只有 Node 内置名，不读文档目录。其余字符串与注释仍不弹。
+  - **与规格的取舍**（main 审查时确认）：
+    1. 需要 typeInference 开着：导入解析在它关闭时整体释放，导入语句补全随之关闭（规格「与导入解析相同」）。
+    2. Python 列表包括解释器的标准库目录（③ 的查找根之一），不只 site-packages。
+    3. `tests` 目录按规格在所有来源中排除，项目根的 `tests` 包也不列；命名空间包（无 `__init__`）与 `.so` 扩展模块不列。
+    4. `node:` 形式只在键入内容是 `node:` 的前缀或以它开头时出现，避免 60 个重复项；内置模块子路径（`fs/promises`）在 `fs/` 之后列出。
+    5. 规格外补充：`'pkg/…/'` 列包内目录；JS 模块路径允许词首匹配（`node:te` 之后还有 `node:trace_events`）。
+    6. `from x import ` 之后键入空格不自动弹出（空格不是触发字符），键入两个字符或 ⌥⎋。
+    7. 花括号补全需要括号后已有 `from '…'`；`export { … } from` 不在范围内。
+    8. 项目内 Python 文档的第一次非标准库查找要多等一轮队列（venv 探测），期间先给标准库名字。
+  - **测试**：新增 `ImportCompletionTests`（20 个，5 个套件），覆盖上列各位置、私有模块过滤、项目模块与包、venv / 解释器 / `.pth`、子目录 venv 逐层找到而兄弟目录不用、
+    之后新建的子目录 venv 被发现、`from . import`、JS 包 / scope / `@types` / 相对目录 / 内置、花括号导出名、非模块字符串与注释不弹、替换范围、
+    列表缓存与 2,000 项上限与 mtime 失效、typeInference 关闭即退回普通补全、编辑器内键入 `.` / `/` 触发与接受。
+    `RecordingFileSystem` 增加 `touchedOnMainThread`，断言 Python 与 JS/TS 各位置主线程读盘为 0。
+    可选基准 `KARU_T1716_BENCH`（`ImportCompletionBenchmarkTests`，见 DEVELOPMENT.md）。
+  - **实测**（release，负载约 2.1–2.6；合成 venv 2,000 个包、`node_modules` 1,500 个包、源码目录 400 个文件）：
+    - 预热后按键到弹窗刷新的主线程时间：Python p50 5.1 ms、p95 10.5 ms、最大 14.6 ms（200 次）；JS/TS p50 4.8 ms、p95 8.0 ms、最大 11.8 ms（180 次），满足 §11 的 50 ms。
+      每次都新建弹窗（测试先收起），含面板创建。
+    - 首次（冷）到结果稳定：Python 顶层（venv 探测 + 2,000 项列表）48 ms，`from os import` 8 ms，`node_modules` 13 ms，相对目录 13 ms；都在导入队列上，主线程只合并。
+    - 内存：上述三份列表共 95 KB（约 30 B/项），计入导入摘要 LRU 的 8 MB；标准库名字表常驻约 574 个字符串（估计 20–30 KB），随模块开关释放。App 内配对内存未测。
+  - **验证**：`swift build`、`swift build -c release` 通过；全量 `swift test` 在负载约 3.4 时被已知的工具链计时测试中途打断
+    （`ToolchainManagerTests.rowsShowNotInstalledInstalledAndUpdateStates` 等待超时后解包 nil，SIGTRAP）；跳过工具链后 1566 tests / 177 suites 全部通过，
+    工具链单独 60/60 通过。原有导入测试（T17.13 的 27 个、T17.15c 的回归）不变通过。`visual-smoke.sh` VISUAL OK、FOLD GEOMETRY OK。
+  - **顺带发现（未改）**：`ScriptModuleLocator` 解析相对路径时用 `standardizingPath`，项目根若写成 `/private/var/…` 会被改写成 `/var/…` 而判为越界；
+    App 里项目文件夹按 `standardize` 存储，不会出现，新代码用 `resolvingDots` 避开。
+  - **待 main**：审查 diff；真机确认（真实 venv / node_modules、子目录 venv、弹窗随列表到达刷新的观感、中日输入法下不弹）。
+  - **main 审查（2026-11-15）**：`tests` 包只在 site-packages 中排除（某些发行包误装的顶层 `tests`），项目自己的 `tests` 包照常列出，补测试
+    `projectTestsPackageListedSitePackagesTestsNot`。偏差 1–8 接受。真机确认待用户在场（全屏控制授权超时）。
+  - **偶发失败（与本阶段无关）**：全量一次 `LongLineSlicingEngineTests.minifiedJSONIsPaintedInSlicesThatMatchAFullPass` 的完整性断言
+    「过期检查点给出错误结果」在并行负载下恰好不成立（单独 3 次、全量另 2 次通过）。来自 T17.15d-A 的测试，断言依赖后台补齐的时机，待加固。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

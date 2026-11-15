@@ -87,6 +87,22 @@ enum ImportPath {
         (path as NSString).standardizingPath
     }
 
+    /// `.` and `..` components resolved as text only (T17.16): unlike
+    /// `normalized` it never rewrites `/private/var/…` to `/var/…`, so the
+    /// result keeps the project root's spelling.
+    static func resolvingDots(_ path: String) -> String {
+        var parts: [Substring] = []
+        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
+            if part == "." { continue }
+            if part == ".." {
+                if !parts.isEmpty { parts.removeLast() }
+                continue
+            }
+            parts.append(part)
+        }
+        return "/" + parts.joined(separator: "/")
+    }
+
     /// `path` lies in `root` (or is `root`).
     static func isInside(_ path: String, _ root: String) -> Bool {
         path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")

@@ -45,6 +45,15 @@ public struct CompletionRequest {
     /// index is off. The provider answers nil when the index was busy (the
     /// next keystroke asks again).
     public var workspaceNames: ((String) -> WorkspaceNameBatch?)?
+    /// Import-statement candidates (T17.16, plan §9 "导入语句补全"): called
+    /// when the caret is at an import site of the document's own language
+    /// (`ImportSiteDetector`: Python module / `from x import` positions, a
+    /// JS / TS module specifier string or `import { … }` braces). Its
+    /// candidates are then the only ones (no scope names, keywords or
+    /// document words); nil or empty: no popup. nil provider: import sites
+    /// complete like any other position (no import service, or type
+    /// inference off).
+    public var importCandidates: ((ImportSiteMatch) -> ImportCandidateBatch?)?
 
     public init(text: NSString, caret: Int, languageIdentifier: String) {
         self.text = text
@@ -367,6 +376,13 @@ public struct CandidateEngine {
             request.keywords = vocabulary.keywords
             request.builtins = vocabulary.builtins
         }
+        if caretLanguage.embed == 0, let provider = request.importCandidates,
+           let site = ImportSiteDetector.detect(text: text, caret: caret, languageIdentifier: language,
+                                                position: window.position) {
+            previous = nil
+            return importResult(site, provider: provider, request: request, language: language,
+                                position: window.position)
+        }
         guard var context = CompletionContext.make(text: text, caret: caret, languageIdentifier: language,
                                                    position: window.position) else { return nil }
         // `->` / `::` (T17.11d) is a member access only with inferred members;
@@ -508,6 +524,54 @@ public struct CandidateEngine {
         let cut = candidates.count > Self.maxResults
         return CompletionResult(context: context, candidates: Array(candidates.prefix(Self.maxResults)),
                                 truncated: cut || truncated)
+    }
+
+    // MARK: - Import statements (T17.16)
+
+    /// The answer at an import site: only the provider's candidates, matched
+    /// against the site's prefix (fuzzy only for Python names of a bounded
+    /// set), ranked as usual. Automatic requests need a two-unit prefix, or
+    /// the site's trigger right before the prefix (`.` in a Python module
+    /// position, `/` in a specifier string).
+    private func importResult(_ site: ImportSiteMatch, provider: (ImportSiteMatch) -> ImportCandidateBatch?,
+                              request: CompletionRequest, language: String,
+                              position: CompletionContext.Position) -> CompletionResult? {
+        let text = request.text
+        let prefixLength = site.prefixRange.length
+        let python = site.site.isPython
+        if !site.site.isSpecifier, prefixLength > 0,
+           !IdentifierText.startsIdentifier(site.prefix.utf16, dollar: !python) { return nil }
+        if !request.manual, prefixLength < 2 {
+            let at = site.prefixRange.location
+            let trigger: UInt16? = {
+                switch site.site {
+                case .pythonModule: return 46                    // .
+                case .scriptSpecifier: return 47                 // /
+                default: return nil
+                }
+            }()
+            guard let trigger, at > 0, text.character(at: at - 1) == trigger else { return nil }
+        }
+        guard let batch = provider(site), !batch.items.isEmpty else { return nil }
+        let matcher = CandidateMatcher(site.prefix)
+        let fuzzy = python && batch.items.count <= Self.fuzzyLimit
+        var candidates: [Candidate] = []
+        for item in batch.items {
+            guard let match = matcher.match(item.name, allowFuzzy: fuzzy) else { continue }
+            var candidate = Candidate(name: item.name, kind: item.kind, source: .importedModule, matchTier: match.tier,
+                                      matchedRanges: match.ranges, scopeDepth: item.depth)
+            candidate.detail = item.detail
+            candidate.recentRank = request.recent.rank(of: candidate.identity)
+            candidates.append(candidate)
+        }
+        guard !candidates.isEmpty else { return nil }
+        candidates = Self.ranked(candidates)
+        let context = CompletionContext(languageIdentifier: language, caret: request.caret, position: position,
+                                        prefix: site.prefix, prefixRange: site.prefixRange,
+                                        replacementRange: site.replacementRange,
+                                        identifier: text.substring(with: site.replacementRange), memberAccess: nil)
+        return CompletionResult(context: context, candidates: Array(candidates.prefix(Self.maxResults)),
+                                truncated: candidates.count > Self.maxResults)
     }
 
     // MARK: - Gathering

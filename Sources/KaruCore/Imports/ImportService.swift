@@ -36,6 +36,15 @@ import Foundation
 // site-packages / node_modules directory) at most every
 // `revalidationInterval` seconds, on the queue.
 //
+// **Import statements (T17.16).** `importCompletions` (ImportCompletion.swift)
+// answers the caret inside an import statement: standard-library table
+// names, directory listings (`ImportListing`, built on the queue, cached in
+// the same LRU under `<context>#…` keys and validated by directory mtimes)
+// and the export summaries above. Python contexts carry the document's
+// nearest venv (walking up from its directory to the project root; found on
+// the queue, rechecked against the walked directories' mtimes), so two
+// documents under different venvs never share a module key.
+//
 // **Module toggles.** `typeInference` off (or completion off, which drops
 // all inference state) releases everything: summaries, states, contexts,
 // the worker's caches. `crossFileIndex` off releases everything too, and
@@ -70,6 +79,8 @@ public final class ImportService {
         public var interpreter: @MainActor () -> PythonInterpreterDiscovery
         /// A top-level module name of the built-in standard-library table.
         public var isStdlib: @Sendable (String) -> Bool
+        /// Every module name of that table (import-statement completion, T17.16).
+        public var stdlibModuleNames: @Sendable () -> [String]
         public var revalidationInterval: TimeInterval
         public var moduleSettings: ModuleSettings?
         public var center: NotificationCenter
@@ -82,6 +93,7 @@ public final class ImportService {
                     projectFolder: @escaping @MainActor (String) -> String?,
                     interpreter: @escaping @MainActor () -> PythonInterpreterDiscovery,
                     isStdlib: @escaping @Sendable (String) -> Bool = { TypeTableStore.shared.hasPythonModule($0) },
+                    stdlibModuleNames: @escaping @Sendable () -> [String] = { TypeTableStore.shared.pythonModuleNames() },
                     revalidationInterval: TimeInterval = 2, moduleSettings: ModuleSettings? = nil,
                     center: NotificationCenter = .default, workspace: WorkspaceIndex? = nil,
                     byteLimit: Int = ImportService.summaryByteLimit,
@@ -90,6 +102,7 @@ public final class ImportService {
             self.projectFolder = projectFolder
             self.interpreter = interpreter
             self.isStdlib = isStdlib
+            self.stdlibModuleNames = stdlibModuleNames
             self.revalidationInterval = revalidationInterval
             self.moduleSettings = moduleSettings
             self.center = center
@@ -130,24 +143,42 @@ public final class ImportService {
     private var specifiers: [String: SpecifierState] = [:]
     enum SpecifierState: Equatable { case loading, resolved(String), missing }
 
+    /// A project folder (or none), the venv Python lookups use in it (T17.16:
+    /// the nearest one to the document; JS / TS contexts have none) and the
+    /// Run-selected interpreter.
     final class Context {
         let id: Int
         let prefix: String
         let projectRoot: String?
+        let venv: String?
         let interpreter: PythonInterpreterDiscovery
-        init(id: Int, projectRoot: String?, interpreter: PythonInterpreterDiscovery) {
+        init(id: Int, projectRoot: String?, venv: String? = nil, interpreter: PythonInterpreterDiscovery) {
             self.id = id
             self.prefix = "§\(id):"
             self.projectRoot = projectRoot
+            self.venv = venv
             self.interpreter = interpreter
         }
         var snapshot: ImportContextSnapshot {
-            ImportContextSnapshot(id: id, prefix: prefix, projectRoot: projectRoot, interpreter: interpreter)
+            ImportContextSnapshot(id: id, prefix: prefix, projectRoot: projectRoot, venv: venv, interpreter: interpreter)
         }
     }
+    /// Keyed by `projectRoot \0 venv`.
     private var contexts: [String: Context] = [:]
     private var contextsByID: [Int: Context] = [:]
     private static var nextContextID = 1
+
+    /// The nearest venv of each document directory inside a project folder
+    /// (T17.16; `probe` nil while the queue looks for it).
+    private struct VenvEntry {
+        let root: String
+        var probe: PythonVenvProbe?
+    }
+    private var venvs: [String: VenvEntry] = [:]
+    private var pendingVenvChecks = Set<String>()
+    private var venvValidated: [String: TimeInterval] = [:]
+    /// The standard-library table's module names (T17.16 listings), read once.
+    private var stdlibNames: [String]?
 
     private var pending: [ImportJobItem] = []
     private var pendingRevalidation = Set<String>()
@@ -214,7 +245,7 @@ public final class ImportService {
     /// Nothing held: no summaries, states, contexts or queued work.
     public var isReleased: Bool {
         cache.isEmpty && states.isEmpty && specifiers.isEmpty && contexts.isEmpty && pending.isEmpty
-            && listenerToken == nil
+            && listenerToken == nil && venvs.isEmpty && stdlibNames == nil
     }
 
     /// Approximate bytes of the cached summaries.
@@ -227,6 +258,10 @@ public final class ImportService {
         specifiers.removeAll()
         contexts.removeAll()
         contextsByID.removeAll()
+        venvs.removeAll()
+        pendingVenvChecks.removeAll()
+        venvValidated.removeAll()
+        stdlibNames = nil
         pending.removeAll()
         pendingRevalidation.removeAll()
         lastValidated.removeAll()
@@ -266,19 +301,43 @@ public final class ImportService {
 
     // MARK: - Scopes
 
+    /// The context of `root` with `venv` (created on first use).
+    private func context(root: String?, venv: String?) -> Context {
+        let key = (root ?? "") + "\u{0}" + (venv ?? "")
+        if let existing = contexts[key] { return existing }
+        let context = Context(id: Self.nextContextID, projectRoot: root, venv: venv,
+                              interpreter: configuration.interpreter())
+        Self.nextContextID += 1
+        contexts[key] = context
+        contextsByID[context.id] = context
+        return context
+    }
+
+    /// The nearest venv of `directory` (inside `root`): `.some(path or nil)`
+    /// when known, nil while the queue looks for it (scheduled here). A
+    /// known answer in use is rechecked against the walked directories'
+    /// mtimes now and then (a venv created later is picked up, T17.16).
+    private func venv(forDirectory directory: String, root: String) -> String?? {
+        if let entry = venvs[directory], entry.root == root {
+            guard let probe = entry.probe else { return nil }
+            let now = ProcessInfo.processInfo.systemUptime
+            if venvValidated[directory].map({ now - $0 >= configuration.revalidationInterval }) ?? true {
+                venvValidated[directory] = now
+                pendingVenvChecks.insert(directory)
+            }
+            return .some(probe.venv)
+        }
+        venvs[directory] = VenvEntry(root: root, probe: nil)
+        requestCount += 1
+        pending.append(.venv(directory: directory, root: root, validators: nil))
+        return nil
+    }
+
     /// The import scope of a document (`path` nil: unsaved).
     func scope(forDocument path: String?) -> ImportScope {
         let root = path.flatMap { configuration.projectFolder($0) }
-        let key = root ?? ""
-        let context: Context
-        if let existing = contexts[key] {
-            context = existing
-        } else {
-            context = Context(id: Self.nextContextID, projectRoot: root, interpreter: configuration.interpreter())
-            Self.nextContextID += 1
-            contexts[key] = context
-            contextsByID[context.id] = context
-        }
+        let documentPath = root.flatMap { root in path.map { Self.path($0, spelledUnder: root) } }
+        let base = context(root: root, venv: nil)
         if root != nil, listenerToken == nil, let workspace = configuration.workspace {
             let inbox = self.inbox, worker = self.worker, queue = self.queue
             listenerToken = workspace.addFileChangeListener { [weak self] paths in
@@ -298,8 +357,19 @@ public final class ImportService {
                 }
             }
         }
-        return ImportScope(service: self, context: context,
-                           documentPath: root.flatMap { root in path.map { Self.path($0, spelledUnder: root) } })
+        return ImportScope(service: self, scriptContext: base, documentPath: documentPath)
+    }
+
+    /// The Python context of a document (T17.16): `base` with the document's
+    /// nearest venv; nil while the queue is still looking for it (only
+    /// standard-library names resolve meanwhile). Asked only by Python
+    /// lookups, so JS / TS documents never probe for a venv.
+    func pythonContext(base: Context, documentPath: String?) -> Context? {
+        guard let root = base.projectRoot, let documentPath else { return base }
+        switch venv(forDirectory: ImportPath.parent(documentPath), root: root) {
+        case .some(let venv): return venv == nil ? base : context(root: root, venv: venv)
+        case .none: return nil
+        }
     }
 
     /// `path` spelled under `root`, the project folder's stored form (T17.15c).
@@ -424,9 +494,14 @@ public final class ImportService {
 
     /// Sends the requests and revalidations gathered so far to the queue.
     func flush() {
-        guard !pending.isEmpty || !pendingRevalidation.isEmpty else { return }
+        guard !pending.isEmpty || !pendingRevalidation.isEmpty || !pendingVenvChecks.isEmpty else { return }
         var job = ImportJob(items: pending, known: Set(cache.allKeys).union(states.keys))
         pending.removeAll()
+        for directory in pendingVenvChecks {
+            guard let entry = venvs[directory], let probe = entry.probe else { continue }
+            job.items.append(.venv(directory: directory, root: entry.root, validators: probe.validators))
+        }
+        pendingVenvChecks.removeAll()
         for key in pendingRevalidation {
             if let module = cache.peek(key) {
                 job.revalidate.append((key, module.validators))
@@ -462,6 +537,17 @@ public final class ImportService {
             summaries = true
         }
         for result in results {
+            for (directory, probe) in result.venvs {
+                guard let entry = venvs[directory] else { continue }   // released meanwhile
+                venvs[directory]?.probe = probe
+                venvValidated[directory] = ProcessInfo.processInfo.systemUptime
+                // A new venv (or the first answer) moves the document to
+                // another context: answers reused before are stale.
+                if entry.probe?.venv != probe.venv || entry.probe == nil {
+                    changed = true
+                    summaries = true
+                }
+            }
             for (id, key) in result.specifiers {
                 guard specifiers[id] != nil else { continue }   // released meanwhile
                 specifiers[id] = key.map { .resolved($0) } ?? .missing
@@ -482,7 +568,8 @@ public final class ImportService {
                 lastValidated[record.key] = ProcessInfo.processInfo.systemUptime
                 statistics.loadedModules += 1
                 changed = true
-                summaries = true
+                // A listing changes no summary (derived caches stay).
+                if !Self.isListingKey(record.key) { summaries = true }
             }
             for (key, validators) in result.missing where parse(key) != nil {
                 states[key] = .missing
@@ -499,7 +586,7 @@ public final class ImportService {
                 lastValidated[key] = nil
                 statistics.invalidations += 1
                 changed = true
-                summaries = true
+                if !Self.isListingKey(key) { summaries = true }
             }
         }
         if summaries { bump() }
@@ -551,6 +638,41 @@ public final class ImportService {
         return changed
     }
 
+    // MARK: - Listings (T17.16)
+
+    /// Cached directory listings: `<context prefix>#<request>`.
+    nonisolated static func isListingKey(_ key: String) -> Bool {
+        guard let colon = key.firstIndex(of: ":") else { return false }
+        return key[key.index(after: colon)...].hasPrefix("#")
+    }
+
+    /// The listing `request` of `context`; schedules it when not known (the
+    /// scope is then marked pending). Validated by its directories' mtimes
+    /// like a site-packages summary.
+    func listing(_ request: ImportListingRequest, context: Context, scope: ImportScope) -> ImportListing? {
+        let key = context.prefix + request.keyPart
+        if let module = cache.module(key) {
+            noteUse(key, module)
+            if case .listing(let listing) = module.content { return listing }
+            return nil
+        }
+        if states[key] == nil {
+            states[key] = .loading
+            requestCount += 1
+            pending.append(.listing(key: key, context: context.snapshot, request: request))
+        }
+        if states[key] == .loading { scope.notePending() }
+        return nil
+    }
+
+    /// The standard-library table's module names (dotted, sorted).
+    var stdlibModuleNames: [String] {
+        if let names = stdlibNames { return names }
+        let names = configuration.stdlibModuleNames()
+        stdlibNames = names
+        return names
+    }
+
     // MARK: - Tests
 
     /// Sends pending work, waits for the queue and merges the results
@@ -579,7 +701,18 @@ public final class ImportService {
 @MainActor
 final class ImportScope {
     unowned let service: ImportService
-    let context: ImportService.Context
+    /// The Python context: the project folder with the document's nearest
+    /// venv (T17.16, looked up on first use); nil while that venv is still
+    /// being looked for.
+    var context: ImportService.Context? {
+        if let resolved = pythonContext { return resolved }
+        let resolved = service.pythonContext(base: scriptContext, documentPath: documentPath)
+        pythonContext = .some(resolved)
+        return resolved
+    }
+    private var pythonContext: ImportService.Context??
+    /// The project folder without a venv (JS / TS lookups).
+    let scriptContext: ImportService.Context
     /// The document's path when inside the project folder (nil otherwise:
     /// relative imports and JS / TS packages are unavailable).
     let documentPath: String?
@@ -587,11 +720,11 @@ final class ImportScope {
     /// The document's own module name in the project (Python relative imports).
     let pythonDocument: (dotted: String, isPackage: Bool)?
 
-    init(service: ImportService, context: ImportService.Context, documentPath: String?) {
+    init(service: ImportService, scriptContext: ImportService.Context, documentPath: String?) {
         self.service = service
-        self.context = context
+        self.scriptContext = scriptContext
         self.documentPath = documentPath
-        if let root = context.projectRoot, let path = documentPath, ImportPath.isInside(path, root) {
+        if let root = scriptContext.projectRoot, let path = documentPath, ImportPath.isInside(path, root) {
             var relative = String(path.dropFirst(root.count)).split(separator: "/").map(String.init)
             let file = relative.popLast() ?? ""
             let stem = (file as NSString).deletingPathExtension
@@ -630,6 +763,10 @@ final class ImportScope {
     /// The overlay key of absolute module `absolute` of this context (no
     /// standard-library check), nil while loading or when missing.
     func pythonKey(_ absolute: String, names: [String] = []) -> String? {
+        guard let context else {
+            hasPending = true
+            return nil
+        }
         let key = context.prefix + absolute
         if service.isLoaded(key), let summary = service.pythonModule(key) {
             for name in names where !ImportWorker.defines(summary.stub, name) && !service.isLoaded(key + "." + name) {
@@ -647,8 +784,8 @@ final class ImportScope {
 
     /// The overlay name of the JS / TS module `specifier`, nil while unknown.
     func script(_ specifier: String) -> String? {
-        guard context.projectRoot != nil, let importer = documentPath else { return nil }
-        switch service.requestSpecifier(specifier, importer: importer, context: context) {
+        guard scriptContext.projectRoot != nil, let importer = documentPath else { return nil }
+        switch service.requestSpecifier(specifier, importer: importer, context: scriptContext) {
         case .resolved(let key):
             if service.scriptModule(key) != nil { return key }
             if service.state(key) != .missing { hasPending = true }
@@ -671,6 +808,7 @@ struct ImportContextSnapshot: Sendable {
     let id: Int
     let prefix: String
     let projectRoot: String?
+    let venv: String?
     let interpreter: PythonInterpreterDiscovery
 }
 
@@ -678,6 +816,42 @@ enum ImportJobItem: Sendable {
     case python(key: String, context: ImportContextSnapshot, dotted: String, names: [String], depth: Int)
     case script(key: String, context: ImportContextSnapshot, path: String, depth: Int)
     case specifier(id: String, context: ImportContextSnapshot, importer: String, specifier: String)
+    /// The nearest venv of a document directory (T17.16); `validators`: a
+    /// recheck (skipped when none of them changed).
+    case venv(directory: String, root: String, validators: [String: Double]?)
+    /// A directory listing for import-statement completion (T17.16).
+    case listing(key: String, context: ImportContextSnapshot, request: ImportListingRequest)
+}
+
+/// What an import-statement completion lists (M17 T17.16). Paths are
+/// absolute and spelled under the project root.
+enum ImportListingRequest: Sendable, Equatable {
+    /// Top-level modules and packages of every Python search root.
+    case pythonTop
+    /// Top-level modules and packages of the project root only (`from . import`
+    /// in a module at the root).
+    case pythonProjectTop
+    /// Submodules of a (non-stdlib) package.
+    case pythonPackage(String)
+    /// Files and subdirectories of a directory inside the project (`'./…/'`).
+    case scriptDirectory(String)
+    /// Packages of every `node_modules` from `directory` up to the project
+    /// root; `scope` (`@x`): that scope's packages only.
+    case scriptPackages(directory: String, scope: String?)
+    /// Files and subdirectories of `subpath` inside `package` (`'pkg/…/'`).
+    case scriptPackageDirectory(directory: String, package: String, subpath: String)
+
+    var keyPart: String {
+        switch self {
+        case .pythonTop: return "#py"
+        case .pythonProjectTop: return "#pyroot"
+        case .pythonPackage(let dotted): return "#pkg:" + dotted
+        case .scriptDirectory(let path): return "#dir:" + path
+        case .scriptPackages(let directory, let scope): return "#npm:" + directory + "\u{0}" + (scope ?? "")
+        case .scriptPackageDirectory(let directory, let package, let subpath):
+            return "#npmdir:" + directory + "\u{0}" + package + "/" + subpath
+        }
+    }
 }
 
 struct ImportJob: Sendable {
@@ -692,6 +866,8 @@ struct ImportJobResult: Sendable {
     /// Keys not found, with the site-packages mtimes the answer depends on.
     var missing: [(key: String, validators: [String: Double])] = []
     var specifiers: [(id: String, key: String?)] = []
+    /// Venv probes (T17.16): document directory → nearest venv.
+    var venvs: [(directory: String, probe: PythonVenvProbe)] = []
     var invalidated: [String] = []
     var revalidated = 0
     /// A refresh after a project file changed (FSEvents), started on the
@@ -762,7 +938,8 @@ final class ImportWorker: @unchecked Sendable {
            cached.validators.allSatisfy({ fs.info($0.key)?.modificationTime == $0.value }) {
             return cached
         }
-        let derived = PythonSearchPaths.derive(projectRoot: context.projectRoot, interpreter: context.interpreter, fs: fs)
+        let derived = PythonSearchPaths.derive(projectRoot: context.projectRoot, venv: context.venv,
+                                               interpreter: context.interpreter, fs: fs)
         pythonPaths[context.id] = derived
         return derived
     }
@@ -775,6 +952,13 @@ final class ImportWorker: @unchecked Sendable {
         while !queue.isEmpty {
             let item = queue.removeFirst()
             switch item {
+            case .venv(let directory, let root, let validators):
+                if let validators, !validators.isEmpty,
+                   validators.allSatisfy({ fs.info($0.key)?.modificationTime == $0.value }) { continue }
+                result.venvs.append((directory, PythonVenvProbe.find(from: directory, projectRoot: root, fs: fs)))
+            case .listing(let key, let context, let request):
+                guard done.insert(key).inserted else { continue }
+                result.loaded.append((key, list(request, context: context)))
             case .specifier(let id, let context, let importer, let specifier):
                 guard let root = context.projectRoot,
                       let file = ScriptModuleLocator.resolve(specifier, from: importer, projectRoot: root, fs: fs) else {

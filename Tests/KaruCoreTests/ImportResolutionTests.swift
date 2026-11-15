@@ -32,19 +32,27 @@ enum ImportFixtures {
     }
 }
 
-/// Records every path the resolvers touch.
+/// Records every path the resolvers touch (and, T17.16, the ones touched
+/// on the main thread: there should be none).
 final class RecordingFileSystem: ImportFileSystem, @unchecked Sendable {
     private let base = SystemImportFileSystem()
     private let lock = NSLock()
     private var paths: [String] = []
+    private var mainPaths: [String] = []
 
     var touched: [String] {
         lock.lock(); defer { lock.unlock() }
         return paths
     }
 
+    var touchedOnMainThread: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return mainPaths
+    }
+
     private func note(_ path: String) {
-        lock.lock(); paths.append(path); lock.unlock()
+        let main = Thread.isMainThread
+        lock.lock(); paths.append(path); if main { mainPaths.append(path) }; lock.unlock()
     }
 
     func info(_ path: String) -> ImportFileInfo? { note(path); return base.info(path) }

@@ -1,8 +1,8 @@
 import Foundation
 
 // M17 T17.13 — where Python modules are looked up (plan §9, the Python row):
-// ① the project folder root, ② the project's `.venv` / `venv` (read from
-// `pyvenv.cfg`), ③ the Run-selected interpreter's stdlib and site-packages,
+// ① the project folder root, ② the nearest `.venv` / `venv` between the
+// document's directory and the project root (read from `pyvenv.cfg`; T17.16), ③ the Run-selected interpreter's stdlib and site-packages,
 // derived from its install layout. Only files are read: the interpreter is
 // located from what the Run module already knows (the custom path, the
 // Karu-managed toolchain, the login-shell PATH *if it was already captured*)
@@ -106,9 +106,18 @@ struct PythonSearchPaths: Sendable, Equatable {
     /// (`pyvenv.cfg`'s directory, site-packages; `.pth` files live there).
     var validators: [String: Double] = [:]
 
-    /// Derives the roots: `projectRoot` (nil without a project folder: no
-    /// ① and no ②), then its venv, then the interpreter.
+    /// Derives the roots with the venv of the project root itself (no
+    /// document directory: plan §9 T17.16 "没有文档路径时只看项目根").
     static func derive(projectRoot: String?, interpreter: PythonInterpreterDiscovery,
+                       fs: ImportFileSystem) -> PythonSearchPaths {
+        let venv = projectRoot.flatMap { PythonVenvProbe.find(from: nil, projectRoot: $0, fs: fs).venv }
+        return derive(projectRoot: projectRoot, venv: venv, interpreter: interpreter, fs: fs)
+    }
+
+    /// Derives the roots: `projectRoot` (nil without a project folder: no
+    /// ① and no ②), then `venv` (a `.venv` / `venv` directory inside it,
+    /// found by `PythonVenvProbe`; nil: none), then the interpreter.
+    static func derive(projectRoot: String?, venv: String?, interpreter: PythonInterpreterDiscovery,
                        fs: ImportFileSystem) -> PythonSearchPaths {
         var out = PythonSearchPaths()
         if let root = projectRoot {
@@ -117,13 +126,12 @@ struct PythonSearchPaths: Sendable, Equatable {
             // or goes (T17.15c: a venv created after the first lookup was
             // never picked up, and modules missing then stayed missing).
             if let info = fs.info(root) { out.validators[root] = info.modificationTime }
-            for name in [".venv", "venv"] {
-                let venv = ImportPath.join(root, name)
-                guard let cfg = readConfig(ImportPath.join(venv, "pyvenv.cfg"), fs) else { continue }
+            if let venv, ImportPath.isInside(venv, root),
+               let cfg = readConfig(ImportPath.join(venv, "pyvenv.cfg"), fs) {
+                if let info = fs.info(venv) { out.validators[venv] = info.modificationTime }
                 for site in venvSitePackages(venv, config: cfg, fs: fs) {
                     out.addSitePackages(site, kind: .venv, allowedRoots: [root], fs: fs)
                 }
-                break
             }
         }
         if let executable = interpreter.executable(fs: fs) {
@@ -204,6 +212,36 @@ struct PythonSearchPaths: Sendable, Equatable {
         let parts = version.split(separator: ".")
         guard parts.count >= 2, Int(parts[0]) != nil, Int(parts[1]) != nil else { return nil }
         return parts[0] + "." + parts[1]
+    }
+}
+
+/// The virtual environment nearest to a document (M17 T17.16, plan §9 "venv
+/// 逐层查找"): from the document's directory up to the project folder root,
+/// the first directory holding a `.venv` / `venv` (in that order) with a
+/// `pyvenv.cfg` wins. Background queue only. `validators` holds the mtime of
+/// every directory walked (a venv created or removed in any of them changes
+/// it) and of the venv found.
+struct PythonVenvProbe: Sendable, Equatable {
+    var venv: String?
+    var validators: [String: Double] = [:]
+
+    /// `directory` nil, or outside `projectRoot`: only the root is checked.
+    static func find(from directory: String?, projectRoot: String, fs: ImportFileSystem) -> PythonVenvProbe {
+        var out = PythonVenvProbe(venv: nil)
+        var dir = directory.flatMap { ImportPath.isInside($0, projectRoot) ? $0 : nil } ?? projectRoot
+        while true {
+            if let info = fs.info(dir) { out.validators[dir] = info.modificationTime }
+            for name in [".venv", "venv"] {
+                let venv = ImportPath.join(dir, name)
+                guard PythonSearchPaths.readConfig(ImportPath.join(venv, "pyvenv.cfg"), fs) != nil else { continue }
+                out.venv = venv
+                if let info = fs.info(venv) { out.validators[venv] = info.modificationTime }
+                return out
+            }
+            if dir == projectRoot || dir == "/" || dir.isEmpty { break }
+            dir = ImportPath.parent(dir)
+        }
+        return out
     }
 }
 

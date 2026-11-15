@@ -103,6 +103,10 @@
   （单独运行；`KARU_T1712_CPYTHON` 可改 CPython 标准库来源）。真实 App 配对内存：`KARU_DIAGNOSTIC_DIRECTORY=<临时目录>
   KARU_INDEX_FOLDER=<绝对路径> .build/release/KaruApp` 只把该文件夹索引进 `<临时目录>/Index`，使用隔离的文件夹列表，
   与不带 `KARU_INDEX_FOLDER` 的同环境启动交替对照。
+- 导入语句补全（T17.16，`Imports/ImportCompletion.swift`）：按键到弹窗的主线程时延、首次目录列表的队列耗时与列表字节数用
+  `KARU_TYPE_TABLES=$PWD/assets/typetables KARU_T1716_BENCH=1 swift test -c release -Xswiftc -enable-testing --filter ImportCompletionBenchmark`
+  （单独运行；合成 venv 2,000 个包、`node_modules` 1,500 个包、源码目录 400 个文件），报告写到 `.build/m17-baseline/t1716-bench-<config>.txt`。
+  测试一律用注入的项目根与解释器（`ImportHarness`），`RecordingFileSystem.touchedOnMainThread` 断言主线程不读盘。
 - `mem-benchmark.sh` 可用 `KARU_BENCH_APP_BIN=<二进制>` 指定被测构建（同机 A/B，跳过构建）；正式三轮之后
   另有两轮「推断样本（参考）」（`Tests/Fixtures/M17/inference/sample_1000.py` / `.ts`，只查 99 MB 上限）。
   各轮以 kill 结束，整体运行时应设置 `KARU_DIAGNOSTIC_DIRECTORY`，否则下一轮会恢复上一轮打开的文件。

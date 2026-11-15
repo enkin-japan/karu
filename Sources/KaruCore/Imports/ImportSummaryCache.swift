@@ -5,6 +5,8 @@ struct ImportedModule: Sendable {
     enum Content: Sendable {
         case python(PythonModuleSummary)
         case script(ScriptModuleSummary)
+        /// A directory listing for import-statement completion (T17.16).
+        case listing(ImportListing)
     }
 
     var content: Content
@@ -21,6 +23,7 @@ struct ImportedModule: Sendable {
         switch content {
         case .python(let p): return p.kinds != nil
         case .script(let s): return s.namesOnly != nil
+        case .listing: return true          // names already; evicted, never reduced
         }
     }
 
@@ -30,6 +33,7 @@ struct ImportedModule: Sendable {
         switch content {
         case .python(let p): out.content = .python(PythonModuleSummarizer.namesOnly(p))
         case .script(let s): out.content = .script(s.reducedToNames())
+        case .listing: break
         }
         return out
     }
@@ -40,9 +44,26 @@ struct ImportedModule: Sendable {
         switch content {
         case .python(let p): n += ImportCost.python(p)
         case .script(let s): n += ImportCost.script(s)
+        case .listing(let l): n += l.approximateBytes
         }
         return n
     }
+}
+
+/// The modules / packages / files one directory listing names (M17 T17.16,
+/// plan §9 "导入语句补全"): built on the import queue, cached in the summary
+/// LRU (its bytes count toward the cap), validated by the listed
+/// directories' mtimes.
+struct ImportListing: Sendable, Equatable {
+    struct Entry: Sendable, Equatable {
+        let name: String
+        /// A package (Python) or a directory (JS / TS relative listing).
+        let isPackage: Bool
+    }
+
+    var entries: [Entry]
+
+    var approximateBytes: Int { 64 + entries.reduce(0) { $0 + 8 + ImportCost.string($1.name) } }
 }
 
 /// The app-wide import-summary LRU (plan §11 item ③: ≤ 8 MB, counted in the
