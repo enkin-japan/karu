@@ -58,7 +58,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ✅ 夹具 33/33；无外部进程；保存后 ≤1 s；T17.15c 真实 venv（click、fastapi）与外接盘 node_modules（express）通过，修文档路径写法与新建 venv 失效两处缺陷 |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ✅ 自动化通过；夹具 36/36；T17.15c ⌘T 面板真机通过 |
 | T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | 🔶 15a 超标项已修；15b 读数完成（[质量报告](M17-QUALITY-REPORT.md)）；15d 主线程长段切片、索引常驻达标、浅色配色；压力项超 99 MB 经用户判定通过；15c 真机验收通过（修 3 处缺陷）；VS Code 卸载按用户决定推迟到候选缺陷修复之后 |
-| T17.16 | 导入语句补全（Python 模块名与 `from x import`、JS/TS 模块字符串与花括号导出名）；venv 逐层查找 | T17.13、T17.15c | implementer | 🔶 实现完成，自动化通过（新增 20 个测试；全量 1566 + 工具链 60）；按键到弹窗 p95 10.5 ms；待 main 审查与真机确认 |
+| T17.16 | 导入语句补全（Python 模块名与 `from x import`、JS/TS 模块字符串与花括号导出名）；venv 逐层查找 | T17.13、T17.15c | implementer | ✅ 自动化通过；真机确认：`import ti` → `time`、`from os import pa` 导出名、`import xml.` 子包、`require('fs')`、`'node:` 内置名、普通字符串不弹 |
 
 - T17.0 进展（main，2026-11-13）：
   - **VS Code 对照环境**：官方更新服务器 darwin-arm64 包，1.146.0（commit `69047191`，2026-11-10），Microsoft Developer ID 签名、
@@ -1348,7 +1348,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
     App 里项目文件夹按 `standardize` 存储，不会出现，新代码用 `resolvingDots` 避开。
   - **待 main**：审查 diff；真机确认（真实 venv / node_modules、子目录 venv、弹窗随列表到达刷新的观感、中日输入法下不弹）。
   - **main 审查（2026-11-15）**：`tests` 包只在 site-packages 中排除（某些发行包误装的顶层 `tests`），项目自己的 `tests` 包照常列出，补测试
-    `projectTestsPackageListedSitePackagesTestsNot`。偏差 1–8 接受。真机确认待用户在场（全屏控制授权超时）。
+    `projectTestsPackageListedSitePackagesTestsNot`。偏差 1–8 接受。真机确认（用户在场，2026-11-15）：Python 模块名、`from os import` 导出名、`xml.` 子包，JS `require('fs')`、`'node:` 内置名均正常弹出并可接受；普通字符串不弹。项目文件夹内的 node_modules 与子目录 venv 由自动化覆盖。
   - **偶发失败（与本阶段无关）**：全量一次 `LongLineSlicingEngineTests.minifiedJSONIsPaintedInSlicesThatMatchAFullPass` 的完整性断言
     「过期检查点给出错误结果」在并行负载下恰好不成立（单独 3 次、全量另 2 次通过）。来自 T17.15d-A 的测试：断言用的是界面实际绘制范围的起点，随后台补齐时机变化；已改为从 `probe` 起算（其前必有编辑点之后的过期检查点），单独与全量复跑通过。
 
