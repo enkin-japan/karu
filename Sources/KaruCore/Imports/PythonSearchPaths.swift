@@ -113,6 +113,10 @@ struct PythonSearchPaths: Sendable, Equatable {
         var out = PythonSearchPaths()
         if let root = projectRoot {
             out.roots.append(PythonSearchRoot(path: root, kind: .project, isSitePackages: false))
+            // The root's own mtime changes when a `.venv` / `venv` appears
+            // or goes (T17.15c: a venv created after the first lookup was
+            // never picked up, and modules missing then stayed missing).
+            if let info = fs.info(root) { out.validators[root] = info.modificationTime }
             for name in [".venv", "venv"] {
                 let venv = ImportPath.join(root, name)
                 guard let cfg = readConfig(ImportPath.join(venv, "pyvenv.cfg"), fs) else { continue }

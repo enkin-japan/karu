@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SQLite3
 import Testing
@@ -658,8 +659,18 @@ struct ProjectFolderSettingsTests {
         #expect(await settle(index))
         controller.reload()
         #expect(controller.rows[0].filesLabel.stringValue == "1")
+        // Reloads replace the rows' views instead of stacking them (T17.15c:
+        // stale labels kept drawing under the new ones).
+        controller.reload()
+        let gridViews = Set(controller.grid.subviews.map(ObjectIdentifier.init))
+        #expect(gridViews.contains(ObjectIdentifier(controller.rows[0].filesLabel)))
+        #expect(controller.grid.subviews.filter { ($0 as? NSTextField)?.stringValue == "1" }.count == 1)
+        #expect(controller.grid.subviews.count == 4 + 6)
         #expect(controller.rows[0].statusLabel.stringValue == L10n.t(.projectFolderStateUpToDate))
         #expect(controller.limitNotice.isHidden)
+        // The window is never narrower than the help text wraps (T17.15c:
+        // Chinese clipped it at the right edge).
+        #expect((controller.window?.contentView?.frame.width ?? 0) >= 640)
 
         // Cancelled panel: nothing changes.
         chosen = nil

@@ -298,7 +298,25 @@ public final class ImportService {
                 }
             }
         }
-        return ImportScope(service: self, context: context, documentPath: root == nil ? nil : path)
+        return ImportScope(service: self, context: context,
+                           documentPath: root.flatMap { root in path.map { Self.path($0, spelledUnder: root) } })
+    }
+
+    /// `path` spelled under `root`, the project folder's stored form (T17.15c).
+    /// The workspace index matches a document through `standardizingPath` and
+    /// the folder's resolved path, so a document at `/private/tmp/p/a.js`
+    /// (how AppKit spells an opened file) belongs to the folder `/tmp/p`, and
+    /// a symlinked folder's documents to it; import paths are compared as
+    /// strings, so the document path takes the root's spelling. Unchanged
+    /// when no spelling of it is inside `root`.
+    static func path(_ path: String, spelledUnder root: String) -> String {
+        if ImportPath.isInside(path, root) { return path }
+        let standardized = ProjectFolderStore.standardize(path)
+        if ImportPath.isInside(standardized, root) { return standardized }
+        let realRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+        let realPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        guard ImportPath.isInside(realPath, realRoot) else { return path }
+        return root + realPath.dropFirst(realRoot.count)
     }
 
     func isStdlib(_ top: String) -> Bool { configuration.isStdlib(top) }

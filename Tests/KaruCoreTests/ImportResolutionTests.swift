@@ -659,6 +659,44 @@ struct ImportCapTests {
         #expect(h.names("import freshpkg\nfreshpkg.|", at: main)?.contains("installed") == true)
     }
 
+    @Test func venvCreatedAfterTheFirstLookupIsPickedUp() throws {
+        // T17.15c: a project opened before `uv venv` / `python -m venv`: the
+        // search paths had no venv and nothing to revalidate, so its packages
+        // stayed missing until Karu restarted.
+        let (root, cleanup) = temporaryProject(["main.py": "\n"])
+        defer { cleanup() }
+        let h = ImportHarness(projectRoot: root, interpreter: nil, revalidation: 0)
+        let main = root + "/main.py"
+        let source = "import latepkg\nlatepkg.|"
+        #expect(h.names(source, at: main) == nil)
+        let site = root + "/.venv/lib/python3.13/site-packages"
+        try FileManager.default.createDirectory(atPath: site + "/latepkg", withIntermediateDirectories: true)
+        write(root + "/.venv/pyvenv.cfg", "home = /usr/bin\nversion_info = 3.13\n")
+        write(site + "/latepkg/__init__.py", "def late() -> int:\n    return 1\n")
+        _ = h.document(source, path: main).request()
+        h.service.waitForImports()
+        #expect(h.names(source, at: main)?.contains("late") == true)
+    }
+
+    @Test func documentPathTakesTheProjectRootSpelling() throws {
+        // T17.15c: AppKit spells an opened file `/private/tmp/…` while the
+        // project folder is stored standardized (`/tmp/…`); JS / TS packages
+        // and Python relative imports compared the two as strings and found
+        // nothing.
+        let (root, cleanup) = temporaryProject(["a.js": "\n"])
+        defer { cleanup() }
+        let standardRoot = ProjectFolderStore.standardize(root)
+        #expect(ImportService.path(root + "/a.js", spelledUnder: standardRoot) == standardRoot + "/a.js")
+        #expect(ImportService.path(standardRoot + "/a.js", spelledUnder: standardRoot) == standardRoot + "/a.js")
+        // A symlinked folder: its documents opened through the real path.
+        let link = NSTemporaryDirectory() + "KaruImportLink-\(UUID().uuidString)"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: root)
+        defer { try? FileManager.default.removeItem(atPath: link) }
+        #expect(ImportService.path(root + "/a.js", spelledUnder: link) == link + "/a.js")
+        // Outside the root: unchanged.
+        #expect(ImportService.path("/usr/bin/env", spelledUnder: standardRoot) == "/usr/bin/env")
+    }
+
     @Test func moduleTogglesReleaseEverything() throws {
         let h = ImportHarness(projectRoot: ImportFixtures.python)
         let main = ImportFixtures.python + "/main.py"

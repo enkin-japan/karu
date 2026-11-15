@@ -30,7 +30,7 @@ final class ProjectFoldersPreferencesController: NSWindowController, NSWindowDel
     let emptyLabel = NSTextField(labelWithString: "")
     let limitNotice = NSTextField(wrappingLabelWithString: "")
     private let addButton = NSButton()
-    private let grid = NSGridView()
+    let grid = NSGridView()
     private var headerLabels: [NSTextField] = []
     private(set) var rows: [Row] = []
 
@@ -78,6 +78,13 @@ final class ProjectFoldersPreferencesController: NSWindowController, NSWindowDel
         content.spacing = 14
         content.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
         window.contentView = content
+        // At least the help text's wrapping width: the fitted window followed
+        // the grid, and in Chinese (short column titles and buttons) it came
+        // out narrower than the 600 pt the help lines wrap at, clipping them
+        // at the right edge (T17.15c).
+        content.widthAnchor.constraint(
+            greaterThanOrEqualToConstant: help.preferredMaxLayoutWidth + content.edgeInsets.left + content.edgeInsets.right
+        ).isActive = true
 
         center.addObserver(self, selector: #selector(indexChanged),
                            name: WorkspaceIndex.didChangeNotification, object: index)
@@ -127,7 +134,18 @@ final class ProjectFoldersPreferencesController: NSWindowController, NSWindowDel
     /// Rebuilds the rows from the index's statuses and refits the window.
     func reload() {
         let statuses = index.statuses()
-        while grid.numberOfRows > 0 { grid.removeRow(at: 0) }
+        // `removeRow(at:)` drops the row but leaves its content views in the
+        // grid's subviews, where they kept drawing under the new row (stale
+        // counts, sizes and states overlapping; T17.15c).
+        while grid.numberOfRows > 0 {
+            let row = grid.row(at: 0)
+            for column in 0..<row.numberOfCells {
+                if let view = row.cell(at: column).contentView, view !== NSGridCell.emptyContentView {
+                    view.removeFromSuperview()
+                }
+            }
+            grid.removeRow(at: 0)
+        }
         rows = []
         if !statuses.isEmpty {
             grid.addRow(with: headerLabels + [NSGridCell.emptyContentView, NSGridCell.emptyContentView])
