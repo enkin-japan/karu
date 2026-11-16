@@ -35,10 +35,29 @@ public enum StatusBarMetrics {
         }
         return L10n.string(.statusSelection, language: language, length, lines)
     }
+
+    /// Which of the two optional fields fit in a bar `width` points wide. The
+    /// caret position and the count always show; in a narrow window the
+    /// line-ending caption goes first, then the language. Widths are the
+    /// fields' natural text widths; `inset` is the bar's side margin and
+    /// `spacing` the gap between neighbouring fields.
+    public static func optionalFields(width: CGFloat, position: CGFloat, language: CGFloat,
+                                      lineEnding: CGFloat, count: CGFloat,
+                                      inset: CGFloat, spacing: CGFloat)
+        -> (language: Bool, lineEnding: Bool) {
+        let base = inset * 2 + position + spacing + count
+        let withLanguage = base + language + spacing
+        let showLanguage = withLanguage <= width
+        let showLineEnding = showLanguage && withLanguage + lineEnding + spacing <= width
+        return (showLanguage, showLineEnding)
+    }
 }
 
-/// A slim (22 pt) footer strip: caret position on the left, current language in
-/// the middle, and the document character count on the right. All labels use
+/// A slim (22 pt) read-only footer strip: caret position on the left (transient
+/// notes borrow that spot), and one group on the right — language, line
+/// ending, then the character count (or the selection while there is one). In
+/// a window too narrow for all of them the line ending hides first, then the
+/// language; position and count always stay. All labels use
 /// `secondaryLabelColor` at a small size, so they read as chrome and adapt to
 /// light / dark automatically. A hairline `separatorColor` line tops the strip.
 @MainActor
@@ -88,23 +107,25 @@ public final class StatusBarView: NSView {
             label.lineBreakMode = .byTruncatingTail
         }
         positionLabel.alignment = .left
-        lineEndingLabel.alignment = .left
-        languageLabel.alignment = .center
+        languageLabel.alignment = .right
+        lineEndingLabel.alignment = .right
         countLabel.alignment = .right
 
-        // Position and the line-ending caption hug their content on the left;
-        // language stays centered; count hugs on the right. Letting the language
-        // label absorb the slack keeps it visually centered between the ends.
-        positionLabel.setContentHuggingPriority(.required, for: .horizontal)
-        lineEndingLabel.setContentHuggingPriority(.required, for: .horizontal)
-        countLabel.setContentHuggingPriority(.required, for: .horizontal)
-        languageLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // The right-hand group hugs its content; the position label takes the
+        // slack on the left, and is the one to truncate when a long transient
+        // note does not fit.
+        for label in [languageLabel, lineEndingLabel, countLabel] {
+            label.setContentHuggingPriority(.required, for: .horizontal)
+            label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        positionLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        positionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let stack = NSStackView(views: [positionLabel, lineEndingLabel, languageLabel, countLabel])
+        let stack = NSStackView(views: [positionLabel, languageLabel, lineEndingLabel, countLabel])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.distribution = .fill
-        stack.spacing = 12
+        stack.spacing = Self.spacing
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -117,15 +138,40 @@ public final class StatusBarView: NSView {
             separator.trailingAnchor.constraint(equalTo: trailingAnchor),
             separator.topAnchor.constraint(equalTo: topAnchor),
 
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.inset),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.inset),
             stack.topAnchor.constraint(equalTo: separator.bottomAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            // Give the centered language label a stable width so it does not
-            // dance as the two ends grow / shrink.
-            languageLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
         ])
     }
+
+    private static let inset: CGFloat = 10
+    private static let spacing: CGFloat = 12
+
+    /// Hides the line ending, then the language, when the bar is too narrow
+    /// for them (a stack view drops hidden views from layout).
+    public override func layout() {
+        updateOptionalFields()
+        super.layout()
+    }
+
+    private func updateOptionalFields() {
+        func width(_ label: NSTextField) -> CGFloat { ceil(label.intrinsicContentSize.width) }
+        // Measured against the caret caption, not a transient note borrowing
+        // its place: a note truncates rather than pushing fields out.
+        let font = positionLabel.font ?? .systemFont(ofSize: 11)
+        let position = ceil((lastPositionText as NSString).size(withAttributes: [.font: font]).width) + 4
+        let fits = StatusBarMetrics.optionalFields(
+            width: bounds.width, position: position, language: width(languageLabel),
+            lineEnding: width(lineEndingLabel), count: width(countLabel),
+            inset: Self.inset, spacing: Self.spacing)
+        if languageLabel.isHidden == fits.language { languageLabel.isHidden = !fits.language }
+        if lineEndingLabel.isHidden == fits.lineEnding { lineEndingLabel.isHidden = !fits.lineEnding }
+    }
+
+    /// Whether the language / line-ending fields currently show (for tests).
+    var showsLanguage: Bool { !languageLabel.isHidden }
+    var showsLineEnding: Bool { !lineEndingLabel.isHidden }
 
     // Deliberately NO draw(_:) override here. Overriding draw with an opaque
     // fill on a stack sibling of the editor's scroll view switches the whole
@@ -138,6 +184,7 @@ public final class StatusBarView: NSView {
 
     public func updateCaret(line: Int, column: Int) {
         let text = StatusBarMetrics.caretDescription(line: line, column: column)
+        if text != lastPositionText { needsLayout = true }
         lastPositionText = text
         // Don't stomp an in-flight flash note; it restores `lastPositionText`
         // (kept current above) when it expires.
@@ -169,21 +216,25 @@ public final class StatusBarView: NSView {
 
     public func updateLanguage(_ identifier: String) {
         languageLabel.stringValue = SupportedLanguage.title(forIdentifier: identifier)
+        needsLayout = true
     }
 
     public func updateLineEnding(_ lineEnding: LineEnding) {
         lineEndingLabel.stringValue = lineEnding.displayName
+        needsLayout = true
     }
 
     public func updateCharacterCount(_ count: Int) {
         lastCharacterCount = count
         countLabel.stringValue = StatusBarMetrics.characterCountDescription(count)
+        needsLayout = true
     }
 
     /// Switches the count field to the selection caption ("N selected · M
     /// lines") while there is an active, non-empty selection.
     public func updateSelection(length: Int, lines: Int) {
         countLabel.stringValue = StatusBarMetrics.selectionDescription(length: length, lines: lines)
+        needsLayout = true
     }
 
     /// Restores the count field to the plain full-document character count
@@ -191,6 +242,7 @@ public final class StatusBarView: NSView {
     /// collapses back to a caret.
     public func clearSelection() {
         countLabel.stringValue = StatusBarMetrics.characterCountDescription(lastCharacterCount)
+        needsLayout = true
     }
 
     /// The count field's current text (exposed for tests / diagnostics).
