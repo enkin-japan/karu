@@ -214,11 +214,11 @@ struct RunOutputPanelTests {
     @Test func inputRowOnlyWhileAcceptingInput() {
         let panel = RunOutputPanel()
         #expect(!panel.isInputRowVisible)
-        panel.update(isActive: true, acceptsInput: false, info: "Python · preparing")
+        panel.update(isActive: true, acceptsInput: false, info: "Python · preparing", status: .preparing, isTruncated: false)
         #expect(!panel.isInputRowVisible)
-        panel.update(isActive: true, acceptsInput: true, info: "Python · /bin/sh")
+        panel.update(isActive: true, acceptsInput: true, info: "Python · /bin/sh", status: .running, isTruncated: false)
         #expect(panel.isInputRowVisible)
-        panel.update(isActive: false, acceptsInput: false, info: "")
+        panel.update(isActive: false, acceptsInput: false, info: "", status: .exited(0), isTruncated: false)
         #expect(!panel.isInputRowVisible)
     }
 }
@@ -709,5 +709,361 @@ extension RunProcessTests {
             #expect(controller.validateMenuItem(runItem))
             #expect(controller.runSession == nil)
         }
+    }
+}
+
+// MARK: - Header status (panel only, no processes)
+
+@MainActor
+private func headerStack(of panel: RunOutputPanel) -> NSStackView? {
+    panel.statusLabel.superview as? NSStackView
+}
+
+/// Header views that are shown, left to right.
+@MainActor
+private func visibleHeaderViews(of panel: RunOutputPanel) -> [NSView] {
+    headerStack(of: panel)?.arrangedSubviews.filter { !$0.isHidden } ?? []
+}
+
+/// No two visible header views overlap and none pokes past the header.
+@MainActor
+private func headerOverlaps(_ panel: RunOutputPanel) -> [String] {
+    guard let header = headerStack(of: panel) else { return ["no header"] }
+    let views = visibleHeaderViews(of: panel)
+    var problems: [String] = []
+    for (a, b) in zip(views, views.dropFirst()) where a.frame.maxX > b.frame.minX + 0.5 {
+        problems.append("\(a) overlaps \(b)")
+    }
+    if let last = views.last, last.frame.maxX > header.bounds.width + 0.5 { problems.append("past the edge") }
+    return problems
+}
+
+@Suite("Run panel status")
+struct RunPanelStatusTests {
+    private func result(_ completion: RunCompletion, stopped: Bool = false) -> RunResult {
+        RunResult(completion: completion, duration: 0.1, wasStopped: stopped)
+    }
+
+    @Test func resultsMapToStatuses() {
+        #expect(RunPanelStatus(result(.finished(.exited(0)))) == .exited(0))
+        #expect(RunPanelStatus(result(.finished(.exited(3)))) == .exited(3))
+        #expect(RunPanelStatus(result(.finished(.signaled(9)))) == .exited(137))
+        #expect(RunPanelStatus(result(.compileFailed(.exited(1)))) == .exited(1))
+        #expect(RunPanelStatus(result(.finished(.signaled(15)), stopped: true)) == .stopped)
+        #expect(RunPanelStatus(result(.compileFailed(.signaled(15)), stopped: true)) == .stopped)
+        #expect(RunPanelStatus(result(.cancelled, stopped: true)) == .stopped)
+        #expect(RunPanelStatus(result(.launchFailed(.launchFailed("x")))) == .failed)
+        #expect(RunPanelStatus(result(.launchFailed(.launchFailed("x")), stopped: true)) == .failed)
+    }
+
+    @Test func symbolsTintAndTextInAllLanguages() {
+        let expected: [(RunPanelStatus, String?, Bool)] = [
+            (.idle, nil, false), (.preparing, "arrow.triangle.2.circlepath", false), (.running, "play.circle", false),
+            (.exited(0), "checkmark.circle", false), (.exited(2), "exclamationmark.triangle", true),
+            (.stopped, "stop.circle", false), (.failed, "exclamationmark.triangle", true),
+        ]
+        for (status, symbol, problem) in expected {
+            #expect(status.symbolName == symbol, "\(status)")
+            #expect(status.isProblem == problem, "\(status)")
+            if let symbol { #expect(NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil) }
+            for language in AppLanguage.allCases {
+                let text = RunMessages.status(status, language: language)
+                #expect((text == nil) == (status == .idle), "\(status) / \(language)")
+                #expect(!(text ?? "").contains("%"), "\(status) / \(language)")
+            }
+        }
+        #expect(RunMessages.status(.exited(3), language: .en) == "Exited (code 3)")
+        #expect(RunMessages.status(.exited(3), language: .zhHans) == "已结束（退出码 3）")
+        #expect(RunMessages.status(.exited(3), language: .ja) == "終了（終了コード 3）")
+    }
+}
+
+@Suite("Run panel header")
+@MainActor
+struct RunPanelHeaderTests {
+    @Test func headerOrderControlsAndStatusRendering() throws {
+        let panel = RunOutputPanel()
+        let header = try #require(headerStack(of: panel))
+        #expect(header.arrangedSubviews == [header.arrangedSubviews[0], panel.statusImageView, panel.statusLabel,
+                                            panel.truncatedLabel, panel.infoLabel, panel.clearButton,
+                                            panel.copyButton, panel.stopRerunButton, panel.closeButton])
+        #expect((header.arrangedSubviews[0] as? NSTextField)?.stringValue == L10n.t(.runOutputTitle))
+        for button in [panel.clearButton, panel.copyButton, panel.stopRerunButton, panel.closeButton] {
+            #expect(button.target === panel && button.action != nil)
+        }
+        var cleared = 0, toggled = 0, closed = 0
+        panel.onClear = { cleared += 1 }
+        panel.onStopOrRerun = { toggled += 1 }
+        panel.onClose = { closed += 1 }
+        panel.clearButton.performClick(nil)
+        panel.stopRerunButton.performClick(nil)
+        panel.closeButton.performClick(nil)
+        #expect(cleared == 1 && toggled == 1 && closed == 1)
+
+        // Idle: no status at all.
+        #expect(panel.status == .idle)
+        #expect(panel.statusImageView.isHidden && panel.statusLabel.isHidden && panel.truncatedLabel.isHidden)
+        #expect(!panel.statusImageView.isAccessibilityElement())
+
+        panel.update(isActive: true, acceptsInput: true, info: "Python · /bin/sh", status: .running, isTruncated: false)
+        #expect(!panel.statusImageView.isHidden && panel.statusImageView.image != nil)
+        #expect(panel.statusLabel.stringValue == L10n.t(.runStatusRunning))
+        #expect(panel.statusLabel.textColor == .labelColor)
+        #expect(panel.statusImageView.contentTintColor == .secondaryLabelColor)
+        #expect(panel.stopRerunButton.title == L10n.t(.menuRunStop))
+        #expect(panel.isInputRowVisible)
+
+        panel.update(isActive: false, acceptsInput: false, info: "Python · /bin/sh", status: .exited(4), isTruncated: true)
+        #expect(panel.statusLabel.stringValue == L10n.t(.runStatusExited, 4))
+        #expect(panel.statusLabel.toolTip == L10n.t(.runStatusExited, 4))
+        #expect(panel.statusImageView.contentTintColor == .systemRed)
+        #expect(!panel.truncatedLabel.isHidden && panel.truncatedLabel.stringValue == L10n.t(.runStatusTruncated))
+        #expect(panel.truncatedLabel.textColor == .secondaryLabelColor)
+        #expect(panel.stopRerunButton.title == L10n.t(.runRerun))
+        #expect(!panel.isInputRowVisible)
+
+        panel.update(isActive: false, acceptsInput: false, info: "", status: .failed, isTruncated: false)
+        #expect(panel.statusLabel.stringValue == L10n.t(.runStatusFailed))
+        #expect(panel.statusImageView.contentTintColor == .systemRed)
+        #expect(panel.truncatedLabel.isHidden)
+    }
+
+    @Test func truncationMarkerFollowsTheBuffer() {
+        let panel = RunOutputPanel()
+        var buffer = RunOutputBuffer(capacity: 32)
+        for i in 0..<20 {
+            let chunk = RunOutputChunk(stream: .stdout, text: "line \(i)\n")
+            buffer.append(chunk)
+            panel.append([chunk], buffer: buffer)
+            #expect(panel.showsTruncatedStatus == buffer.isTruncated, "after chunk \(i)")
+            #expect(panel.truncatedLabel.isHidden == !buffer.isTruncated)
+        }
+        #expect(panel.showsTruncatedStatus)
+        buffer.clear()
+        panel.render(buffer)
+        #expect(!panel.showsTruncatedStatus && panel.truncatedLabel.isHidden)
+    }
+
+    @Test func narrowHeaderTruncatesInfoFirstThenStatus() {
+        let panel = RunOutputPanel()
+        panel.update(isActive: false, acceptsInput: false,
+                     info: "JavaScript · /Users/someone/.local/share/karu/toolchains/node/bin/node",
+                     status: .exited(137), isTruncated: true)
+        let fixed: [NSView] = [panel.clearButton, panel.copyButton, panel.stopRerunButton, panel.closeButton,
+                               visibleHeaderViews(of: panel)[0], panel.statusImageView]
+        var sawStatusTruncate = false
+        for width in stride(from: 800, through: 360, by: -20) {
+            panel.frame = NSRect(x: 0, y: 0, width: CGFloat(width), height: 180)
+            panel.layoutSubtreeIfNeeded()
+            for view in fixed {
+                #expect(view.frame.width + 0.5 >= view.fittingSize.width, "\(width): \(view)")
+            }
+            #expect(headerOverlaps(panel).isEmpty, "\(width): \(headerOverlaps(panel))")
+            let statusShort = panel.statusLabel.frame.width + 0.5 < panel.statusLabel.fittingSize.width
+            let markerShort = panel.truncatedLabel.frame.width + 0.5 < panel.truncatedLabel.fittingSize.width
+            if markerShort || statusShort {
+                // Info has given way completely (a label bottoms out at its
+                // 4 pt cell inset) before either status label does.
+                #expect(panel.infoLabel.frame.width <= 4.5, "\(width)")
+            }
+            if statusShort {
+                sawStatusTruncate = true
+                #expect(panel.truncatedLabel.frame.width <= 4.5, "\(width)")
+            }
+        }
+        // At the narrowest width tried, the status text did have to give way.
+        #expect(sawStatusTruncate)
+        #expect(panel.statusLabel.toolTip == L10n.t(.runStatusExited, 137))
+    }
+}
+
+// Serialized and quiet language switching, as in `SettingsWindowLanguageTests`.
+@Suite("Run panel header languages", .serialized)
+@MainActor
+struct RunPanelHeaderLanguageTests {
+    private func setQuietly(_ raw: String?) {
+        if let raw {
+            UserDefaults.standard.set(raw, forKey: L10n.defaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: L10n.defaultsKey)
+        }
+    }
+
+    @Test func headerFitsAtTheDefaultWidthInEveryLanguage() {
+        let previous = UserDefaults.standard.string(forKey: L10n.defaultsKey)
+        defer { setQuietly(previous) }
+        for language in AppLanguage.allCases {
+            setQuietly(language.rawValue)
+            for isActive in [false, true] {
+                let panel = RunOutputPanel()
+                panel.update(isActive: isActive, acceptsInput: isActive, info: "JavaScript · /usr/local/bin/node",
+                             status: isActive ? .preparing : .exited(137), isTruncated: true)
+                // The editor window's default content width.
+                panel.frame = NSRect(x: 0, y: 0, width: 800, height: 180)
+                panel.layoutSubtreeIfNeeded()
+                #expect(headerOverlaps(panel).isEmpty, "\(language): \(headerOverlaps(panel))")
+                for view in visibleHeaderViews(of: panel) where view !== panel.infoLabel {
+                    #expect(view.frame.width + 0.5 >= view.fittingSize.width,
+                            "\(language) \(isActive): \((view as? NSButton)?.title ?? (view as? NSTextField)?.stringValue ?? "\(view)")")
+                }
+                #expect(panel.statusLabel.stringValue
+                        == L10n.string(isActive ? .runPreparing : .runStatusExited, language: language, 137))
+            }
+        }
+    }
+
+    @Test func liveLanguageSwitchRerendersTheStatus() {
+        let previous = UserDefaults.standard.string(forKey: L10n.defaultsKey)
+        defer { setQuietly(previous) }
+        setQuietly(AppLanguage.en.rawValue)
+        let panel = RunOutputPanel()
+        panel.update(isActive: false, acceptsInput: false, info: "", status: .stopped, isTruncated: true)
+        #expect(panel.statusLabel.stringValue == "Stopped")
+        #expect(panel.truncatedLabel.stringValue == "Output truncated")
+
+        // What the `L10n.didChangeNotification` observer runs on a live switch.
+        setQuietly(AppLanguage.ja.rawValue)
+        panel.languageDidChange()
+        #expect(panel.statusLabel.stringValue == L10n.string(.runStatusStopped, language: .ja))
+        #expect(panel.statusLabel.toolTip == L10n.string(.runStatusStopped, language: .ja))
+        #expect(panel.truncatedLabel.stringValue == L10n.string(.runStatusTruncated, language: .ja))
+        setQuietly(AppLanguage.zhHans.rawValue)
+        panel.languageDidChange()
+        #expect(panel.statusLabel.stringValue == "已停止")
+    }
+}
+
+// MARK: - Header status through a session
+
+extension RunPanelLayoutTests {
+    @Test func showOutputWithoutRunningHasNoStatus() throws {
+        let controller = makeWindow(text: "x\n", prepare: { _, _, _, _ in .failure(.unrecognized) })
+        defer { controller.close() }
+        controller.toggleRunOutput(nil)
+        let session = try #require(controller.runSession)
+        let panel = try #require(session.panel)
+        #expect(session.panelStatus == .idle)
+        #expect(panel.status == .idle)
+        #expect(panel.statusLabel.isHidden && panel.statusImageView.isHidden && panel.truncatedLabel.isHidden)
+    }
+}
+
+extension RunProcessTests.RunSessionTests {
+    @Test func statusFollowsARunToExitZero() async throws {
+        let controller = makeWindow(text: "x\n", prepare: { language, _, _, _ in
+            Thread.sleep(forTimeInterval: 0.3)
+            return .success(fakePlan(language, script: "", cat: true))
+        })
+        defer { controller.close() }
+        controller.chooseLanguage(identifier: "bash")
+        controller.runCode(nil)
+        let session = try #require(controller.runSession)
+        let panel = try #require(session.panel)
+        #expect(panel.status == .preparing)
+        #expect(panel.statusLabel.stringValue == L10n.t(.runPreparing))
+        #expect(await waitUntil { panel.status == .running })
+        #expect(panel.isInputRowVisible)
+        session.sendEOF()
+        #expect(await waitUntil { !session.isActive })
+        #expect(panel.status == .exited(0))
+        #expect(panel.status.symbolName == "checkmark.circle")
+        #expect(panel.statusImageView.contentTintColor == .secondaryLabelColor)
+        #expect(panel.truncatedLabel.isHidden)
+    }
+
+    @Test func statusShowsNonZeroExitStopAndCompilePhase() async throws {
+        let log = PrepareLog()
+        let controller = makeWindow(text: "x\n", prepare: { language, _, _, _ in
+            log.record(language, "")
+            switch log.calls.count {
+            case 1: return .success(fakePlan(language, script: "exit 5"))
+            case 2: return .success(fakePlan(language, script: "echo ready; exec /bin/sleep 30"))
+            default:
+                var plan = fakePlan(language, script: "echo never")
+                plan.compile = RunCommand(executable: "/bin/sh", arguments: ["-c", "exec /bin/sleep 30"],
+                                          workingDirectory: plan.directory)
+                return .success(plan)
+            }
+        })
+        defer { controller.close() }
+        controller.chooseLanguage(identifier: "bash")
+        controller.runCode(nil)
+        let session = try #require(controller.runSession)
+        let panel = try #require(session.panel)
+        #expect(await waitUntil { !session.isActive && panel.status != .preparing })
+        #expect(panel.status == .exited(5))
+        #expect(panel.statusLabel.stringValue == L10n.t(.runStatusExited, 5))
+        #expect(panel.status.symbolName == "exclamationmark.triangle")
+        #expect(panel.statusImageView.contentTintColor == .systemRed)
+
+        // A new run resets the status; Stop shows Stopped.
+        controller.runCode(nil)
+        #expect(panel.status == .preparing)
+        #expect(await waitUntil { panelText(controller).contains("ready") })
+        #expect(panel.status == .running)
+        controller.stopRun(nil)
+        #expect(await waitUntil { !session.isActive })
+        #expect(panel.status == .stopped)
+        #expect(panel.statusLabel.stringValue == L10n.t(.runStatusStopped))
+
+        // Compiling reads as Preparing (the process is live); stopping it reads Stopped.
+        controller.runCode(nil)
+        #expect(await waitUntil { session.isRunning })
+        #expect(session.runner?.phase == .compiling)
+        #expect(panel.status == .preparing)
+        controller.stopRun(nil)
+        #expect(await waitUntil { !session.isActive })
+        #expect(panel.status == .stopped)
+    }
+
+    @Test func statusShowsFailuresAndStopWhilePreparing() async throws {
+        let log = PrepareLog()
+        let controller = makeWindow(text: "x\n", prepare: { language, _, _, _ in
+            log.record(language, "")
+            if log.calls.count == 1 { return .failure(.toolNotFound("node")) }
+            Thread.sleep(forTimeInterval: 0.5)
+            return .success(fakePlan(language, script: "echo should-not-run"))
+        })
+        defer { controller.close() }
+        controller.chooseLanguage(identifier: "javascript")
+        controller.runCode(nil)
+        let session = try #require(controller.runSession)
+        let panel = try #require(session.panel)
+        #expect(await waitUntil { !session.isActive })
+        #expect(panel.status == .failed)
+        #expect(panel.statusLabel.stringValue == L10n.t(.runStatusFailed))
+        #expect(panel.statusImageView.contentTintColor == .systemRed)
+
+        // Stop during preparation: Stopped.
+        controller.runCode(nil)
+        #expect(panel.status == .preparing)
+        controller.stopRun(nil)
+        #expect(panel.status == .stopped)
+
+        // A resolve failure (manual Plain Text) is a failure to start too.
+        controller.chooseLanguage(identifier: "")
+        controller.runCode(nil)
+        #expect(panel.status == .failed)
+        #expect(log.calls.count == 2)
+    }
+
+    @Test func truncatedOutputShowsTheMarkerWithTheStatus() async throws {
+        let controller = makeWindow(text: "x\n", prepare: { language, _, _, _ in
+            .success(fakePlan(language, script: "/usr/bin/head -c 1200000 /dev/zero | /usr/bin/tr '\\0' 'a'"))
+        })
+        defer { controller.close() }
+        controller.chooseLanguage(identifier: "bash")
+        controller.runCode(nil)
+        let session = try #require(controller.runSession)
+        let panel = try #require(session.panel)
+        #expect(await waitUntil { !session.isActive && panel.status != .preparing })
+        #expect(session.runner?.output.isTruncated == true)
+        #expect(panel.status == .exited(0))
+        #expect(panel.showsTruncatedStatus && !panel.truncatedLabel.isHidden && !panel.statusLabel.isHidden)
+
+        panel.clearButton.performClick(nil)
+        #expect(session.runner?.output.isTruncated == false)
+        #expect(!panel.showsTruncatedStatus && panel.truncatedLabel.isHidden)
+        #expect(panel.status == .exited(0))
     }
 }

@@ -40,6 +40,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case menuRun, menuRunCode, menuRunStop, menuRunShowOutput, menuRunHideOutput
     case runOutputTitle, runClear, runCopy, runRerun, runCloseOutput, runEOF, runEOFTooltip, runInputPlaceholder
     case runPreparing, runOutputTruncated
+    case runStatusRunning, runStatusExited, runStatusStopped, runStatusFailed, runStatusTruncated
     case runExited, runSignaled, runCompileFailed, runCompileSignaled, runStopped, runCancelled
     case runFailUnrecognized, runFailNotExecutable, runFailPlainText, runFailToolNotFound
     case runFailToolchainNotInstalled, runFailCustomInvalid, runFailCustomEmpty, runFailDeveloperTools

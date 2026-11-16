@@ -2,7 +2,8 @@ import Foundation
 
 /// Localized, user-facing text for the run UI (T16.3b): one actionable
 /// message per `RunFailure`, the gray status lines that open and close a run,
-/// and the tool-origin captions used by Settings › Run. Pure — every entry
+/// the output panel header's status and the tool-origin captions used by
+/// Settings › Run. Pure — every entry
 /// takes the UI language explicitly so tests can cover all three tables.
 enum RunMessages {
     /// Display name for an editor language identifier: the menu title when the
@@ -78,6 +79,19 @@ enum RunMessages {
             return Self.failure(failure, language: language)
         case .cancelled:
             return L10n.string(.runCancelled, language: language)
+        }
+    }
+
+    /// The output panel header's run status ("Running", "Exited (code 3)");
+    /// `nil` for `.idle`, where the status is hidden.
+    static func status(_ status: RunPanelStatus, language: AppLanguage = L10n.current) -> String? {
+        switch status {
+        case .idle: return nil
+        case .preparing: return L10n.string(.runPreparing, language: language)
+        case .running: return L10n.string(.runStatusRunning, language: language)
+        case .exited(let code): return L10n.string(.runStatusExited, language: language, Int(code))
+        case .stopped: return L10n.string(.runStatusStopped, language: language)
+        case .failed: return L10n.string(.runStatusFailed, language: language)
         }
     }
 

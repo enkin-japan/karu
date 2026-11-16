@@ -64,11 +64,21 @@ final class RunSessionController {
     private var deferredFinish: RunResult?
     /// Header label text: "Python · /usr/bin/python3".
     private var info = ""
+    /// How the last run ended (or failed to start); `nil` before the first
+    /// run and while a run is active.
+    private var outcome: RunPanelStatus?
 
     var isRunning: Bool { runner?.isRunning ?? false }
     /// Preparing or running — the toolbar shows Stop.
     var isActive: Bool { isPreparing || isRunning }
     var isPanelVisible: Bool { panel != nil }
+
+    /// The output panel header's status, derived from the run state.
+    var panelStatus: RunPanelStatus {
+        if isPreparing { return .preparing }
+        if isRunning { return runner?.phase == .compiling ? .preparing : .running }
+        return outcome ?? .idle
+    }
 
     init(host: RunSessionHost, prepare: @escaping Prepare = RunSessionController.defaultPrepare,
          preference: @escaping (RunnableLanguage) -> RunToolPreference = { RunSettings().preference(for: $0) }) {
@@ -97,6 +107,7 @@ final class RunSessionController {
         if isPreparing {
             prepareGeneration += 1
             isPreparing = false
+            outcome = .stopped
             appendStatus(L10n.t(.runCancelled))
             notify()
             return
@@ -200,6 +211,7 @@ final class RunSessionController {
 
     private func startRun() {
         guard let host else { return }
+        outcome = nil
         showOutput()
         let text = host.runSourceText
         let resolution = RunLanguageResolver.resolve(identifier: host.currentLanguageIdentifierValue,
@@ -216,7 +228,8 @@ final class RunSessionController {
 
         let runner = ensureRunner()
         runner.clearOutput()
-        info = RunMessages.languageName(language.identifier) + " · " + L10n.t(.runPreparing)
+        // The header's status says "Preparing…"; the info names the language only.
+        info = RunMessages.languageName(language.identifier)
         isPreparing = true
         prepareGeneration += 1
         let generation = prepareGeneration
@@ -282,11 +295,14 @@ final class RunSessionController {
             guard let self else { return }
             if self.isStarting { self.deferredFinish = result } else { self.handleFinish(result) }
         }
+        // Compiling reads as Preparing, the run step as Running.
+        runner.onPhaseChange = { [weak self] _ in self?.updatePanelHeader() }
         self.runner = runner
         return runner
     }
 
     private func handleFinish(_ result: RunResult) {
+        outcome = RunPanelStatus(result)
         appendStatus(RunMessages.completion(result))
         refreshPanel(rerender: false)
         notify()
@@ -301,6 +317,7 @@ final class RunSessionController {
         let runner = ensureRunner()
         runner.clearOutput()
         self.info = info
+        outcome = .failed
         runner.appendSystem(RunMessages.failure(failure) + "\n")
         refreshPanel(rerender: true)
         notify()
@@ -322,13 +339,18 @@ final class RunSessionController {
 
     private func refreshPanel(rerender: Bool) {
         guard let panel else { return }
-        panel.update(isActive: isActive, acceptsInput: isRunning, info: info)
+        updatePanelHeader()
         if rerender { panel.render(runner?.output ?? RunOutputBuffer()) }
     }
 
     private func notify() {
-        panel?.update(isActive: isActive, acceptsInput: isRunning, info: info)
+        updatePanelHeader()
         host?.runSessionStateDidChange()
+    }
+
+    private func updatePanelHeader() {
+        panel?.update(isActive: isActive, acceptsInput: isRunning, info: info, status: panelStatus,
+                      isTruncated: runner?.output.isTruncated ?? false)
     }
 
     // MARK: Panel height

@@ -40,9 +40,71 @@ final class RunPanelDivider: NSView {
     }
 }
 
-/// Per-window run output panel (T16.3b): header (title, language · tool,
-/// Clear / Copy / Stop-Rerun / Close), a read-only output text view and — only
-/// while a run is active — a stdin row.
+/// The run state shown in the output panel's header. Computed by
+/// `RunSessionController` from state it already tracks; the panel only renders it.
+enum RunPanelStatus: Equatable {
+    /// Panel shown, nothing run yet in this session: the status is hidden.
+    case idle
+    /// Resolving the tool / writing the workspace, or compiling before launch.
+    case preparing
+    case running
+    /// The run step ended with this exit code (a crash by signal N reads as
+    /// 128 + N, the shell convention; a failed compile step shows the
+    /// compiler's code — the output notes carry the details).
+    case exited(Int32)
+    /// Stopped by the user (during preparation, compilation or the run).
+    case stopped
+    /// A resolve / prepare / launch failure: nothing ran.
+    case failed
+
+    /// How a finished run reads in the header.
+    init(_ result: RunResult) {
+        if case .launchFailed = result.completion {
+            self = .failed
+            return
+        }
+        if result.wasStopped {
+            self = .stopped
+            return
+        }
+        switch result.completion {
+        case .launchFailed:
+            self = .failed
+        case .cancelled:
+            self = .stopped
+        case .finished(let termination), .compileFailed(let termination):
+            switch termination {
+            case .exited(let code): self = .exited(code)
+            case .signaled(let signal): self = .exited(128 + signal)
+            }
+        }
+    }
+
+    /// SF Symbol name; `nil` while idle.
+    var symbolName: String? {
+        switch self {
+        case .idle: return nil
+        case .preparing: return "arrow.triangle.2.circlepath"
+        case .running: return "play.circle"
+        case .exited(let code): return code == 0 ? "checkmark.circle" : "exclamationmark.triangle"
+        case .stopped: return "stop.circle"
+        case .failed: return "exclamationmark.triangle"
+        }
+    }
+
+    /// Failed to start or a non-zero exit: the symbol is tinted red.
+    var isProblem: Bool {
+        switch self {
+        case .failed: return true
+        case .exited(let code): return code != 0
+        default: return false
+        }
+    }
+}
+
+/// Per-window run output panel (T16.3b): header (title, run status, language ·
+/// tool, Clear / Copy / Stop-Rerun / Close), a read-only output text view and
+/// — only while a run is active — a stdin row.
 ///
 /// The panel holds no output model of its own: its text storage mirrors the
 /// runner's bounded `RunOutputBuffer` (plus a leading note once that buffer
@@ -66,7 +128,10 @@ final class RunOutputPanel: NSView {
     let inputField = NSTextField()
 
     private let titleLabel = NSTextField(labelWithString: "")
-    private let infoLabel = NSTextField(labelWithString: "")
+    let statusImageView = NSImageView()
+    let statusLabel = NSTextField(labelWithString: "")
+    let truncatedLabel = NSTextField(labelWithString: "")
+    let infoLabel = NSTextField(labelWithString: "")
     let clearButton = NSButton()
     let copyButton = NSButton()
     let stopRerunButton = NSButton()
@@ -80,6 +145,10 @@ final class RunOutputPanel: NSView {
     private var noteLength = 0
     /// A run is active (preparing or running): the button reads Stop.
     private(set) var isActive = false
+    /// What the header's status shows (kept to re-render on a language switch).
+    private(set) var status: RunPanelStatus = .idle
+    /// The buffer has dropped output: the header shows "Output truncated".
+    private(set) var showsTruncatedStatus = false
 
     var isInputRowVisible: Bool { !inputRow.isHidden }
 
@@ -121,6 +190,25 @@ final class RunOutputPanel: NSView {
         infoLabel.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
         infoLabel.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
 
+        // Status: symbol + text, never colour alone. In a narrow header info
+        // (249) gives way first, then "Output truncated", then the status
+        // text; title and buttons (required) never do.
+        statusImageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: NSFont.smallSystemFontSize,
+                                                                          weight: .regular)
+        statusImageView.setAccessibilityElement(false)
+        statusImageView.setContentHuggingPriority(.required, for: .horizontal)
+        statusImageView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        statusLabel.textColor = .labelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentHuggingPriority(.required, for: .horizontal)
+        statusLabel.setContentCompressionResistancePriority(Self.statusCompression, for: .horizontal)
+        truncatedLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        truncatedLabel.textColor = .secondaryLabelColor
+        truncatedLabel.lineBreakMode = .byTruncatingTail
+        truncatedLabel.setContentHuggingPriority(.required, for: .horizontal)
+        truncatedLabel.setContentCompressionResistancePriority(Self.truncatedCompression, for: .horizontal)
+
         for (button, symbol, action) in [
             (clearButton, "trash", #selector(clearTapped)),
             (copyButton, "doc.on.doc", #selector(copyTapped)),
@@ -140,10 +228,15 @@ final class RunOutputPanel: NSView {
         closeButton.imagePosition = .imageOnly
         closeButton.title = ""
 
-        let header = NSStackView(views: [titleLabel, infoLabel, clearButton, copyButton, stopRerunButton, closeButton])
+        let header = NSStackView(views: [titleLabel, statusImageView, statusLabel, truncatedLabel, infoLabel,
+                                         clearButton, copyButton, stopRerunButton, closeButton])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 6
+        header.setCustomSpacing(10, after: titleLabel)
+        header.setCustomSpacing(3, after: statusImageView)
+        header.setCustomSpacing(10, after: statusLabel)
+        header.setCustomSpacing(10, after: truncatedLabel)
         header.setCustomSpacing(10, after: infoLabel)
         header.edgeInsets = NSEdgeInsets(top: 2, left: 8, bottom: 3, right: 6)
 
@@ -193,7 +286,7 @@ final class RunOutputPanel: NSView {
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeDidChange),
                                                name: EditorFontSettings.didChangeNotification, object: nil)
         reloadStrings()
-        update(isActive: false, acceptsInput: false, info: "")
+        update(isActive: false, acceptsInput: false, info: "", status: .idle, isTruncated: false)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -204,10 +297,13 @@ final class RunOutputPanel: NSView {
 
     // MARK: State
 
-    /// Header info (language · tool) and state-dependent controls: Stop while
-    /// a run is active (preparing or running), the stdin row only while a
-    /// process is running.
-    func update(isActive: Bool, acceptsInput: Bool, info: String) {
+    static let statusCompression = NSLayoutConstraint.Priority(300)
+    static let truncatedCompression = NSLayoutConstraint.Priority(270)
+
+    /// Header info (language · tool), run status, the truncated marker and
+    /// state-dependent controls: Stop while a run is active (preparing or
+    /// running), the stdin row only while a process is running.
+    func update(isActive: Bool, acceptsInput: Bool, info: String, status: RunPanelStatus, isTruncated: Bool) {
         let wasAccepting = !inputRow.isHidden
         self.isActive = isActive
         infoLabel.stringValue = info
@@ -217,6 +313,34 @@ final class RunOutputPanel: NSView {
                                         accessibilityDescription: nil)
         inputRow.isHidden = !acceptsInput
         if acceptsInput, !wasAccepting { setInputEnabled(true) }
+        if status != self.status {
+            self.status = status
+            renderStatus()
+        }
+        setTruncatedStatus(isTruncated)
+    }
+
+    private func renderStatus() {
+        let text = RunMessages.status(status)
+        statusLabel.stringValue = text ?? ""
+        statusLabel.toolTip = text
+        statusLabel.isHidden = text == nil
+        if let symbol = status.symbolName {
+            statusImageView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            statusImageView.contentTintColor = status.isProblem ? .systemRed : .secondaryLabelColor
+            statusImageView.isHidden = false
+        } else {
+            statusImageView.image = nil
+            statusImageView.isHidden = true
+        }
+    }
+
+    private func setTruncatedStatus(_ truncated: Bool) {
+        showsTruncatedStatus = truncated
+        let text = L10n.t(.runStatusTruncated)
+        truncatedLabel.stringValue = truncated ? text : ""
+        truncatedLabel.toolTip = truncated ? text : nil
+        truncatedLabel.isHidden = !truncated
     }
 
     /// Disabled after EOF until the next run starts.
@@ -235,9 +359,11 @@ final class RunOutputPanel: NSView {
         eofButton.title = L10n.t(.runEOF)
         eofButton.toolTip = L10n.t(.runEOFTooltip)
         inputField.placeholderString = L10n.t(.runInputPlaceholder)
+        renderStatus()
+        setTruncatedStatus(showsTruncatedStatus)
     }
 
-    @objc private func languageDidChange() {
+    @objc func languageDidChange() {
         reloadStrings()
         onLanguageChange?()
     }
@@ -269,6 +395,9 @@ final class RunOutputPanel: NSView {
         let font = Self.font
         let text = NSMutableAttributedString()
         showsTruncationNote = buffer.isTruncated
+        // Same condition as the note, so the header marker can never disagree
+        // with it (output deliveries re-render here when truncation starts).
+        setTruncatedStatus(buffer.isTruncated)
         if buffer.isTruncated {
             let note = L10n.t(.runOutputTruncated) + "\n"
             text.append(attributed(note, .system, font: font))
