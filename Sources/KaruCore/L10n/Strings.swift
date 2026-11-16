@@ -310,7 +310,8 @@ extension L10n {
         .prefHotkeyRecording: "Press new shortcut…",
         .prefHotkeyReset: "Restore Default",
 
-        .autosaveFailed: "Auto-save failed",
+        .saveFailedBanner: "Auto-save failed. Your changes are still in this window.",
+        .saveFailedRetry: "Retry",
 
         .draftRestored: "Unsaved changes recovered",
         .draftDiscardedDiskNewer: "File on disk is newer — draft discarded",
@@ -630,7 +631,8 @@ extension L10n {
         .prefHotkeyRecording: "按下新快捷键…",
         .prefHotkeyReset: "恢复默认",
 
-        .autosaveFailed: "自动保存失败",
+        .saveFailedBanner: "自动保存失败，修改仍保留在此窗口中。",
+        .saveFailedRetry: "重试",
 
         .draftRestored: "已恢复未保存的更改",
         .draftDiscardedDiskNewer: "磁盘版本较新，已放弃未保存草稿",
@@ -950,7 +952,8 @@ extension L10n {
         .prefHotkeyRecording: "新しいショートカットキーを押してください…",
         .prefHotkeyReset: "デフォルトに戻す",
 
-        .autosaveFailed: "自動保存に失敗しました",
+        .saveFailedBanner: "自動保存に失敗しました。変更内容はこのウインドウに残っています。",
+        .saveFailedRetry: "再試行",
 
         .draftRestored: "未保存の変更を復元しました",
         .draftDiscardedDiskNewer: "ディスク上のファイルが新しいため下書きを破棄しました",

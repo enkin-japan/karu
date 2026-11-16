@@ -142,8 +142,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case prefScratchpadHotkeyLabel, prefHotkeyRecording, prefHotkeyReset
     // Preferences — scratchpad font size (independent of the editor's, T15.3).
     case prefScratchpadFontSizeLabel
-    // Transient status-bar note when a focus-loss auto-save fails (T12.14).
-    case autosaveFailed
+    // Banner above the editor after a focus-loss auto-save failed (T12.14; a status-bar note before).
+    case saveFailedBanner, saveFailedRetry
     // Transient status-bar notes for crash-draft recovery (T14.11).
     case draftRestored, draftDiscardedDiskNewer, draftRestoredAsUntitled
     // Feature-module display names.

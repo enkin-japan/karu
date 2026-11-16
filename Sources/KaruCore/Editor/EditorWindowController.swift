@@ -16,6 +16,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// and the bottom status strip (caret position / language / char count).
     private var toolbarController: EditorToolbarController!
     private let statusBar = StatusBarView()
+    /// Shown above the editor after auto-save on focus loss failed; stays until
+    /// the document is saved by any route (see `updateWindowState`). Like the
+    /// title's unsaved marker it follows the dirty flag, so undoing back to the
+    /// saved text does not dismiss it. Internal for tests.
+    let saveFailureBanner = SaveFailureBanner()
 
     /// Multiplexes the single `textStorage.delegate` slot to the gutter (line
     /// index) and the highlight engine. Retained here because the storage holds
@@ -315,7 +320,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         self.findBar = findBar
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView(views: [findBar.barView, scrollView, statusBar])
+        // The save-failure banner is hidden until needed; a stack view drops
+        // hidden views from layout, so it takes no room until then.
+        let stack = NSStackView(views: [saveFailureBanner, findBar.barView, scrollView, statusBar])
+        saveFailureBanner.onRetry = { [weak self] in self?.saveDocument(nil) }
+        saveFailureBanner.onSaveAs = { [weak self] in self?.saveDocumentAs(nil) }
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
@@ -339,6 +348,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            saveFailureBanner.widthAnchor.constraint(equalTo: stack.widthAnchor),
             findBar.barView.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusBar.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -408,6 +418,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // displayed indentation in sync with the newly restored preference.
         toolbarController?.refreshIndent()
         findBar.reloadStrings()
+        saveFailureBanner.reloadStrings()
     }
 
     /// Re-applies the shared editor font size after a change broadcast.
@@ -923,6 +934,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         toolbarController?.updateTitle(fileName: displayName,
                                        hasFile: hasFile,
                                        isDirty: documentController.isDirty)
+        // Buffer and file agree again (saved by any route, or reloaded): the
+        // failed auto-save no longer needs attention.
+        if !documentController.isDirty { saveFailureBanner.hide() }
     }
 
     // MARK: - Rename (titlebar capsule → DocumentController)
@@ -1473,9 +1487,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     ///   never pop a storage panel on focus loss.
     /// - On write failure we do **not** show an `NSAlert` (a modal sheet the
     ///   instant focus leaves is exactly the disruption to avoid). The document
-    ///   stays dirty and a transient note flashes in the status bar instead.
-    private func autoSaveOnFocusLoss() {
-        guard AutoSavePolicy.shouldSave(enabled: AutoSavePolicy.defaultEnabled,
+    ///   stays dirty and a banner above the editor says so until the document
+    ///   is saved; it replaces a three-second status-bar note the user, already
+    ///   in another app, rarely saw.
+    func autoSaveOnFocusLoss(enabled: Bool = AutoSavePolicy.defaultEnabled) {
+        guard AutoSavePolicy.shouldSave(enabled: enabled,
                                         isDirty: documentController.isDirty,
                                         hasFileURL: documentController.fileURL != nil) else { return }
         do {
@@ -1486,8 +1502,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             // to protect (T14.11).
             removeDraft()
         } catch {
-            // Silent degrade: keep the dirty state, surface a transient hint only.
-            statusBar.flashMessage(L10n.t(.autosaveFailed))
+            // Keep the dirty state; no modal. Failing again while the banner
+            // is up changes nothing visible.
+            saveFailureBanner.show(reason: error.localizedDescription)
         }
     }
 
