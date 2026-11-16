@@ -31,3 +31,6 @@ xcuserdata/
 
 # Local-only UI design proposal and preview images
 /docs/local-design/
+
+# impeccable 技能（界面设计检查钩子）的本机工作目录：忽略规则与缓存，含本机路径
+.impeccable/
