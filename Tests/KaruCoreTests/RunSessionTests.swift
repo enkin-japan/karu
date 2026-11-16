@@ -301,7 +301,9 @@ struct RunPreferencesTests {
         #expect(controller.rows.map(\.language) == RunnableLanguage.allCases)
         for row in controller.rows {
             #expect(row.sourcePopup.numberOfItems == ToolchainSource.allCases.count)
+            // The custom path row only shows for the Custom source.
             #expect(!row.pathField.isEnabled && !row.chooseButton.isEnabled)
+            #expect(row.pathField.isHiddenOrHasHiddenAncestor && row.chooseButton.isHiddenOrHasHiddenAncestor)
             // T16.5 fills the slot (managed toolchain / CLT state); Bash stays empty.
             #expect(row.managedSlot.arrangedSubviews.isEmpty == (row.language == .bash))
             #expect(row.managedSlot.identifier?.rawValue == "run.managedSlot." + row.language.rawValue)
@@ -312,6 +314,7 @@ struct RunPreferencesTests {
         _ = python.sourcePopup.target?.perform(python.sourcePopup.action, with: python.sourcePopup)
         #expect(settings.source(for: .python) == .custom)
         #expect(python.pathField.isEnabled && python.chooseButton.isEnabled)
+        #expect(!python.pathField.isHiddenOrHasHiddenAncestor && !python.chooseButton.isHiddenOrHasHiddenAncestor)
 
         python.pathField.stringValue = "/opt/tools/python3"
         controller.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification,
@@ -340,7 +343,7 @@ struct RunPreferencesTests {
         #expect(settings.flagsString(for: .c).isEmpty)
     }
 
-    /// User request (2026-11-12): rows follow Settings › Language List.
+    /// User request (2026-11-12): the language list follows Settings › Language List.
     @Test func rowsFollowLanguageList() {
         let suite = "RunPreferencesLanguageList-\(UUID().uuidString)"
         let listDefaults = UserDefaults(suiteName: suite)!
@@ -364,12 +367,12 @@ struct RunPreferencesTests {
         #expect(!controller.isRowVisible(.typescript) && !controller.isRowVisible(.cpp))
         #expect(controller.isRowVisible(.javascript) && controller.isRowVisible(.c)
                 && controller.isRowVisible(.python))
-        let shrunk = controller.view.fittingSize.height
+        #expect(!controller.listedLanguages.contains(.typescript) && !controller.listedLanguages.contains(.cpp))
 
         languageMenu.setVisible(true, for: "cpp")
         controller.applyLanguageVisibility()
         #expect(controller.isRowVisible(.cpp))
-        #expect(controller.view.fittingSize.height > shrunk)
+        #expect(controller.listedLanguages.contains(.cpp))
     }
 }
 

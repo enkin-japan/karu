@@ -46,6 +46,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case runFailJava, runFailWorkspace, runFailLaunch
     case runSettingsTitle, runSettingsHelp, runSourceAuto, runSourceManaged, runSourceSystem, runSourceCustom
     case runChoose, runDetect, runDetecting, runPathPlaceholder, runCFlags, runCppFlags, runFlagsPlaceholder
+    case runNotDetected, runSourceLabel
     case runOriginCustom, runOriginManaged, runOriginLogin, runOriginSystem, runOriginFixed
     // Karu-managed toolchains in Settings › Run (T16.5).
     case runToolchainNotInstalled, runToolchainInstalled, runToolchainInstalledSize
