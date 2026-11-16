@@ -28,3 +28,6 @@ xcuserdata/
 *.swiftdeps
 *.swiftdeps~
 /debug/
+
+# Local-only UI design proposal and preview images
+/docs/local-design/
