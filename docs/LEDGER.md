@@ -57,7 +57,7 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
 | T17.12 | 项目文件夹与索引：设置界面、SQLite、后台全量与增量、范围控制、清除与占用显示 | T17.4 | implementer | ✅ 自动化通过；大文件夹常驻 T17.15d-B 后达标（typeshed 5,451 文件 +4.0–4.5 MB，>64 KB 的文件不做签名摘要）；T17.15c 真机：三语布局（修两处显示缺陷）、「文稿」文件夹重启后仍可读 |
 | T17.13 | 导入解析：查找顺序、导出摘要、LRU、`.pth` 安全规则、失效 | T17.11、T17.12 | implementer | ✅ 夹具 33/33；无外部进程；保存后 ≤1 s；T17.15c 真实 venv（click、fastapi）与外接盘 node_modules（express）通过，修文档路径写法与新建 venv 失效两处缺陷 |
 | T17.14 | 跨文件接入：补全、推断签名、工作区符号搜索 | T17.11–T17.13 | implementer | ✅ 自动化通过；夹具 36/36；T17.15c ⌘T 面板真机通过 |
-| T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | 🔶 15a 超标项已修；15b 读数完成（[质量报告](M17-QUALITY-REPORT.md)）；15d 主线程长段切片、索引常驻达标、浅色配色；压力项超 99 MB 经用户判定通过；15c 真机验收通过（修 3 处缺陷）；VS Code 卸载按用户决定推迟到候选缺陷修复之后 |
+| T17.15 | 集成验收、文档更新、卸载 VS Code 并核对清理 | 全部 | main | ✅ 15a 超标项已修；15b 读数完成（[质量报告](M17-QUALITY-REPORT.md)）；15d 主线程长段切片、索引常驻达标、浅色配色；压力项超 99 MB 经用户判定通过；15c 真机验收通过（修 3 处缺陷）；T17.16 导入补全补齐；`MallocSpaceEfficient=1` 评估后采用；VS Code 对照环境 2026-11-16 移到废纸篓 |
 | T17.16 | 导入语句补全（Python 模块名与 `from x import`、JS/TS 模块字符串与花括号导出名）；venv 逐层查找 | T17.13、T17.15c | implementer | ✅ 自动化通过；真机确认：`import ti` → `time`、`from os import pa` 导出名、`import xml.` 子包、`require('fs')`、`'node:` 内置名、普通字符串不弹 |
 
 - T17.0 进展（main，2026-11-13）：
@@ -1369,6 +1369,14 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - 验证：Run 相关 65 个测试通过；`bundle-macos.sh` 打包、`codesign --verify --strict --deep` 通过；按安装流程正常退出后替换 `/Applications/Karu.app`，
     从 LaunchServices 启动的进程环境含 `MallocSpaceEfficient=1`，恢复会话后 footprint 24 MB。未发布。
   - 影响：此前判「超 99 MB 但通过」的两项压力（10 MB 多样名字、两个 10 MB 窗口）在该模式下为 68.5 / 101.5 MB；5 MB 单行 JSON 仍超（215–219 MB）。
+- VS Code 对照环境清理（用户确认「候选缺陷目前没有了」后，main 执行，2026-11-16）：
+  - 删除前与 T17.15c 待删清单及安装前快照核对一致，VS Code 未在运行；另查 `/Applications`、`~/Library/Application Support/Code`、Caches、
+    Saved Application State、HTTPStorages 均无 VS Code 条目。
+  - 以 `NSFileManager.trashItem` 移到废纸篓（可恢复，未清空）：`/Volumes/enkin/project-support/KaruM17-VSCode/`（1.3 GB，含便携版 VS Code、扩展、
+    user-data、测量脚本与安装前快照）、`~/KaruM17-VSCode` 符号链接、`~/Library/Preferences/com.microsoft.VSCode.plist`、
+    `~/Library/Application Support/Microsoft/`（仅 `DeveloperTools/deviceid`）、`~/.vscode/`、`~/.vscode-shared/`。Finder 废纸篓中逐项可见。
+  - 此后用 `scripts/m17/vscode-tokens.js` 重新生成着色参照需另装 VS Code（脚本以参数接收 VS Code.app 路径）；冻结的 `Tests/Fixtures/M17/baseline/` 不受影响，§13 对照继续用它。
+  - T17.15 转 ✅，M17 方案全部落地。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 
