@@ -674,7 +674,8 @@ extension RunProcessTests {
                 controller.window?.toolbar?.items.contains { $0.itemIdentifier == EditorToolbarController.run } ?? false
             }
             func runButton() -> NSButton? {
-                controller.window?.toolbar?.items.first { $0.itemIdentifier == EditorToolbarController.run }?.view as? NSButton
+                controller.window?.toolbar?.items.first { $0.itemIdentifier == EditorToolbarController.run }?
+                    .view?.subviews.first as? NSButton
             }
             let runItem = NSMenuItem(title: "", action: #selector(EditorWindowController.runCode(_:)), keyEquivalent: "")
             let stopItem = NSMenuItem(title: "", action: #selector(EditorWindowController.stopRun(_:)), keyEquivalent: "")

@@ -347,3 +347,55 @@ private func makeFindBar(compact: Bool) -> FindBarController {
     #expect(seen == [false])
     #expect(!bar.isShown)
 }
+
+// Design carried over from the editor window (2026-11-16 review): the pad uses
+// the editor's line spacing, its title bar buttons carry localized
+// accessibility labels, and a visible pad follows a UI-language switch.
+
+@MainActor
+@Test func padSharesTheEditorsLineSpacing() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("KaruPadDesign-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = ScratchpadStore(directory: dir)
+    _ = try store.write("one\ntwo\nthree\n").get()
+    let controller = ScratchpadController(store: store)
+    controller.show()
+    defer { controller.hide() }
+    let textView = try #require(controller.diagnosticTextView)
+    #expect(textView.defaultParagraphStyle?.lineHeightMultiple == EditorTextView.lineHeightMultiple)
+    #expect((textView.typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.lineHeightMultiple
+        == EditorTextView.lineHeightMultiple)
+    // Laid out taller than the font's natural line height, like the editor.
+    let layoutManager = try #require(textView.layoutManager)
+    layoutManager.ensureLayout(for: try #require(textView.textContainer))
+    let line = layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+    let natural = layoutManager.defaultLineHeight(for: try #require(textView.font))
+    #expect(line.height > natural * 1.1)
+    // The text itself is unchanged: plain text in, plain text out.
+    #expect(textView.string == "one\ntwo\nthree\n")
+}
+
+@MainActor
+@Test func padTitleBarButtonsAreLabelledAndFollowALanguageSwitch() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("KaruPadDesign-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let controller = ScratchpadController(store: ScratchpadStore(directory: dir))
+    controller.show()
+    defer { controller.hide() }
+    let panel = try #require(controller.diagnosticPanel)
+    let buttons = try #require(panel.titlebarAccessoryViewControllers.first?.view.subviews.compactMap { $0 as? NSButton })
+    #expect(buttons.count == 2)
+    let labels = Set(buttons.compactMap { $0.accessibilityLabel() })
+    #expect(labels == [L10n.t(.shortcutTodo), L10n.t(.shortcutPin)])
+    #expect(buttons.allSatisfy { !($0.toolTip ?? "").isEmpty })
+
+    // Stale strings are re-pulled (the notification itself is not posted here:
+    // it would reach every open window of the other suites).
+    panel.title = "stale"
+    buttons.forEach { $0.setAccessibilityLabel("stale"); $0.toolTip = "stale" }
+    controller.languageDidChange()
+    #expect(panel.title == ScratchpadController.spacedTitle(L10n.t(.scratchpadTitle)))
+    #expect(Set(buttons.compactMap { $0.accessibilityLabel() }) == [L10n.t(.shortcutTodo), L10n.t(.shortcutPin)])
+    #expect(buttons.allSatisfy { $0.toolTip != "stale" })
+}
+

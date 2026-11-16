@@ -37,6 +37,24 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
 
     private let moduleCenter: NotificationCenter
 
+    /// The left-hand configuration items (language, Format, Run) are drawn at
+    /// 90% of the system toolbar size, each followed by a small gap, so the
+    /// group reads as three separate controls instead of one crowded strip
+    /// (user feedback, 2026-11-16). The toolbar fixes its controls' bezel
+    /// height and resets their control size and font, so the reduction is a
+    /// drawing scale on a container (`ScaledToolbarItemView`), not a smaller
+    /// control.
+    static let compactScale: CGFloat = 0.9
+    /// Frame height at which a `.toolbar` bezel button matches the system
+    /// toolbar's own controls (macOS 26+), before scaling.
+    static let toolbarButtonHeight: CGFloat = 28
+    /// Added after each compact item; with what is left of the bezels' own
+    /// margins the visible gap comes to roughly 6–7 pt.
+    static let compactGap: CGFloat = 4
+    /// The padded containers of the compact items, by identifier (the toolbar
+    /// asks for an item's view again whenever Run is re-inserted).
+    private var compactContainers: [NSToolbarItem.Identifier: ScaledToolbarItemView] = [:]
+
     init(windowController: EditorWindowController,
          moduleCenter: NotificationCenter = .default) {
         self.windowController = windowController
@@ -141,6 +159,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         }
         formatButton.title = L10n.t(.formatAction)
         formatButton.toolTip = L10n.t(.menuFormatDocument)
+        compactContainers[Self.format]?.controlDidChange()
         applyRunButtonState(active: windowController?.isRunActive ?? false)
         modulePopup.toolTip = L10n.t(.toolbarFeatureModulesTooltip)
         modulePopup.menu?.items.first?.title = L10n.t(.prefModules)
@@ -279,6 +298,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         runButton.image = NSImage(systemSymbolName: active ? "stop.fill" : "play.fill",
                                   accessibilityDescription: title)
         runButton.toolTip = title
+        compactContainers[Self.run]?.controlDidChange()
     }
 
     // MARK: - NSMenuDelegate (module pull-down checkmarks)
@@ -298,9 +318,12 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
-        case Self.language: return viewItem(itemIdentifier, label: L10n.t(.menuLanguage), view: languagePopup)
-        case Self.format:   return viewItem(itemIdentifier, label: L10n.t(.formatAction), view: formatButton)
-        case Self.run:      return viewItem(itemIdentifier, label: L10n.t(.menuRunCode), view: runButton)
+        case Self.language:
+            return viewItem(itemIdentifier, label: L10n.t(.menuLanguage), view: compact(languagePopup, itemIdentifier))
+        case Self.format:
+            return viewItem(itemIdentifier, label: L10n.t(.formatAction), view: compact(formatButton, itemIdentifier))
+        case Self.run:
+            return viewItem(itemIdentifier, label: L10n.t(.menuRunCode), view: compact(runButton, itemIdentifier))
         case Self.title:    return viewItem(itemIdentifier, label: "", view: titleControl)
         case Self.modules:  return viewItem(itemIdentifier, label: L10n.t(.prefModules), view: modulePopup)
         case Self.settings: return viewItem(itemIdentifier, label: L10n.t(.toolbarSettingsLabel), view: settingsButton)
@@ -321,6 +344,34 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
          .flexibleSpace, Self.title, Self.modules, Self.settings]
     }
 
+    /// Wraps a left-hand control in its scaled container. Built once per control.
+    private func compact(_ control: NSControl, _ identifier: NSToolbarItem.Identifier) -> NSView {
+        if let existing = compactContainers[identifier] { return existing }
+        // Nested in a container, a control no longer gets the toolbar's own
+        // metrics, so they are restated here: macOS 26+ toolbars put controls
+        // at `.extraLarge` and stretch button bezels to the item height. At
+        // that size a control's frame carries empty margin around the bezel
+        // (about 8 pt a side on a button, 3 on a popup); the container trims
+        // it so the visible gap between bezels is small and even.
+        var minimumHeight: CGFloat = 0
+        var inset: CGFloat = 0
+        if #available(macOS 26.0, *) {
+            control.controlSize = .extraLarge
+            if control is NSPopUpButton {
+                inset = 3
+            } else {
+                inset = 6
+                minimumHeight = Self.toolbarButtonHeight
+            }
+        }
+        let container = ScaledToolbarItemView(control: control, scale: Self.compactScale,
+                                              trailingGap: Self.compactGap,
+                                              minimumControlHeight: minimumHeight,
+                                              horizontalInset: inset)
+        compactContainers[identifier] = container
+        return container
+    }
+
     private func viewItem(_ identifier: NSToolbarItem.Identifier,
                           label: String, view: NSView) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: identifier)
@@ -328,5 +379,76 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         item.paletteLabel = label
         item.view = view
         return item
+    }
+}
+
+/// Draws one control at `scale` and reserves `trailingGap` after it.
+///
+/// The view's bounds are scaled (`setBoundsSize`), so the control keeps its
+/// natural frame in the container's coordinates and AppKit maps drawing, hit
+/// testing and popup-menu placement through the scale. The control is laid
+/// out by frame, not constraints: its natural size changes whenever the
+/// toolbar assigns a control size or a title changes, and `layout()` picks
+/// that up and re-announces the container's own size.
+final class ScaledToolbarItemView: NSView {
+    let control: NSControl
+    private let scale: CGFloat
+    private let trailingGap: CGFloat
+    private let minimumControlHeight: CGFloat
+    /// Empty margin trimmed from each side of the control's frame (the
+    /// control is positioned that far outside the container's bounds).
+    let horizontalInset: CGFloat
+    private var measured = NSSize.zero
+
+    /// The control's own size, never shorter than `minimumControlHeight`.
+    var naturalSize: NSSize {
+        let fitting = control.fittingSize
+        return NSSize(width: fitting.width, height: max(fitting.height, minimumControlHeight))
+    }
+
+    init(control: NSControl, scale: CGFloat, trailingGap: CGFloat, minimumControlHeight: CGFloat = 0,
+         horizontalInset: CGFloat = 0) {
+        self.control = control
+        self.scale = scale
+        self.trailingGap = trailingGap
+        self.minimumControlHeight = minimumControlHeight
+        self.horizontalInset = horizontalInset
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        control.translatesAutoresizingMaskIntoConstraints = true
+        control.autoresizingMask = []
+        addSubview(control)
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override var intrinsicContentSize: NSSize {
+        let natural = naturalSize
+        return NSSize(width: ceil((natural.width - 2 * horizontalInset) * scale) + trailingGap,
+                      height: ceil(natural.height * scale))
+    }
+
+    /// Call after changing the control's title or image.
+    func controlDidChange() {
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let natural = naturalSize
+        if natural != measured {
+            measured = natural
+            invalidateIntrinsicContentSize()
+        }
+        let scaled = NSSize(width: frame.width / scale, height: frame.height / scale)
+        if abs(bounds.width - scaled.width) > 0.01 || abs(bounds.height - scaled.height) > 0.01 {
+            setBoundsSize(scaled)
+        }
+        control.frame = NSRect(x: -horizontalInset, y: ((bounds.height - natural.height) / 2).rounded(),
+                               width: natural.width, height: natural.height)
     }
 }

@@ -86,10 +86,25 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// delegate's `zoomTargetsScratchpad`).
     var isKeyPanel: Bool { panel?.isKeyWindow == true }
 
+    /// Tooltips (with the current shortcuts) and accessibility labels of the
+    /// two title bar buttons. The labels are set explicitly: left to the
+    /// system, VoiceOver reads the symbols' English names ("pin", "Checklist
+    /// with checkmarks") in every UI language.
     @objc private func shortcutTooltipsChanged() {
         pinButton?.toolTip = ShortcutSettings.shared.tooltip(id: "scratchpad.pin", title: L10n.t(.shortcutPin))
+        pinButton?.setAccessibilityLabel(L10n.t(.shortcutPin))
         todoButton?.toolTip = ShortcutSettings.shared.tooltip(id: "scratchpad.todo", title: L10n.t(.shortcutTodo))
             + " · " + ShortcutSettings.shared.tooltip(id: "scratchpad.check", title: L10n.t(.shortcutCheck))
+        todoButton?.setAccessibilityLabel(L10n.t(.shortcutTodo))
+    }
+
+    /// A UI-language switch while the pad is up (it is rebuilt on every
+    /// showing, so only a visible pad can go stale): title, title bar buttons
+    /// and the find bar re-pull their strings, like an editor window does.
+    @objc func languageDidChange() {
+        panel?.title = Self.spacedTitle(L10n.t(.scratchpadTitle))
+        shortcutTooltipsChanged()
+        findBar?.reloadStrings()
     }
 
     // MARK: - Show / hide
@@ -111,6 +126,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(updatePinButton), name: SettingsArchive.didImport, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(shortcutTooltipsChanged),
                                                name: ShortcutSettings.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(languageDidChange),
+                                               name: L10n.didChangeNotification, object: nil)
         // Restore the remembered frame; a first run has none, so the default
         // 480×360 set at construction time stays and is centred instead.
         if !panel.setFrameUsingName(Self.frameAutosaveName) {
@@ -137,6 +154,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: panel)
         NotificationCenter.default.removeObserver(self, name: ScratchpadStore.fontDidChangeNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: ShortcutSettings.didChange, object: nil)
+        NotificationCenter.default.removeObserver(self, name: L10n.didChangeNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: SettingsArchive.didImport, object: nil)
         panel.delegate = nil
         self.panel = nil
@@ -221,6 +239,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         // parts ways with it the first time ⌘+ / ⌘- is pressed in here.
         textView.font = .monospacedSystemFont(ofSize: ScratchpadStore.fontSize(), weight: .regular)
         textView.textContainerInset = NSSize(width: 8, height: 8)
+        // The editor's line spacing: the pad reads as the same text surface.
+        EditorTextView.applyLineSpacing(to: textView)
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -330,6 +350,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         let pin = makePinButton()
         pin.frame = NSRect(x: 31, y: 2, width: 24, height: 20)
         buttons.addSubview(pin)
+        shortcutTooltipsChanged()  // tooltips + accessibility labels
         accessory.view = buttons
         accessory.layoutAttribute = .trailing
         panel.addTitlebarAccessoryViewController(accessory)
@@ -376,7 +397,6 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.setButtonType(.momentaryChange)
-        button.toolTip = ShortcutSettings.shared.tooltip(id: "scratchpad.pin", title: L10n.t(.shortcutPin))
         pinButton = button
         updatePinButton()
         return button
@@ -404,8 +424,6 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         let button = ScratchpadTitlebarButton(image: NSImage(), target: self, action: #selector(toggleTodo(_:)))
         button.isBordered = false
         button.setButtonType(.momentaryChange)
-        button.toolTip = ShortcutSettings.shared.tooltip(id: "scratchpad.todo", title: L10n.t(.shortcutTodo))
-            + " · " + ShortcutSettings.shared.tooltip(id: "scratchpad.check", title: L10n.t(.shortcutCheck))
         button.contentTintColor = .secondaryLabelColor
         if let symbol = NSImage(systemSymbolName: "checklist", accessibilityDescription: nil) {
             button.imagePosition = .imageOnly

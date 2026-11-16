@@ -465,14 +465,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // clears the toolbar seam.
         textView.textContainerInset = NSSize(width: 6, height: 8)
 
-        // Loosen line spacing slightly. Applied via the *default* paragraph style
-        // + typing attributes only — never written into the text storage — so the
-        // "don't pre-store per-line attributes" rule (ARCHITECTURE.md §3) holds
-        // and highlighting's temporary attributes stay untouched.
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineHeightMultiple = 1.15
-        textView.defaultParagraphStyle = paragraph
-        textView.typingAttributes[.paragraphStyle] = paragraph
+        // Loosen line spacing slightly (shared with the scratchpad).
+        EditorTextView.applyLineSpacing(to: textView)
 
         scrollView.documentView = textView
         return (scrollView, textView)

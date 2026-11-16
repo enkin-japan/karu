@@ -205,6 +205,23 @@ public final class EditorTextView: NSTextView {
         }
     }
 
+    /// Line height of every Karu text surface (editor windows and the
+    /// scratchpad), as a multiple of the font's natural line height.
+    public static let lineHeightMultiple: CGFloat = 1.15
+
+    /// Loosens `textView`'s line spacing to `lineHeightMultiple`. Applied via
+    /// the *default* paragraph style + typing attributes only — never written
+    /// into the text storage — so the "don't pre-store per-line attributes"
+    /// rule (ARCHITECTURE.md §3) holds and highlighting's temporary attributes
+    /// stay untouched.
+    @MainActor
+    public static func applyLineSpacing(to textView: NSTextView) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineHeightMultiple = lineHeightMultiple
+        textView.defaultParagraphStyle = paragraph
+        textView.typingAttributes[.paragraphStyle] = paragraph
+    }
+
     /// Indent width to use for rainbow drawing and the Tab key, honouring the
     /// VS Code-style precedence: explicit UserDefaults override →
     /// content-detected unit → built-in language default.
