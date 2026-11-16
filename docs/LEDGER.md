@@ -7,6 +7,24 @@
 > 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败。区分自动化通过、待用户实测与已发布；
 > 历史失败次数升级链不用于当前 Codex 流程，失败应报告证据，由主会话决定下一步。
 
+## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
+
+- 状态：⬜ 未开始。负责：待定。与产品代码的行为无关，只影响 `swift test` 并行全量运行的稳定性。
+- 现象：`swift test`（默认并行）全量运行时，带固定等待上限的用例在机器有负载时偶发超时，每次失败的用例不固定；
+  同一份代码不并行（`swift test --no-parallel`，约 121 s）或单独跑对应套件都通过。v0.13.0 发版当晚并行跑四次，四次各失败一条。
+- 已见过的用例：
+  - `ToolchainManagerTests`：`cancelLeavesNothingAndNoError`、`differentIdsInstallConcurrently`、
+    `failureIsKeptAsLastErrorUntilTheNextAttempt`、`installReportsProgressThenInstalledStateAndUsage`、
+    `rowsShowNotInstalledInstalledAndUpdateStates`（都是 `waitFor` 的 10 秒等待）。
+  - `ToolchainInstallerTests.cancelDuringExtractKillsTarAndLeavesNothing`（断言耗时 < 10 s，实测 11–13 s）。
+  - `AnalysisSchedulerTests.longJobYieldsBetweenSlicesAndStillCompletes`（约 20 s 未完成）。
+  - `LongLineSlicingTests.minifiedJSONIsPaintedInSlicesThatMatchAFullPass`（见过一次）。
+- 更严重的一点：`ToolchainManagerTests.swift:265` 在等待超时后强制解包 nil，直接让测试进程崩溃，
+  整轮运行中断、拿不到总数（发版当晚出现两次）。
+- 可能的方向（都未验证）：把 265 行的强制解包改成 `try #require`，先消除崩溃；给这些套件加 `.serialized` 或把它们的
+  等待改成按条件轮询、放宽上限；查清并行时是谁占住了主队列或线程池（这些用例都在等主线程或后台任务的回调）。
+- 在修好之前的做法：并行全量出现上述用例超时，用 `swift test --no-parallel` 复跑一次作为全量结论，并在台账写明。
+
 ## v0.13.0 / build 27 发布（2026-11-16）
 
 - 用户明确指令「推送发布」。负责：main。状态：✅ 已发布、线上更新验证通过、正式版已安装本机。
