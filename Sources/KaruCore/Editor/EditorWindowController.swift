@@ -748,7 +748,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let wasDirty = documentController.isDirty
         documentController.markEdited()
         if !wasDirty {
-            window?.isDocumentEdited = true
+            // First edit since the last save: refresh the window state so the
+            // toolbar title gains its unsaved marker (not only the close
+            // button's dot).
+            updateWindowState()
         }
         maybeAutoDetectLanguage()
         refreshStatusBar()
@@ -913,10 +916,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         window?.title = displayName
         window?.representedURL = documentController.fileURL
         window?.isDocumentEdited = documentController.isDirty
-        // Hide the native title only when a file capsule can replace it; an
-        // untitled window keeps its native "Untitled" title (the capsule hides).
-        window?.titleVisibility = hasFile ? .hidden : .visible
-        toolbarController?.updateTitle(fileName: documentController.displayName,
+        // The toolbar's centre title shows the name for saved and untitled
+        // documents alike; `window.title` stays set for the Window menu and
+        // Mission Control but is not drawn in the titlebar.
+        window?.titleVisibility = .hidden
+        toolbarController?.updateTitle(fileName: displayName,
                                        hasFile: hasFile,
                                        isDirty: documentController.isDirty)
     }

@@ -1,10 +1,15 @@
 import AppKit
 
-/// The clickable filename "capsule" shown in the centre of the window's
-/// titlebar (T11.4), replacing the native title text. It renders the current
-/// file name inside a rounded, subtly filled + stroked box that hints it is
-/// interactive; a leading "● " marks unsaved changes (the native
-/// `isDocumentEdited` dot is hidden along with the native title).
+/// The document title shown in the centre of the window's titlebar (T11.4),
+/// replacing the native title text. Saved and untitled documents show their
+/// name at the same place in the same font; a leading "●" marks unsaved
+/// changes (the native `isDocumentEdited` dot is hidden along with the native
+/// title).
+///
+/// The title is plain text by default. Hovering a saved document's title
+/// draws a rounded capsule around it, hinting that a click renames the file;
+/// an untitled document's title is static (nothing to rename until it is
+/// saved).
 ///
 /// Clicking swaps the label for an inline `NSTextField` pre-selected on the
 /// base name (extension excluded); Return commits the rename via `onCommit`,
@@ -58,7 +63,6 @@ public final class TitleRenameControl: NSView {
     }
 
     public override var intrinsicContentSize: NSSize {
-        guard hasFile else { return NSSize(width: 0, height: Self.height) }
         let textWidth = label.intrinsicContentSize.width
         return NSSize(width: min(360, textWidth + Self.horizontalPadding * 2),
                       height: Self.height)
@@ -66,36 +70,57 @@ public final class TitleRenameControl: NSView {
 
     // MARK: - Configuration
 
-    /// Refreshes the displayed name / dirty marker / visibility. When the
-    /// document is untitled (`hasFile == false`) the capsule hides itself so the
-    /// window's native title shows through instead.
+    /// Refreshes the displayed name and dirty marker. `hasFile == false` (an
+    /// untitled document) shows the same text without the rename interaction.
     public func configure(fileName: String, hasFile: Bool, isDirty: Bool) {
         self.fileName = fileName
         self.hasFile = hasFile
         self.isDirty = isDirty
-        isHidden = !hasFile
-        label.stringValue = (isDirty ? "● " : "") + fileName
+        if !hasFile { isHovered = false }
+        label.attributedStringValue = Self.title(fileName: fileName, isDirty: isDirty, font: label.font)
         toolTip = hasFile ? fileName : nil
+        setAccessibilityLabel((isDirty ? "● " : "") + fileName)
         invalidateIntrinsicContentSize()
         needsDisplay = true
     }
 
+    /// The displayed title: the name in the label colour, preceded by a
+    /// quieter "●" while there are unsaved changes.
+    static func title(fileName: String, isDirty: Bool, font: NSFont?) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.lineBreakMode = .byTruncatingMiddle
+        var base: [NSAttributedString.Key: Any] = [.paragraphStyle: paragraph, .foregroundColor: NSColor.labelColor]
+        if let font { base[.font] = font }
+        let result = NSMutableAttributedString()
+        if isDirty {
+            var marker = base
+            marker[.foregroundColor] = NSColor.secondaryLabelColor
+            result.append(NSAttributedString(string: "● ", attributes: marker))
+        }
+        result.append(NSAttributedString(string: fileName, attributes: base))
+        return result
+    }
+
+    /// Whether the rename capsule is currently drawn (saved document, hovered).
+    var showsCapsule: Bool { hasFile && isHovered && editorField == nil }
+
     // MARK: - Appearance
 
-    /// Draws the capsule directly (rather than via a layer background) so it is
-    /// reliably captured by `cacheDisplay` / offscreen rendering. Fill and border
-    /// derive from labelColor (dynamic across light / dark) at explicit alphas
-    /// strong enough to read as a discernible box against the near-white
-    /// titlebar. This is a small translucent rounded fill on a titlebar toolbar
-    /// item — not an opaque cover on an editor stack sibling — so it is clear of
-    /// the v0.2.0 blank-window red line (see StatusBarView.swift).
+    /// Draws the hover capsule directly (rather than via a layer background) so
+    /// it is reliably captured by `cacheDisplay` / offscreen rendering. Fill and
+    /// border derive from labelColor (dynamic across light / dark). Nothing is
+    /// drawn unless a saved document's title is hovered. This is a small
+    /// translucent rounded fill on a titlebar toolbar item — not an opaque cover
+    /// on an editor stack sibling — so it is clear of the v0.2.0 blank-window
+    /// red line (see StatusBarView.swift).
     public override func draw(_ dirtyRect: NSRect) {
-        guard hasFile else { return }
+        guard showsCapsule else { return }
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         let path = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
-        NSColor.labelColor.withAlphaComponent(isHovered ? 0.16 : 0.09).setFill()
+        NSColor.labelColor.withAlphaComponent(0.10).setFill()
         path.fill()
-        NSColor.labelColor.withAlphaComponent(0.28).setStroke()
+        NSColor.labelColor.withAlphaComponent(0.22).setStroke()
         path.lineWidth = 1
         path.stroke()
     }
@@ -124,8 +149,13 @@ public final class TitleRenameControl: NSView {
 
     // MARK: - Inline editing
 
+    /// An untitled document's title is static text: dragging it moves the
+    /// window like any other empty stretch of the titlebar.
+    public override var mouseDownCanMoveWindow: Bool { !hasFile }
+
     public override func mouseDown(with event: NSEvent) {
-        guard hasFile, editorField == nil else { return }
+        guard hasFile else { super.mouseDown(with: event); return }
+        guard editorField == nil else { return }
         beginEditing()
     }
 
@@ -146,6 +176,8 @@ public final class TitleRenameControl: NSView {
         ])
         editorField = field
         label.isHidden = true
+        isHovered = false
+        needsDisplay = true
 
         window?.makeFirstResponder(field)
         // Pre-select the base name (extension excluded) so a quick edit only

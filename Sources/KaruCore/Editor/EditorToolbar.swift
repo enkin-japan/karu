@@ -136,7 +136,7 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         }
     }
 
-    /// Refreshes the centre title capsule (name / dirty marker / visibility).
+    /// Refreshes the centre title (name / dirty marker / rename availability).
     func updateTitle(fileName: String, hasFile: Bool, isDirty: Bool) {
         titleControl.configure(fileName: fileName, hasFile: hasFile, isDirty: isDirty)
     }
