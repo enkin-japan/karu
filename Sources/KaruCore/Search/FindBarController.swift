@@ -1,6 +1,12 @@
 import AppKit
 
-/// Thin find / replace bar shown at the top of the editor window.
+/// Thin find / replace bar shown at the top of the editor window and the
+/// scratchpad panel.
+///
+/// Progressive disclosure: a search row that is always shown, plus a replace
+/// row that only appears when the bar is expanded (the disclosure triangle,
+/// or Find and Replace… ⌥⌘F). The expansion state is remembered per instance
+/// — that is, per window — across hide / show, and never persisted.
 ///
 /// The bar is pure UI glue: all matching and replacement text is computed by
 /// the AppKit-independent `SearchEngine`. It reuses the window's shared
@@ -19,6 +25,10 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     /// Whether the bar is currently visible.
     public private(set) var isShown = false
 
+    /// Whether the replace row is expanded. Survives `hide()` / `show()`; a new
+    /// controller (a new window) starts collapsed.
+    public private(set) var isReplaceShown = false
+
     /// Fires on every visibility change (both `show()` and `hide()`, including
     /// the close button and Esc, which route through them). The scratchpad uses
     /// it to push its text down instead of letting the bar cover the first line.
@@ -26,21 +36,25 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
 
     private weak var textView: NSTextView?
     private let lineIndex: LineIndex
-    /// Two-row layout for narrow hosts (the scratchpad panel). The editor's
-    /// window is wide by construction and keeps the original single row.
+    /// Narrow hosts (the scratchpad panel). Both hosts share one structure;
+    /// this only lowers the minimum widths so the bar fits a ~340 pt window.
     private let compact: Bool
 
-    // Controls
-    private let searchField = NSSearchField()
-    private let replaceField = NSTextField()
-    private let regexToggle = NSButton()
-    private let caseToggle = NSButton()
-    private let prevButton = NSButton()
-    private let nextButton = NSButton()
-    private let replaceButton = NSButton()
-    private let replaceAllButton = NSButton()
-    private let countLabel = NSTextField(labelWithString: "")
-    private let closeButton = NSButton()
+    // Controls. Internal (not private) so tests can inspect them.
+    let disclosureButton = NSButton()
+    let searchField = NSSearchField()
+    let replaceField = NSTextField()
+    let regexToggle = NSButton()
+    let caseToggle = NSButton()
+    let prevButton = NSButton()
+    let nextButton = NSButton()
+    let replaceButton = NSButton()
+    let replaceAllButton = NSButton()
+    /// The status slot: "i / n", "No results", "Replaced N" or a regex error.
+    let countLabel = NSTextField(labelWithString: "")
+    let closeButton = NSButton()
+    /// The second row; `isHidden` collapses it (and the bar's height) away.
+    let replaceRow = NSStackView()
 
     // Search state (recomputed on every text / option change).
     private var matches: [NSRange] = []
@@ -48,8 +62,9 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
 
     private let matchHighlight = NSColor.systemYellow.withAlphaComponent(0.35)
 
-    /// - Parameter compact: lays the controls out in two rows instead of one, so
-    ///   the whole bar (buttons included) fits a ~340 pt wide window.
+    /// - Parameter compact: lowers the minimum widths of the search field,
+    ///   replace field and status slot, so the whole bar (both rows, buttons
+    ///   included) fits a ~340 pt wide window.
     public init(textView: NSTextView, lineIndex: LineIndex, compact: Bool = false) {
         self.textView = textView
         self.lineIndex = lineIndex
@@ -76,7 +91,8 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
 
         // Chrome background that follows light / dark automatically, with a
         // hairline separator along the bottom edge so the bar reads as a distinct
-        // band above the editor.
+        // band above the editor. No `draw(_:)` fill anywhere (v0.2.0 blank
+        // window bug): the effect view is the whole background.
         let background = NSVisualEffectView()
         background.material = .headerView
         background.blendingMode = .withinWindow
@@ -89,40 +105,92 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         separator.translatesAutoresizingMaskIntoConstraints = false
         barView.addSubview(separator)
 
-        searchField.placeholderString = L10n.t(.findPlaceholder)
+        disclosureButton.bezelStyle = .disclosure
+        disclosureButton.setButtonType(.pushOnPushOff)
+        disclosureButton.title = ""
+        disclosureButton.state = .off
+        disclosureButton.target = self
+        disclosureButton.action = #selector(disclosureToggled)
+        disclosureButton.setContentHuggingPriority(.required, for: .horizontal)
+
         searchField.delegate = self
         searchField.sendsWholeSearchString = false
         searchField.sendsSearchStringImmediately = true
 
-        replaceField.placeholderString = L10n.t(.replacePlaceholder)
+        replaceField.delegate = self
         replaceField.isBezeled = true
         replaceField.bezelStyle = .roundedBezel
         replaceField.isEditable = true
         replaceField.cell?.wraps = false
         replaceField.cell?.isScrollable = true
 
-        configureToggle(regexToggle, title: ".*", tooltip: L10n.t(.findRegexTooltip), action: #selector(optionChanged))
-        configureToggle(caseToggle, title: "Aa", tooltip: L10n.t(.findCaseTooltip), action: #selector(optionChanged))
+        configureToggle(regexToggle, title: ".*", action: #selector(optionChanged))
+        configureToggle(caseToggle, title: "Aa", action: #selector(optionChanged))
 
-        configureButton(prevButton, title: "<", tooltip: L10n.t(.findPrevTooltip), action: #selector(findPreviousTapped))
-        configureButton(nextButton, title: ">", tooltip: L10n.t(.findNextTooltip), action: #selector(findNextTapped))
-        configureButton(replaceButton, title: L10n.t(.replacePlaceholder), tooltip: L10n.t(.findReplaceTooltip), action: #selector(replaceTapped))
-        configureButton(replaceAllButton, title: L10n.t(.findReplaceAll), tooltip: L10n.t(.findReplaceAllTooltip), action: #selector(replaceAllTapped))
-        configureButton(closeButton, title: L10n.t(.findDone), tooltip: L10n.t(.findDoneTooltip), action: #selector(closeTapped))
+        configureIconButton(prevButton, symbol: "chevron.left", action: #selector(findPreviousTapped))
+        configureIconButton(nextButton, symbol: "chevron.right", action: #selector(findNextTapped))
+        configureIconButton(closeButton, symbol: "xmark", action: #selector(closeTapped))
+        configureButton(replaceButton, action: #selector(replaceTapped))
+        configureButton(replaceAllButton, action: #selector(replaceAllTapped))
 
         countLabel.textColor = .secondaryLabelColor
         countLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        countLabel.alignment = .right
-        countLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        countLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        countLabel.alignment = .left
+        countLabel.lineBreakMode = .byTruncatingTail
+        countLabel.cell?.truncatesLastVisibleLine = true
+        // The search field takes the slack (hugging 250); the status slot only
+        // grows into it when its text needs the room (compression 251), and
+        // truncates — never widening the window — when there is none: 251 is
+        // far below the 500 at which a window resizes itself for its content.
+        countLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(260), for: .horizontal)
+        countLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(251), for: .horizontal)
 
         // Let the two text inputs absorb slack, everything else stays compact.
         searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         replaceField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let stack = compact ? makeCompactStack() : makeSingleRowStack()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        barView.addSubview(stack)
+        let searchRow = NSStackView(views: [
+            disclosureButton, searchField, countLabel,
+            regexToggle, caseToggle,
+            prevButton, nextButton, closeButton,
+        ])
+        searchRow.orientation = .horizontal
+        // Tighter than the 8 pt grid between groups (6), tighter still inside a
+        // group (the option toggles, the navigation chevrons): the compact bar
+        // has to fit 340 pt with both rows in all three languages.
+        searchRow.spacing = 8
+        searchRow.setCustomSpacing(Self.disclosureGap, after: disclosureButton)
+        searchRow.setCustomSpacing(6, after: searchField)
+        searchRow.setCustomSpacing(6, after: countLabel)
+        searchRow.setCustomSpacing(4, after: regexToggle)
+        searchRow.setCustomSpacing(6, after: caseToggle)
+        searchRow.setCustomSpacing(0, after: prevButton)
+        searchRow.setCustomSpacing(2, after: nextButton)
+        searchRow.alignment = .centerY
+
+        // The replace row starts with an empty indent as wide as the disclosure
+        // triangle, so the replace field lines up under the search field.
+        let indent = NSView()
+        indent.translatesAutoresizingMaskIntoConstraints = false
+        replaceRow.setViews([indent, replaceField, replaceButton, replaceAllButton], in: .leading)
+        replaceRow.orientation = .horizontal
+        replaceRow.spacing = 8
+        replaceRow.setCustomSpacing(Self.disclosureGap, after: indent)
+        replaceRow.alignment = .centerY
+        replaceRow.isHidden = true
+
+        let column = NSStackView(views: [searchRow, replaceRow])
+        column.orientation = .vertical
+        column.spacing = 6
+        column.alignment = .leading
+        column.translatesAutoresizingMaskIntoConstraints = false
+        barView.addSubview(column)
+
+        // Same width as the search field while there is room for it; below
+        // that, the replace buttons win (740 < their 750 compression) and the
+        // replace field gives way first.
+        let sameWidth = replaceField.widthAnchor.constraint(equalTo: searchField.widthAnchor)
+        sameWidth.priority = NSLayoutConstraint.Priority(740)
 
         NSLayoutConstraint.activate([
             background.leadingAnchor.constraint(equalTo: barView.leadingAnchor),
@@ -134,71 +202,43 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
             separator.trailingAnchor.constraint(equalTo: barView.trailingAnchor),
             separator.bottomAnchor.constraint(equalTo: barView.bottomAnchor),
 
-            stack.leadingAnchor.constraint(equalTo: barView.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: barView.trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: barView.topAnchor, constant: 6),
-            stack.bottomAnchor.constraint(equalTo: barView.bottomAnchor, constant: -6),
-            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 100 : 140),
-            replaceField.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 100 : 120),
-            countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 60 : 90),
+            column.leadingAnchor.constraint(equalTo: barView.leadingAnchor, constant: 8),
+            column.trailingAnchor.constraint(equalTo: barView.trailingAnchor, constant: -8),
+            column.topAnchor.constraint(equalTo: barView.topAnchor, constant: 6),
+            column.bottomAnchor.constraint(equalTo: barView.bottomAnchor, constant: -6),
+            // The search row spans the bar; the replace row may be shorter.
+            searchRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+            replaceRow.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor),
+
+            indent.widthAnchor.constraint(equalTo: disclosureButton.widthAnchor),
+            indent.heightAnchor.constraint(equalToConstant: 1),
+            sameWidth,
+
+            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 84 : 140),
+            replaceField.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 84 : 120),
+            countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 48 : 90),
         ])
+
+        // Tab order: the search field leads straight to the replace field (a
+        // hidden replace row drops out — hidden views cannot become key), then
+        // round the buttons, which Full Keyboard Access users reach.
+        let loop: [NSView] = [
+            disclosureButton, searchField, replaceField, replaceButton, replaceAllButton,
+            regexToggle, caseToggle, prevButton, nextButton, closeButton,
+        ]
+        for (i, view) in loop.enumerated() {
+            view.nextKeyView = loop[(i + 1) % loop.count]
+        }
+
+        applyStrings()
     }
 
-    /// The editor's bar: everything on one line, unchanged since T7.
-    private func makeSingleRowStack() -> NSStackView {
-        let stack = NSStackView(views: [
-            searchField, regexToggle, caseToggle,
-            prevButton, nextButton,
-            replaceField, replaceButton, replaceAllButton,
-            countLabel, closeButton,
-        ])
-        stack.orientation = .horizontal
-        // 8 pt grid; the option toggles hug into a tighter group of their own.
-        stack.spacing = 8
-        stack.setCustomSpacing(4, after: regexToggle)
-        stack.setCustomSpacing(4, after: prevButton)
-        stack.alignment = .centerY
-        return stack
-    }
+    /// Gap between the disclosure triangle (or the replace row's matching
+    /// indent) and the field to its right.
+    private static let disclosureGap: CGFloat = 6
 
-    /// Two rows — find on top, replace below — so the bar's minimum width is
-    /// roughly halved and no button is clipped in a narrow window (T15.5 user
-    /// report: the scratchpad's find bar lost its right-hand buttons).
-    private func makeCompactStack() -> NSStackView {
-        let findRow = NSStackView(views: [
-            searchField, regexToggle, caseToggle,
-            prevButton, nextButton, closeButton,
-        ])
-        findRow.orientation = .horizontal
-        findRow.spacing = 8
-        findRow.setCustomSpacing(4, after: regexToggle)
-        findRow.setCustomSpacing(4, after: prevButton)
-        findRow.alignment = .centerY
-
-        let replaceRow = NSStackView(views: [
-            replaceField, replaceButton, replaceAllButton, countLabel,
-        ])
-        replaceRow.orientation = .horizontal
-        replaceRow.spacing = 8
-        replaceRow.alignment = .centerY
-
-        let column = NSStackView(views: [findRow, replaceRow])
-        column.orientation = .vertical
-        column.spacing = 4
-        column.alignment = .leading
-        // Width equality rather than leading+trailing pins: it says "both rows
-        // are as wide as the bar" without adding a second horizontal-position
-        // constraint on top of the stack's own alignment.
-        NSLayoutConstraint.activate([
-            findRow.widthAnchor.constraint(equalTo: column.widthAnchor),
-            replaceRow.widthAnchor.constraint(equalTo: column.widthAnchor),
-        ])
-        return column
-    }
-
-    private func configureToggle(_ button: NSButton, title: String, tooltip: String, action: Selector) {
+    private func configureToggle(_ button: NSButton, title: String, action: Selector) {
         button.title = title
-        button.toolTip = tooltip
         // Bordered on/off toggle: bezels in when active so regex / case state is
         // legible at a glance.
         button.bezelStyle = .roundRect
@@ -210,9 +250,26 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         button.setContentHuggingPriority(.required, for: .horizontal)
     }
 
-    private func configureButton(_ button: NSButton, title: String, tooltip: String, action: Selector) {
-        button.title = title
-        button.toolTip = tooltip
+    /// Previous / Next / Close: borderless SF Symbol buttons with a fixed hit
+    /// area. Bordered ones would not fit the compact bar's 340 pt.
+    private func configureIconButton(_ button: NSButton, symbol: String, action: Selector) {
+        button.title = ""
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        button.imagePosition = .imageOnly
+        button.isBordered = false
+        button.setButtonType(.momentaryPushIn)
+        button.target = self
+        button.action = action
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 24),
+            button.heightAnchor.constraint(equalToConstant: 22),
+        ])
+        button.setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    private func configureButton(_ button: NSButton, action: Selector) {
         button.bezelStyle = .rounded
         button.setButtonType(.momentaryPushIn)
         button.target = self
@@ -220,10 +277,39 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         button.setContentHuggingPriority(.required, for: .horizontal)
     }
 
+    /// Every user-visible string the bar owns (titles, placeholders, tooltips,
+    /// accessibility labels). Shared by construction and `reloadStrings()`.
+    private func applyStrings() {
+        searchField.placeholderString = L10n.t(.findPlaceholder)
+        replaceField.placeholderString = L10n.t(.replacePlaceholder)
+        regexToggle.toolTip = L10n.t(.findRegexTooltip)
+        regexToggle.setAccessibilityLabel(L10n.t(.findRegexTooltip))
+        caseToggle.toolTip = L10n.t(.findCaseTooltip)
+        caseToggle.setAccessibilityLabel(L10n.t(.findCaseTooltip))
+        for (button, key) in [(prevButton, L10nKey.findPrevTooltip),
+                              (nextButton, .findNextTooltip),
+                              (closeButton, .findDoneTooltip)] {
+            button.toolTip = L10n.t(key)
+            button.setAccessibilityLabel(L10n.t(key))
+        }
+        replaceButton.title = L10n.t(.replacePlaceholder)
+        replaceButton.toolTip = L10n.t(.findReplaceTooltip)
+        replaceAllButton.title = L10n.t(.findReplaceAll)
+        replaceAllButton.toolTip = L10n.t(.findReplaceAllTooltip)
+        updateDisclosureStrings()
+    }
+
+    private func updateDisclosureStrings() {
+        let label = L10n.t(isReplaceShown ? .findHideReplace : .findShowReplace)
+        disclosureButton.toolTip = label
+        disclosureButton.setAccessibilityLabel(label)
+    }
+
     // MARK: - Show / hide
 
     /// Reveals the bar and focuses the search field. If the editor has a
     /// non-empty selection it is used to seed the query (Xcode-like behavior).
+    /// The replace row keeps whatever expansion state it last had.
     public func show() {
         if let selected = selectedEditorText(), !selected.isEmpty {
             searchField.stringValue = selected
@@ -234,6 +320,46 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         barView.window?.makeFirstResponder(searchField)
         searchField.selectText(nil)
         onVisibilityChanged?(true)
+    }
+
+    /// Find and Replace… (⌥⌘F): shows the bar with the replace row expanded.
+    /// A hidden bar opens like `show()` (focus in the search field); an already
+    /// visible one expands and moves focus to the replace field.
+    public func showReplace() {
+        setReplaceShown(true)
+        if isShown {
+            barView.window?.makeFirstResponder(replaceField)
+            replaceField.selectText(nil)
+        } else {
+            show()
+        }
+    }
+
+    /// The bar's minimum width over both states — collapsed and expanded —
+    /// so a host that sizes its window from it (the scratchpad's
+    /// `contentMinSize`) never clips either row. Measured, not guessed.
+    public var minimumWidth: CGFloat {
+        let wasHidden = replaceRow.isHidden
+        defer { replaceRow.isHidden = wasHidden }
+        replaceRow.isHidden = true
+        let collapsed = barView.fittingSize.width
+        replaceRow.isHidden = false
+        let expanded = barView.fittingSize.width
+        return ceil(max(collapsed, expanded))
+    }
+
+    /// Expands or collapses the replace row (the disclosure triangle's action).
+    /// Collapsing while the replace row holds focus hands it to the search field.
+    public func setReplaceShown(_ shown: Bool) {
+        isReplaceShown = shown
+        disclosureButton.state = shown ? .on : .off
+        updateDisclosureStrings()
+        guard replaceRow.isHidden == shown else { return }
+        if !shown, replaceRowHasFocus() {
+            barView.window?.makeFirstResponder(searchField)
+        }
+        replaceRow.isHidden = !shown
+        barView.needsLayout = true
     }
 
     /// Hides the bar, clears highlights, and returns focus to the editor.
@@ -248,20 +374,9 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     }
 
     /// Re-pulls every string after a UI-language change. Refreshes placeholders,
-    /// tooltips, button titles, and the current count caption in place.
+    /// tooltips, accessibility labels, button titles, and the status slot.
     public func reloadStrings() {
-        searchField.placeholderString = L10n.t(.findPlaceholder)
-        replaceField.placeholderString = L10n.t(.replacePlaceholder)
-        regexToggle.toolTip = L10n.t(.findRegexTooltip)
-        caseToggle.toolTip = L10n.t(.findCaseTooltip)
-        prevButton.toolTip = L10n.t(.findPrevTooltip)
-        nextButton.toolTip = L10n.t(.findNextTooltip)
-        replaceButton.title = L10n.t(.replacePlaceholder)
-        replaceButton.toolTip = L10n.t(.findReplaceTooltip)
-        replaceAllButton.title = L10n.t(.findReplaceAll)
-        replaceAllButton.toolTip = L10n.t(.findReplaceAllTooltip)
-        closeButton.title = L10n.t(.findDone)
-        closeButton.toolTip = L10n.t(.findDoneTooltip)
+        applyStrings()
         updateCount()
     }
 
@@ -291,6 +406,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     // MARK: - Actions
 
     @objc private func optionChanged() { recomputeMatches(moveToFirst: true) }
+    @objc private func disclosureToggled() { setReplaceShown(disclosureButton.state == .on) }
     @objc private func findNextTapped() { findNext() }
     @objc private func findPreviousTapped() { findPrevious() }
     @objc private func closeTapped() { hide() }
@@ -307,12 +423,14 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     public func control(_ control: NSControl,
                         textView: NSTextView,
                         doCommandBy commandSelector: Selector) -> Bool {
-        guard control === searchField else { return false }
+        // Esc closes the bar from either field (in the replace field it used
+        // to fall through to AppKit's completion list). Return is the search
+        // field's alone: in the replace field it keeps AppKit's default.
         switch commandSelector {
-        case #selector(NSResponder.insertNewline(_:)):
+        case #selector(NSResponder.insertNewline(_:)) where control === searchField:
             findNext()
             return true
-        case #selector(NSResponder.cancelOperation(_:)):
+        case #selector(NSResponder.cancelOperation(_:)) where control === searchField || control === replaceField:
             hide()
             return true
         default:
@@ -424,8 +542,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
                 textView.didChangeText()
             }
             recomputeMatches(moveToFirst: false)
-            countLabel.textColor = .secondaryLabelColor
-            countLabel.stringValue = L10n.t(.findReplacedCount, replacedCount)
+            setStatus(L10n.t(.findReplacedCount, replacedCount))
         }
     }
 
@@ -449,25 +566,41 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     // MARK: - Count / error display
 
     private func updateCount() {
-        countLabel.textColor = .secondaryLabelColor
         if searchField.stringValue.isEmpty {
-            countLabel.stringValue = ""
+            setStatus("")
         } else if matches.isEmpty {
-            countLabel.stringValue = L10n.t(.findNoResults)
+            setStatus(L10n.t(.findNoResults))
         } else if matches.indices.contains(currentIndex) {
             let line = lineIndex.lineNumber(forOffset: matches[currentIndex].location)
-            countLabel.stringValue = L10n.t(.findMatchPosition, currentIndex + 1, matches.count, line)
+            setStatus(L10n.t(.findMatchPosition, currentIndex + 1, matches.count),
+                      tooltip: L10n.t(.findMatchLineTooltip, line))
         } else {
-            countLabel.stringValue = L10n.t(.findFoundCount, matches.count)
+            setStatus(L10n.t(.findFoundCount, matches.count))
         }
     }
 
     private func showError(_ message: String) {
-        countLabel.textColor = .systemRed
-        countLabel.stringValue = message
+        setStatus(message, color: .systemRed)
+    }
+
+    /// The slot can truncate, so its tooltip always carries the full text —
+    /// except for a match position, whose tooltip is the match's line.
+    private func setStatus(_ text: String, tooltip: String? = nil,
+                           color: NSColor = .secondaryLabelColor) {
+        countLabel.textColor = color
+        countLabel.stringValue = text
+        countLabel.toolTip = tooltip ?? (text.isEmpty ? nil : text)
     }
 
     // MARK: - Helpers
+
+    /// True while the replace field (via its field editor) or one of the
+    /// replace row's buttons is the window's first responder.
+    private func replaceRowHasFocus() -> Bool {
+        guard let responder = barView.window?.firstResponder else { return false }
+        if let editor = responder as? NSText, (editor.delegate as AnyObject?) === replaceField { return true }
+        return (responder as? NSView)?.isDescendant(of: replaceRow) ?? false
+    }
 
     private func selectedEditorText() -> String? {
         guard let textView else { return nil }

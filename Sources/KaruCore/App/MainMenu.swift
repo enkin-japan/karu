@@ -79,6 +79,12 @@ enum MainMenu {
         findMenuItem.submenu = findMenu
         findMenu.addItem(withTitle: L10n.t(.menuFindEllipsis),
                          action: #selector(EditorWindowController.showFindBar(_:)), keyEquivalent: "f")
+        // Find and Replace… (⌥⌘F, the macOS convention): the same bar with its
+        // replace row expanded.
+        let findAndReplace = findMenu.addItem(withTitle: L10n.t(.menuFindAndReplace),
+                                              action: #selector(EditorWindowController.showFindAndReplace(_:)),
+                                              keyEquivalent: "f")
+        findAndReplace.keyEquivalentModifierMask = [.command, .option]
         findMenu.addItem(withTitle: L10n.t(.menuFindNext),
                          action: #selector(EditorWindowController.findNext(_:)), keyEquivalent: "g")
         let findPrev = findMenu.addItem(withTitle: L10n.t(.menuFindPrevious),

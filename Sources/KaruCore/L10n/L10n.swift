@@ -74,7 +74,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     // Edit menu.
     case menuEdit, menuUndo, menuRedo, menuCut, menuCopy, menuPaste, menuSelectAll
     // Find submenu.
-    case menuFind, menuFindEllipsis, menuFindNext, menuFindPrevious, menuUseSelectionForFind
+    case menuFind, menuFindEllipsis, menuFindAndReplace, menuFindNext, menuFindPrevious, menuUseSelectionForFind
     // Jump-to-symbol navigator.
     case menuJumpToSymbol, symbolFilterPlaceholder, symbolNone
     // Workspace symbols navigator (M17 T17.14, ⌘T): search the project
@@ -124,7 +124,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case findPrevTooltip, findNextTooltip
     case findReplaceTooltip, findReplaceAll, findReplaceAllTooltip
     case findDone, findDoneTooltip
-    case findNoResults, findReplacedCount, findFoundCount, findMatchPosition
+    case findNoResults, findReplacedCount, findFoundCount, findMatchPosition, findMatchLineTooltip
+    case findShowReplace, findHideReplace
     // Alerts / editor chrome.
     case formatFailedTitle, formatErrorLine
     case closeConfirmMessage, closeConfirmInfo

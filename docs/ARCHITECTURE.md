@@ -127,7 +127,7 @@ Sources/
     Editor/             EditorTextView（粘贴拦截、Tab/自动缩进）、EditorWindowController
     Gutter/             行号 + 折叠箭头 + 缩进彩虹绘制（RulerView）
     Highlight/          HighlightEngine（viewport 调度）、LanguageDefinition 协议、Languages/ 各语言定义
-    Search/             正则搜索替换栏（NSRegularExpression）
+    Search/             正则搜索替换栏（NSRegularExpression；搜索行常显，替换行按需展开：⌘F 查找，⌥⌘F 查找与替换）
     Completion/         关键字表、文档分词索引、补全弹窗
     Inference/          内置类型表（TypeTableStore，mmap 懒加载）与 TypeExpr 类型表达式解析（M17 T17.10 起）
     Workspace/          项目文件夹与跨文件符号索引（WorkspaceIndex，SQLite，后台队列 + FSEvents；M17 T17.12 起）

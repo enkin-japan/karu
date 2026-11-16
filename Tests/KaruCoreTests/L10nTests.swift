@@ -53,7 +53,8 @@ import Testing
 
 @Test func formatSubstitutesIntegerArguments() {
     #expect(L10n.string(.statusLnCol, language: .en, 4, 9) == "Ln 4, Col 9")
-    #expect(L10n.string(.findMatchPosition, language: .en, 3, 17, 42) == "3/17 · L42")
+    #expect(L10n.string(.findMatchPosition, language: .en, 3, 17) == "3 / 17")
+    #expect(L10n.string(.findMatchLineTooltip, language: .en, 42) == "Line 42")
 }
 
 @Test func formatSubstitutesStringArguments() {

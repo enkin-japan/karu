@@ -76,7 +76,7 @@ final class ShortcutSettings {
     var commands: [ShortcutCommand] {
         if let cachedCommands { return cachedCommands }
         let sharedActions: Set<String> = ["newDocument:", "openDocument:", "performClose:", "saveDocument:",
-            "showFindBar:", "undo:", "redo:", "cut:", "copy:", "paste:", "selectAll:",
+            "showFindBar:", "showFindAndReplace:", "undo:", "redo:", "cut:", "copy:", "paste:", "selectAll:",
             "showPreferences:", "hide:", "terminate:", "zoomIn:", "zoomOut:", "actualSize:",
             "orderFrontStandardAboutPanel:", "checkForUpdates:"]
         func collect(_ menu: NSMenu, parent: String) -> [ShortcutCommand] {

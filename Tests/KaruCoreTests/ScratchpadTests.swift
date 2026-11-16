@@ -283,27 +283,44 @@ private func makeFindBar(compact: Bool) -> FindBarController {
 }
 
 @MainActor
-@Test func compactFindBarIsFarNarrowerThanTheSingleRowOne() {
-    let single = makeFindBar(compact: false).barView.fittingSize
-    let compact = makeFindBar(compact: true).barView.fittingSize
-    // Two rows: much narrower, and correspondingly taller.
-    #expect(compact.width < single.width * 0.75)
-    #expect(compact.height > single.height)
+@Test func bothHostsShareTheSearchRowPlusReplaceRowStructure() {
+    // One structure for both hosts: compact only lowers minimum widths, so the
+    // two bars are equally tall in each state and the compact one is narrower.
+    let wide = makeFindBar(compact: false)
+    let compact = makeFindBar(compact: true)
+    #expect(compact.barView.fittingSize.width < wide.barView.fittingSize.width)
+    #expect(compact.barView.fittingSize.height == wide.barView.fittingSize.height)
+    let collapsedHeight = compact.barView.fittingSize.height
+    wide.setReplaceShown(true)
+    compact.setReplaceShown(true)
+    #expect(compact.barView.fittingSize.height == wide.barView.fittingSize.height)
+    #expect(compact.barView.fittingSize.height > collapsedHeight)
 }
 
 @MainActor
 @Test func compactFindBarFitsThePadsMinimumWidth() {
     // The pad's `contentMinSize` is max(340, this) — the bar must not push that
-    // minimum up, or a "narrow pad" is impossible again (the T15.4 accident).
-    #expect(makeFindBar(compact: true).barView.fittingSize.width <= 340)
+    // minimum up, or a "narrow pad" is impossible again (the T15.4 accident),
+    // in either state.
+    let bar = makeFindBar(compact: true)
+    #expect(bar.barView.fittingSize.width <= 340)
+    bar.setReplaceShown(true)
+    #expect(bar.barView.fittingSize.width <= 340)
+    #expect(bar.minimumWidth <= 340)
 }
 
 @MainActor
-@Test func singleRowFindBarKeepsItsEditorWidth() {
-    // Guards the editor against this change: one row, ~660 pt of controls.
-    let bar = makeFindBar(compact: false).barView
-    #expect(bar.fittingSize.width > 500)
-    #expect(bar.fittingSize.height < 50)
+@Test func editorFindBarIsOneRowUntilExpanded() {
+    // Guards the editor: collapsed it is a single row of controls, expanded it
+    // grows by exactly the replace row, and it still stays far below the old
+    // ~660 pt single-row minimum.
+    let bar = makeFindBar(compact: false)
+    let collapsed = bar.barView.fittingSize
+    #expect(collapsed.height < 50)
+    #expect(collapsed.width < 500)
+    bar.setReplaceShown(true)
+    #expect(bar.barView.fittingSize.height > collapsed.height + 20)
+    #expect(bar.barView.fittingSize.height < 80)
 }
 
 @MainActor
@@ -320,7 +337,7 @@ private func makeFindBar(compact: Bool) -> FindBarController {
 
 @MainActor
 @Test func findBarClosingRoutesThroughHideAndNotifies() {
-    // Esc in the search field and the Done button both call `hide()`, so the
+    // Esc in the search field and the close button both call `hide()`, so the
     // scratchpad's text always gets its top edge back.
     let bar = makeFindBar(compact: true)
     bar.show()

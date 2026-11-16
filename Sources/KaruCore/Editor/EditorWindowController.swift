@@ -983,6 +983,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         findBar.show()
     }
 
+    /// Find and Replace… (⌥⌘F): the find bar with its replace row expanded.
+    @objc public func showFindAndReplace(_ sender: Any?) {
+        findBar.showReplace()
+    }
+
     @objc public func findNext(_ sender: Any?) {
         if !findBar.isShown { findBar.show() }
         findBar.findNext()
@@ -1071,6 +1076,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// The navigator and the editor text view (tests).
     var workspaceSymbolNavigatorForTesting: WorkspaceSymbolNavigator? { workspaceSymbolNavigator }
     var textViewForTesting: NSTextView { textView }
+    var findBarForTesting: FindBarController { findBar }
 
     /// Opens `symbol`'s file (this window when it is this document) and
     /// selects its name.

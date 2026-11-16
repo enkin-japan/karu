@@ -258,8 +258,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         scrollView.rulersVisible = true
         gutterView = gutter
 
-        // Two rows, not one (T15.5): a single-row bar cannot show its buttons in
-        // a pad-sized window, whatever the layout does with it.
+        // Compact (T15.5): the same search row + optional replace row as the
+        // editor's bar, with lower minimum widths so it fits a pad-sized window.
         let findBar = FindBarController(textView: textView, lineIndex: lineIndex, compact: true)
         self.findBar = findBar
 
@@ -310,9 +310,10 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         findBar.onVisibilityChanged = applyBarVisibility
 
         panel.contentView = container
-        // Wide enough for the compact bar's own controls, measured rather than
-        // guessed: below this the buttons would be clipped by `clipsToBounds`.
-        panel.contentMinSize = NSSize(width: max(340, ceil(findBar.barView.fittingSize.width)),
+        // Wide enough for the compact bar's own controls in both of its states
+        // (collapsed and with the replace row), measured rather than guessed:
+        // below this the buttons would be clipped by `clipsToBounds`.
+        panel.contentMinSize = NSSize(width: max(340, findBar.minimumWidth),
                                       height: 160)
 
         // The to-do toggle and the pin ride in the (standard) title bar's
@@ -480,6 +481,11 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         findBar?.show()
     }
 
+    /// ⌥⌘F in the pad: the find bar with its replace row expanded.
+    func showFindAndReplace() {
+        findBar?.showReplace()
+    }
+
     /// Esc, in layers: it closes the find bar first and only hides the pad on a
     /// second press. (Esc *inside* the search field is the find bar's own
     /// business and never reaches here.)
@@ -624,6 +630,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// hook exists to prove.
     var diagnosticPanel: NSPanel? { panel }
     var diagnosticTextView: NSTextView? { textView }
+    var diagnosticFindBar: FindBarController? { findBar }
 
     // MARK: - Window delegate
 
@@ -644,7 +651,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
 
 /// The pad's text view. Adds a handful of behaviours to a plain `NSTextView`:
 /// Esc closes the find bar or hides the panel, ⌘S graduates the text into a
-/// file, ⌘F opens find / replace, the zoom keys resize the pad alone, and
+/// file, ⌘F opens find (⌥⌘F with the replace row), the zoom keys resize the pad alone, and
 /// (T15.6) ⇧⌘L marks lines as to-dos while ⇧⌘U ticks them off, ⏎ continues a
 /// list, a click on a check box ticks it and ⌘-click opens a URL.
 private final class ScratchpadTextView: NSTextView {
@@ -717,6 +724,7 @@ private final class ScratchpadTextView: NSTextView {
                 switch command.action {
                 case "saveDocument:": self.controller?.graduate()
                 case "showFindBar:": self.controller?.showFindBar()
+                case "showFindAndReplace:": self.controller?.showFindAndReplace()
                 case "zoomIn:": self.controller?.zoom(.zoomIn)
                 case "zoomOut:": self.controller?.zoom(.zoomOut)
                 case "actualSize:": self.controller?.zoom(.actualSize)
