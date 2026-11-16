@@ -7,6 +7,32 @@
 > 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败。区分自动化通过、待用户实测与已发布；
 > 历史失败次数升级链不用于当前 Codex 流程，失败应报告证据，由主会话决定下一步。
 
+## v0.13.0 / build 27 发布（2026-11-16）
+
+- 用户明确指令「推送发布」。负责：main。状态：✅ 已发布、线上更新验证通过、正式版已安装本机。
+- 内容：M17（高亮重写、补全与类型推断、项目文件夹与跨文件索引、导入解析）与界面美化提案各项（标题统一、标签式设置窗口、
+  保存失败提示条、运行工具页、状态栏、项目文件夹表格、运行输出头部、查找栏渐进展开与 ⌥⌘F、取消工具栏缩进按钮、新图标、
+  草稿本补同步、工具栏左侧缩小）。源码 `e4f1e86`，版本提交与标签 `v0.13.0` → `7050030`（仅 bundle-macos.sh 版本号
+  0.12.0/26 → 0.13.0/27），主分支与标签已推送。工具链清单保持 M16 当日实测版本，未更新（距 v0.12.0 仅四天）。
+- 发布前验证（macOS 27.2 26B123、Swift 6.4.2）：不并行全量 1690 tests / 199 suites 通过（121 s）；并行全量当晚跑了四次，
+  每次各有一条不同的计时用例在负载下超时（工具链等待两次、其中一次触发 `ToolchainManagerTests.swift:265` 强制解包崩溃，
+  `AnalysisSchedulerTests` 一次），工具链套件单独跑 61 项通过，与实施记录备注里的既有问题相同；visual-smoke VISUAL OK、
+  FOLD GEOMETRY OK；mem-benchmark 24.0 / 45.4 / 78.3 MB（空文档、约 1 MB JSON、约 10 MB Python），无 SKIPPED，
+  全部低于 99 MB 上限；10 MB 一项高于 50–60 MB 的目标区间，属 M17 已知读数。推断样本参考轮 37.8 / 38.3 MB。
+- 临时副本 Developer ID 签名与可信时间戳检查通过；公证请求 `827dd7fb-338a-4668-836a-b8d9b58c3653` Accepted，
+  装订与验证通过，App 的 Gatekeeper 结果为 `Notarized Developer ID`。DMG 只签名、不单独公证（脚本一贯如此，
+  `spctl --type open` 对 DMG 本身报 `Unnotarized Developer ID`，包内 App 带票据）。
+- 产物：Karu.app 13 MB（0.13.0 / 27，deep/strict、stapler 通过）；Karu.zip 5030141 bytes（解包后版本与票据通过）；
+  Karu.dmg 5492712 bytes；包内无密钥类文件。Sparkle EdDSA 签名用 `sign_update --verify` 验证通过，appcast 的版本、
+  build、下载地址与长度同本轮 ZIP 一致。SHA256：zip `aa6cc6087115fff1c014469cb0fefc984cfc8709a2255429325efc5298863e65`、
+  dmg `0477a6eead79dbfcad2a03c4db8315010db056f69b5911c1a7cff696a9ea4377`、
+  appcast `7a94f4a341325a87157c23fdd3b905ff2eda088d33511b5e302ad010a2f93428`。
+- GitHub Release：三语发布说明，直接公开并成为 latest：https://github.com/enkin-japan/karu/releases/tag/v0.13.0 。
+  从公开地址下载 `latest/download/appcast.xml`、`Karu.dmg` 与 `v0.13.0/Karu.zip`，SHA256 与本地逐一一致，
+  线上 appcast 解析为 0.13.0 / 27，线上 ZIP 的更新签名验证通过。
+- 正式版安装：退出旧实例后替换 `/Applications/Karu.app` 并启动，进程路径为安装位置，版本 0.13.0 / 27，
+  Gatekeeper `Notarized Developer ID`。未做：从 v0.12.0 经 App 内「检查更新」实际升级一次。
+
 ## v0.12.0 / build 26 发布（2026-11-12）
 
 - 用户明确指令“发布”。负责：main。状态：✅ 已发布、线上更新验证通过、正式版已安装本机。
