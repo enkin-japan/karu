@@ -35,6 +35,9 @@ fi
 mkdir -p "$APP_DIR/Contents/Frameworks"
 cp -R "$SPARKLE_FW" "$APP_DIR/Contents/Frameworks/"
 
+# LSEnvironment MallocSpaceEfficient=1（M17 收尾评估，docs/M17-QUALITY-REPORT.md 第 11 节）：
+# 让分配器把空闲页标成可回收，常驻内存降 8–50 MB；只在经 LaunchServices 启动时生效
+# （Finder / Dock / open -a / Sparkle 重启），运行功能的子进程会滤掉（RunPlanBuilder.appOnlyEnvironment）。
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -101,6 +104,11 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<true/>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<key>LSEnvironment</key>
+	<dict>
+		<key>MallocSpaceEfficient</key>
+		<string>1</string>
+	</dict>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSPrincipalClass</key>

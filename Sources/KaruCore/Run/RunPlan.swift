@@ -46,9 +46,10 @@ public struct RunPlan: Equatable, Sendable {
 ///
 /// - The buffer snapshot is what runs — never the on-disk file; nothing is saved.
 /// - Working directory: the saved document's parent directory, else the temp dir.
-/// - Environment: the app's environment minus `KARU_*`, PATH = tool search
-///   path (managed bin first when managed), plus fixed variables and the
-///   managed provider's overrides.
+/// - Environment: the app's environment minus `KARU_*` and the app-only
+///   variables in `appOnlyEnvironment`, PATH = tool search path (managed bin
+///   first when managed), plus fixed variables and the managed provider's
+///   overrides.
 public struct RunPlanBuilder: Sendable {
     public var workspaceRoot: URL
     public var baseEnvironment: [String: String]
@@ -58,6 +59,11 @@ public struct RunPlanBuilder: Sendable {
         self.workspaceRoot = workspaceRoot
         self.baseEnvironment = baseEnvironment
     }
+
+    /// Variables Karu's own launch environment sets for Karu alone (Info.plist
+    /// `LSEnvironment`, see scripts/bundle-macos.sh); never passed to the
+    /// user's programs.
+    public static let appOnlyEnvironment: Set<String> = ["MallocSpaceEfficient"]
 
     /// Variables always set for a run.
     public static let fixedEnvironment: [String: String] = [
@@ -166,7 +172,7 @@ public struct RunPlanBuilder: Sendable {
     }
 
     public static func environment(base: [String: String], tool: ResolvedTool) -> [String: String] {
-        var env = base.filter { !$0.key.hasPrefix("KARU_") }
+        var env = base.filter { !$0.key.hasPrefix("KARU_") && !appOnlyEnvironment.contains($0.key) }
         env["PATH"] = tool.searchPath
         for (key, value) in fixedEnvironment { env[key] = value }
         // GUI apps often start without a locale; give children a UTF-8 one so

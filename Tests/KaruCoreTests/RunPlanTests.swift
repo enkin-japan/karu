@@ -162,6 +162,17 @@ struct RunPlanBuilderTests {
         let withCtype = RunPlanBuilder.environment(base: ["LC_CTYPE": "UTF-8"], tool: tool("/x"))
         #expect(withCtype["LANG"] == nil)
     }
+
+    @Test func environmentDropsKaruAndAppOnlyVariables() {
+        let env = RunPlanBuilder.environment(
+            base: ["HOME": "/h", "KARU_DIAGNOSTIC_DIRECTORY": "/d", "MallocSpaceEfficient": "1",
+                   "MallocNanoZone": "0"],
+            tool: tool("/x"))
+        #expect(env["HOME"] == "/h")
+        #expect(env["KARU_DIAGNOSTIC_DIRECTORY"] == nil)
+        #expect(env["MallocSpaceEfficient"] == nil) // Karu's LSEnvironment only
+        #expect(env["MallocNanoZone"] == "0") // other variables pass through
+    }
 }
 
 @Suite("Run workspace", .serialized)

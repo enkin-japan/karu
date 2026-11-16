@@ -119,6 +119,11 @@
   用于主线程阻塞、内存暂时不动而会被提前取值的构建（v0.12.0 打开 10 MB 时 1.2 s 取到台阶前的 63 MB），
   例如对照 v0.12.0 的 10 MB 场景设 `KARU_BENCH_MIN_WAIT_SECONDS=8`。
   A/B 对照应交替运行 2–3 轮并记录负载（`uptime`）。
+- 分配器模式（2026-11-16 起）：打包后的 App 由 Info.plist 的 `LSEnvironment` 带 `MallocSpaceEfficient=1` 启动（经 LaunchServices 才生效），
+  空闲页被标成可回收，读数比不设时低 8–50 MB（质量报告第 11 节）。`mem-benchmark.sh` 默认同样设置；
+  `KARU_BENCH_MALLOC_SPACE_EFFICIENT=0` 关闭，用于和 2026-11-15 及以前的记录对比。其他直接执行二进制的测量
+  （`memsample.py`、冷启动工具、验收套件的测试进程）要自己设置，否则测到的是另一种分配器模式。
+  「运行」功能启动的用户程序不继承该变量（`RunPlanBuilder.appOnlyEnvironment`）。
 - 与 `/Applications/Karu.app` 的已发布二进制做 A/B 时注意（T17.15b）：它用 `dev.enkin.TinyEditor` 偏好域，会读用户自己的窗口尺寸与字号，
   诊断目录不隔离这些；裸二进制 `.build/release/KaruApp` 用 `KaruApp` 域（800×600、默认字号）。把已发布二进制拷出包外运行会因签名失效被 SIGKILL。
   需要同口径时给候选在命令行参数域传同样的值（如 `-editor.fontSize 18 "-NSWindow Frame EditorWindow" "<基线的窗口串>"`，不写偏好域；

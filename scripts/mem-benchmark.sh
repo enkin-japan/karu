@@ -28,6 +28,17 @@ else
     swift build -c release
 fi
 
+# 打包后的 App 经 Info.plist 的 LSEnvironment 带 MallocSpaceEfficient=1 启动（bundle-macos.sh），
+# 直接执行二进制拿不到，这里显式设置，读数才与用户实际运行的 App 一致。
+# KARU_BENCH_MALLOC_SPACE_EFFICIENT=0 关闭（对照 2026-11-15 之前的读数口径）。
+if [[ "${KARU_BENCH_MALLOC_SPACE_EFFICIENT:-1}" == "1" ]]; then
+    export MallocSpaceEfficient=1
+    echo "MallocSpaceEfficient=1（与打包后的 App 相同；KARU_BENCH_MALLOC_SPACE_EFFICIENT=0 关闭）"
+else
+    unset MallocSpaceEfficient
+    echo "MallocSpaceEfficient 未设置（KARU_BENCH_MALLOC_SPACE_EFFICIENT=0）"
+fi
+
 if [[ ! -x "$APP_BIN" ]]; then
     echo "ERROR: $APP_BIN not found or not executable after build" >&2
     exit 1

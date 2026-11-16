@@ -1362,6 +1362,13 @@ LSP 与任何外部语言服务进程不做；类型推断、导入解析、项�
   - **采用需要**（待用户决定）：`bundle-macos.sh` 的 Info.plist 加 `LSEnvironment`（main 亲自改）；`RunPlan.environment` 一并滤掉该变量，
     否则「运行」启动的用户程序会继承；`mem-benchmark.sh` 等直接执行二进制的基准要显式设置它，读数才与用户的 App 一致。
   - **附带发现**（与该变量无关，待查）：5 MB 单行 JSON 关窗后 malloc 在用量仍 +150 MB，两种模式相同。
+- `MallocSpaceEfficient=1` 采用（用户决定，main 实施，2026-11-16）：
+  - `scripts/bundle-macos.sh`：Info.plist 加 `LSEnvironment { MallocSpaceEfficient = 1 }`；bundle ID 与版本号不变。
+  - `RunPlanBuilder.appOnlyEnvironment`：「运行」功能的子进程环境滤掉该变量（与 `KARU_*` 同处），新增 `environmentDropsKaruAndAppOnlyVariables` 测试。
+  - `scripts/mem-benchmark.sh` 默认设置该变量（`KARU_BENCH_MALLOC_SPACE_EFFICIENT=0` 关闭，对照旧记录）；ARCHITECTURE 预算口径与 DEVELOPMENT 测量说明已同步。
+  - 验证：Run 相关 65 个测试通过；`bundle-macos.sh` 打包、`codesign --verify --strict --deep` 通过；按安装流程正常退出后替换 `/Applications/Karu.app`，
+    从 LaunchServices 启动的进程环境含 `MallocSpaceEfficient=1`，恢复会话后 footprint 24 MB。未发布。
+  - 影响：此前判「超 99 MB 但通过」的两项压力（10 MB 多样名字、两个 10 MB 窗口）在该模式下为 68.5 / 101.5 MB；5 MB 单行 JSON 仍超（215–219 MB）。
 
 ## M16 代码执行、工具链管理与语言列表（2026-11-12 立项）
 

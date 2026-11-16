@@ -603,7 +603,7 @@ typeshed 的 `footprint` 分类：Malloc Small 脏页 18 → 26 MB（+8 MB），
 
 代价集中在分配密集的后台工作：建索引慢 4–7%（空闲页被归还后再用要重新缺页、多了 `madvise` 调用）。
 
-### 11.5 采用方式与注意事项（待用户决定）
+### 11.5 采用方式与注意事项（2026-11-16 用户决定采用，已按下列三处落地）
 
 - **只能从启动环境设**，App 运行中无法切换。打包时在 `scripts/bundle-macos.sh` 生成的 Info.plist 加
   `LSEnvironment = { MallocSpaceEfficient = "1" }`（main 亲自改）。用探针 App 确认：经 LaunchServices 启动的进程能读到该变量。
