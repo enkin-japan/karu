@@ -655,22 +655,26 @@ struct ProjectFolderSettingsTests {
         controller.addFolderClicked(nil)
         #expect(index.folderPaths == [f.path])
         #expect(controller.rows.count == 1)
-        #expect(controller.rows[0].pathLabel.stringValue.contains("project"))
+        #expect(controller.rows[0].name == "project")
+        #expect(controller.rows[0].displayPath.hasSuffix("project"))
+        #expect(controller.table.numberOfRows == 1)
         #expect(await settle(index))
         controller.reload()
-        #expect(controller.rows[0].filesLabel.stringValue == "1")
-        // Reloads replace the rows' views instead of stacking them (T17.15c:
+        #expect(controller.rows[0].filesText == "1")
+        // Reloads replace the rows' content instead of stacking it (T17.15c:
         // stale labels kept drawing under the new ones).
         controller.reload()
-        let gridViews = Set(controller.grid.subviews.map(ObjectIdentifier.init))
-        #expect(gridViews.contains(ObjectIdentifier(controller.rows[0].filesLabel)))
-        #expect(controller.grid.subviews.filter { ($0 as? NSTextField)?.stringValue == "1" }.count == 1)
-        #expect(controller.grid.subviews.count == 4 + 6)
-        #expect(controller.rows[0].statusLabel.stringValue == L10n.t(.projectFolderStateUpToDate))
+        #expect(controller.table.numberOfRows == 1)
+        let files = controller.cellView(row: 0, column: ProjectFoldersPreferencesController.Column.files.identifier)
+        #expect((files as? NSTableCellView)?.textField?.stringValue == "1")
+        let shown = controller.table.view(atColumn: 1, row: 0, makeIfNecessary: true) as? NSTableCellView
+        #expect(shown?.textField?.stringValue == "1")
+        #expect(shown?.subviews.count == 1)
+        #expect(controller.rows[0].statusText == L10n.t(.projectFolderStateUpToDate))
         #expect(controller.limitNotice.isHidden)
         // The window is never narrower than the help text wraps (T17.15c:
         // Chinese clipped it at the right edge).
-        #expect((controller.window?.contentView?.frame.width ?? 0) >= 640)
+        #expect(controller.window?.contentView?.frame.width == ProjectFoldersPreferencesController.sheetWidth)
 
         // Cancelled panel: nothing changes.
         chosen = nil
@@ -686,6 +690,7 @@ struct ProjectFolderSettingsTests {
         await controller.removeFolder(at: 0)
         #expect(index.folderPaths.isEmpty)
         #expect(controller.rows.isEmpty && !controller.emptyLabel.isHidden)
+        #expect(controller.table.numberOfRows == 0 && controller.scrollView.isHidden)
         #expect(!FileManager.default.fileExists(atPath: url.path))
         controller.close()
     }
@@ -698,7 +703,8 @@ struct ProjectFolderSettingsTests {
         index.addFolder(f.folder)
         #expect(await settle(index))
         let controller = ProjectFoldersPreferencesController(index: index, center: f.center) { $0(nil) }
-        #expect(controller.rows.first?.statusLabel.stringValue == L10n.t(.projectFolderStateOverLimit))
+        #expect(controller.rows.first?.statusText == L10n.t(.projectFolderStateOverLimit))
+        #expect(controller.rows.first?.isWarning == true)
         #expect(!controller.limitNotice.isHidden)
         #expect(controller.limitNotice.stringValue.contains("2"))
         controller.close()
