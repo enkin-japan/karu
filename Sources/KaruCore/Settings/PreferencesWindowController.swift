@@ -1,18 +1,41 @@
 import AppKit
-import UniformTypeIdentifiers
 
-/// Single preferences window with two groups:
-///
-/// 1. **Modules** — on/off checkboxes for the toggleable feature modules
-///    (`highlight` / `completion` / `format`), written through `ModuleSettings`.
-///    The existing change-notification mechanism lets the engines attach / tear
-///    down their runtime state live, so no extra wiring is needed here.
-/// 2. **Editor** — per-language indent width, "Insert spaces for Tab", the
-///    indent-rainbow toggle, and the editor font size.
-///
-/// All changes persist immediately through `UserDefaults`. Settings that affect
-/// already-open windows (indent rainbow, indent width, font size) are pushed to
-/// every live `EditorTextView` so the effect is visible without reopening.
+/// The pages of the Settings window, in toolbar order.
+enum SettingsPageID: String, CaseIterable {
+    case general, editing, code, run, scratchpad, shortcuts
+
+    var title: String {
+        switch self {
+        case .general: return L10n.t(.settingsTabGeneral)
+        case .editing: return L10n.t(.settingsTabEditing)
+        case .code: return L10n.t(.settingsTabCode)
+        case .run: return L10n.t(.settingsTabRun)
+        case .scratchpad: return L10n.t(.scratchpadTitle)
+        case .shortcuts: return L10n.t(.settingsTabShortcuts)
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .general: return "gearshape"
+        case .editing: return "pencil"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        case .run: return "play"
+        case .scratchpad: return "note.text"
+        case .shortcuts: return "keyboard"
+        }
+    }
+
+    var toolbarIdentifier: NSToolbarItem.Identifier {
+        NSToolbarItem.Identifier("settings." + rawValue)
+    }
+
+    init?(toolbarIdentifier: NSToolbarItem.Identifier) {
+        guard let id = Self.allCases.first(where: { $0.toolbarIdentifier == toolbarIdentifier }) else { return nil }
+        self = id
+    }
+}
+
 /// The settings window itself: closes on Esc (checkboxes / steppers / popups
 /// never consume that key, so it always reaches the window's `keyDown`).
 private final class PreferencesWindow: NSWindow {
@@ -25,751 +48,239 @@ private final class PreferencesWindow: NSWindow {
     }
 }
 
-public final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
+/// Settings: one preference-style window whose toolbar switches between pages
+/// (General, Editing, Code, Run, Scratchpad, Shortcuts). Pages are built on
+/// first selection and cached until the window closes; the window resizes to
+/// each page's fitting size, keeping its top edge and horizontal centre.
+///
+/// All changes persist immediately through `UserDefaults`; each page writes its
+/// own settings and pushes live changes to open editors.
+public final class PreferencesWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
 
-    // Module toggles, ordered to match `FeatureModule.allCases`.
-    private var moduleButtons: [NSButton] = []
+    /// The page shown last, remembered for the app session only.
+    static var lastSelected: SettingsPageID = .general
 
-    // Editor controls.
-    private let languagePopup = NSPopUpButton()
-    private let indentStepper = NSStepper()
-    private let indentValueLabel = NSTextField(labelWithString: "")
-    private let usesSpacesButton = NSButton()
-    private let rainbowButton = NSButton()
-    private let autoCloseButton = NSButton()
-    private let autoSaveButton = NSButton()
-    private let fontStepper = NSStepper()
-    private let fontValueLabel = NSTextField(labelWithString: "")
+    /// Called from `windowWillClose`, after the current page was deactivated.
+    public var onClose: (() -> Void)?
 
-    // UI-language picker (System + the three app languages).
-    private let uiLanguagePopup = NSPopUpButton()
+    /// Builds a page on first selection. Tests inject stubs.
+    var makePage: (SettingsPageID) -> SettingsPage
 
-    // Scratchpad hot-key recorder (T15.1).
-    private let fileDefaultsButton = NSButton()
-    private let exportButton = NSButton()
-    private let importButton = NSButton()
-    private let settingsResult = NSTextField(labelWithString: "")
-    private var fileDefaultsController: DefaultApplicationPreferencesController?
-    private let shortcutsButton = NSButton()
-    private var shortcutsController: ShortcutPreferencesController?
-    private let languageListButton = NSButton()
-    private var languageListController: LanguageListPreferencesController?
-    private let runSettingsButton = NSButton()
-    private var runSettingsController: RunPreferencesController?
-    private let projectFoldersButton = NSButton()
-    private var projectFoldersController: ProjectFoldersPreferencesController?
-    private let hotkeyButton = NSButton()
-    private let hotkeyResetButton = NSButton()
-
-    // Scratchpad font size (T15.3) — its own setting, not the editor's.
-    private let scratchpadFontStepper = NSStepper()
-    private let scratchpadFontValueLabel = NSTextField(labelWithString: "")
-
-    /// The local key monitor installed while recording, or `nil`. Removing it is
-    /// mandatory on *every* exit from the recording state (captured, cancelled,
-    /// window closed) — a leaked monitor would swallow keystrokes app-wide.
-    private var hotkeyMonitor: Any?
-
-    // Text labels re-pulled on a live language switch.
-    private let modulesHeader = NSTextField(labelWithString: "")
-    private let editorHeader = NSTextField(labelWithString: "")
-    private let indentRowLabel = NSTextField(labelWithString: "")
-    private let fontRowLabel = NSTextField(labelWithString: "")
-    private let uiLanguageRowLabel = NSTextField(labelWithString: "")
-    private let hotkeyRowLabel = NSTextField(labelWithString: "")
-    private let scratchpadFontRowLabel = NSTextField(labelWithString: "")
-
-    /// Languages offered in the indent-width popup (identifiers match those the
-    /// highlighter resolves and `IndentSettings` keys on).
-    private static let languages: [(id: String, title: String)] = [
-        ("markdown", "Markdown"),
-        ("json", "JSON"),
-        ("jsonl", "JSONL"),
-        ("xml", "XML / plist"),
-        ("html", "HTML"),
-        ("css", "CSS"),
-        ("javascript", "JavaScript"),
-        ("typescript", "TypeScript"),
-        ("typescriptreact", "TypeScript JSX"),
-        ("python", "Python"),
-        ("c", "C"),
-        ("cpp", "C++"),
-        ("csharp", "C#"),
-        ("java", "Java"),
-        ("bash", "Bash"),
-        ("sql", "SQL"),
-    ]
+    private(set) var selectedPage: SettingsPageID
+    private var pages: [SettingsPageID: SettingsPage] = [:]
+    private let container = NSView()
 
     public convenience init() {
+        self.init(makePage: nil)
+    }
+
+    init(makePage: ((SettingsPageID) -> SettingsPage)?) {
+        self.makePage = makePage ?? Self.makeDefaultPage
+        selectedPage = Self.lastSelected
         let window = PreferencesWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 300),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = L10n.t(.prefTitle)
         window.isReleasedWhenClosed = false
-        window.center()
-        self.init(window: window)
-        // Only so a close can disarm the hot-key recorder (see windowWillClose);
-        // everything else about the window's behaviour stays AppKit's default.
+        window.toolbarStyle = .preference
+        window.contentView = container
+        super.init(window: window)
         window.delegate = self
-        buildUI()
-        loadState()
-        NotificationCenter.default.addObserver(self, selector: #selector(settingsImported), name: SettingsArchive.didImport, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(indentLanguagesChanged),
-                                               name: LanguageMenuSettings.didChangeNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(updateHotkeyButtonTitle),
-                                               name: HotKeyCenter.didChangeNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(languageDidChange),
-            name: L10n.didChangeNotification,
-            object: nil
-        )
-        // A View ▸ Zoom command changes the font size behind this window's back;
-        // refresh the stepper / label so the panel never shows a stale value.
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(fontSizeDidChangeExternally),
-            name: EditorFontSettings.didChangeNotification,
-            object: nil
-        )
-        // Same for the pad's own size, which ⌘+ / ⌘- inside the scratchpad changes.
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(scratchpadFontSizeDidChangeExternally),
-            name: ScratchpadStore.fontDidChangeNotification,
-            object: nil
-        )
+
+        let toolbar = NSToolbar(identifier: "KaruSettingsToolbar")
+        toolbar.delegate = self
+        toolbar.allowsUserCustomization = false
+        toolbar.autosavesConfiguration = false
+        toolbar.displayMode = .iconAndLabel
+        window.toolbar = toolbar
+
+        showPage(selectedPage)
+        window.center()
+
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(languageDidChange), name: L10n.didChangeNotification, object: nil)
+        center.addObserver(self, selector: #selector(settingsImported), name: SettingsArchive.didImport, object: nil)
     }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
-        // A local monitor outlives its installer, so it must never be left behind.
-        if let hotkeyMonitor {
-            NSEvent.removeMonitor(hotkeyMonitor)
-            NotificationCenter.default.post(name: HotKeyCenter.recordingDidChange, object: false)
+    }
+
+    static func makeDefaultPage(_ id: SettingsPageID) -> SettingsPage {
+        switch id {
+        case .general: return GeneralSettingsPage()
+        case .editing: return EditingSettingsPage()
+        case .code: return CodeSettingsPage()
+        case .run: return RunPreferencesController()
+        case .scratchpad: return ScratchpadSettingsPage()
+        case .shortcuts: return ShortcutPreferencesController()
         }
     }
 
-    // MARK: - UI construction
+    // MARK: - Pages
 
-    private func buildUI() {
-        // UI-language picker (System + three languages). Sits at the top with its
-        // own "Language:" row label — no section header (the window title already
-        // says Settings).
-        uiLanguagePopup.removeAllItems()
-        uiLanguagePopup.addItem(withTitle: L10n.t(.prefLanguageSystem))
-        for language in AppLanguage.allCases {
-            uiLanguagePopup.addItem(withTitle: language.displayName)
+    /// The page `id` if it was built (selected at least once since the window opened).
+    func loadedPage(_ id: SettingsPageID) -> SettingsPage? { pages[id] }
+
+    /// Shows page `id` (a no-op when it already shows).
+    func select(_ id: SettingsPageID) {
+        if id == selectedPage, let page = pages[id], page.view.superview === container { return }
+        showPage(id)
+    }
+
+    private func showPage(_ id: SettingsPageID) {
+        if let current = pages[selectedPage], current.view.superview === container {
+            current.pageWillDeactivate()
+            current.view.removeFromSuperview()
         }
-        uiLanguagePopup.target = self
-        uiLanguagePopup.action = #selector(uiLanguageChanged(_:))
-        uiLanguageRowLabel.stringValue = L10n.t(.prefLanguageLabel)
-        let languageRow = NSStackView(views: [uiLanguageRowLabel, uiLanguagePopup])
-        languageRow.orientation = .horizontal
-        languageRow.spacing = 8
-        languageRow.alignment = .centerY
+        let page = pages[id] ?? loadPage(id)
+        selectedPage = id
+        Self.lastSelected = id
+        window?.toolbar?.selectedItemIdentifier = id.toolbarIdentifier
+        window?.title = id.title
+        // Resize first (animated when visible), then install the new view, so
+        // the old page never stretches and the new one never squeezes.
+        fitWindow(to: page)
+        install(page.view)
+    }
 
-        styleSectionLabel(modulesHeader, text: L10n.t(.prefModules))
-        let moduleStack = NSStackView()
-        moduleStack.orientation = .vertical
-        moduleStack.alignment = .leading
-        moduleStack.spacing = 6
-        for module in FeatureModule.allCases {
-            let button = NSButton(checkboxWithTitle: module.displayName,
-                                  target: self,
-                                  action: #selector(moduleToggled(_:)))
-            button.tag = moduleButtons.count
-            moduleButtons.append(button)
-            moduleStack.addArrangedSubview(button)
+    private func loadPage(_ id: SettingsPageID) -> SettingsPage {
+        let page = makePage(id)
+        page.onContentSizeChange = { [weak self, weak page] in
+            guard let self, let page, self.pages[self.selectedPage] === page else { return }
+            self.fitWindow(to: page)
         }
+        pages[id] = page
+        return page
+    }
 
-        styleSectionLabel(editorHeader, text: L10n.t(.prefEditor))
-
-        // Indent width row: language popup + stepper + value.
-        rebuildIndentLanguagePopup()
-        languagePopup.target = self
-        languagePopup.action = #selector(languageChanged(_:))
-
-        indentStepper.minValue = 2
-        indentStepper.maxValue = 8
-        indentStepper.increment = 1
-        indentStepper.valueWraps = false
-        indentStepper.target = self
-        indentStepper.action = #selector(indentWidthChanged(_:))
-        indentValueLabel.alignment = .right
-        indentValueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        indentValueLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        indentRowLabel.stringValue = L10n.t(.prefIndentWidthLabel)
-        let indentRow = NSStackView(views: [
-            indentRowLabel,
-            languagePopup, indentStepper, indentValueLabel,
+    /// Pins `view` to the container's edges. Trailing / bottom sit below
+    /// required priority: the page's own required constraints decide its size
+    /// and `fitWindow` sizes the window to match, so a resize in flight never
+    /// fights the page's layout.
+    private func install(_ view: NSView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(view)
+        let trailing = view.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        let bottom = view.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        trailing.priority = .defaultHigh
+        bottom.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: container.topAnchor),
+            view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            trailing,
+            bottom,
         ])
-        indentRow.orientation = .horizontal
-        indentRow.spacing = 8
-        indentRow.alignment = .centerY
-
-        // Tab → spaces + indent rainbow checkboxes.
-        usesSpacesButton.setButtonType(.switch)
-        usesSpacesButton.title = L10n.t(.prefInsertSpaces)
-        usesSpacesButton.target = self
-        usesSpacesButton.action = #selector(usesSpacesToggled(_:))
-
-        rainbowButton.setButtonType(.switch)
-        rainbowButton.title = L10n.t(.prefIndentRainbow)
-        rainbowButton.target = self
-        rainbowButton.action = #selector(rainbowToggled(_:))
-
-        autoCloseButton.setButtonType(.switch)
-        autoCloseButton.title = L10n.t(.prefAutoClosePairs)
-        autoCloseButton.target = self
-        autoCloseButton.action = #selector(autoCloseToggled(_:))
-
-        autoSaveButton.setButtonType(.switch)
-        autoSaveButton.title = L10n.t(.prefAutoSaveOnFocusLoss)
-        autoSaveButton.target = self
-        autoSaveButton.action = #selector(autoSaveToggled(_:))
-
-        // Font size row.
-        fontStepper.minValue = Double(EditorFontSettings.minFontSize)
-        fontStepper.maxValue = Double(EditorFontSettings.maxFontSize)
-        fontStepper.increment = 1
-        fontStepper.valueWraps = false
-        fontStepper.target = self
-        fontStepper.action = #selector(fontSizeChanged(_:))
-        fontValueLabel.alignment = .right
-        fontValueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        fontValueLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        fontRowLabel.stringValue = L10n.t(.prefFontSizeLabel)
-        let fontRow = NSStackView(views: [
-            fontRowLabel,
-            fontStepper, fontValueLabel,
-        ])
-        fontRow.orientation = .horizontal
-        fontRow.spacing = 8
-        fontRow.alignment = .centerY
-
-        // Scratchpad hot-key row: the recorder button shows the current binding
-        // and turns into a "press the keys" prompt while armed.
-        hotkeyButton.bezelStyle = .rounded
-        hotkeyButton.target = self
-        hotkeyButton.action = #selector(hotkeyButtonClicked(_:))
-        hotkeyResetButton.bezelStyle = .rounded
-        hotkeyResetButton.title = L10n.t(.prefHotkeyReset)
-        hotkeyResetButton.target = self
-        hotkeyResetButton.action = #selector(hotkeyResetClicked(_:))
-        hotkeyRowLabel.stringValue = L10n.t(.prefScratchpadHotkeyLabel)
-        updateHotkeyButtonTitle()
-        let hotkeyRow = NSStackView(views: [hotkeyRowLabel, hotkeyButton, hotkeyResetButton])
-        hotkeyRow.orientation = .horizontal
-        hotkeyRow.spacing = 8
-        hotkeyRow.alignment = .centerY
-
-        // Scratchpad font size row: same shape as the editor's font row, writing
-        // through `ScratchpadStore` so the pad's size stays independent (T15.3).
-        scratchpadFontStepper.minValue = Double(EditorFontSettings.minFontSize)
-        scratchpadFontStepper.maxValue = Double(EditorFontSettings.maxFontSize)
-        scratchpadFontStepper.increment = 1
-        scratchpadFontStepper.valueWraps = false
-        scratchpadFontStepper.target = self
-        scratchpadFontStepper.action = #selector(scratchpadFontSizeChanged(_:))
-        scratchpadFontValueLabel.alignment = .right
-        scratchpadFontValueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        scratchpadFontValueLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        scratchpadFontRowLabel.stringValue = L10n.t(.prefScratchpadFontSizeLabel)
-        let scratchpadFontRow = NSStackView(views: [
-            scratchpadFontRowLabel,
-            scratchpadFontStepper, scratchpadFontValueLabel,
-        ])
-        scratchpadFontRow.orientation = .horizontal
-        scratchpadFontRow.spacing = 8
-        scratchpadFontRow.alignment = .centerY
-
-        shortcutsButton.title = L10n.t(.shortcutTitle)
-        shortcutsButton.bezelStyle = .rounded
-        shortcutsButton.target = self
-        shortcutsButton.action = #selector(showShortcuts)
-        for (button, title, action) in [
-            (languageListButton, L10n.t(.languageListTitle), #selector(showLanguageList)),
-            (runSettingsButton, L10n.t(.runSettingsTitle), #selector(showRunSettings)),
-            (projectFoldersButton, L10n.t(.projectFoldersTitle), #selector(showProjectFolders)),
-            (fileDefaultsButton, L10n.t(.fileDefaultsTitle), #selector(showFileDefaults)),
-            (exportButton, L10n.t(.settingsExport), #selector(exportSettings)),
-            (importButton, L10n.t(.settingsImport), #selector(importSettings))
-        ] {
-            button.title = title; button.bezelStyle = .rounded; button.target = self; button.action = action
-        }
-        let backupRow = NSStackView(views: [exportButton, importButton]); backupRow.spacing = 8
-        settingsResult.textColor = .secondaryLabelColor
-        settingsResult.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        let content = NSStackView(views: [
-            languageRow,
-            separator(),
-            modulesHeader, moduleStack,
-            separator(),
-            editorHeader, indentRow, usesSpacesButton, rainbowButton, autoCloseButton, autoSaveButton, fontRow,
-            hotkeyRow, scratchpadFontRow, languageListButton, runSettingsButton, projectFoldersButton, shortcutsButton,
-            fileDefaultsButton, backupRow,
-            settingsResult,
-        ])
-        content.orientation = .vertical
-        content.alignment = .leading
-        content.spacing = 10
-        content.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        window?.contentView = content
     }
 
-    @objc private func showShortcuts() {
-        endHotkeyRecording()
-        if shortcutsController == nil {
-            shortcutsController = ShortcutPreferencesController()
-            shortcutsController?.onClose = { [weak self] in self?.shortcutsController = nil }
-        }
-        shortcutsController?.showWindow(nil)
-        shortcutsController?.window?.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func showLanguageList() {
-        endHotkeyRecording()
-        if languageListController == nil {
-            languageListController = LanguageListPreferencesController()
-            languageListController?.onClose = { [weak self] in self?.languageListController = nil }
-        }
-        languageListController?.showWindow(nil)
-        languageListController?.window?.makeKeyAndOrderFront(nil)
-    }
-
-    /// Settings › Run (T16.3b): built on open, released on close.
-    @objc private func showRunSettings() {
-        endHotkeyRecording()
-        if runSettingsController == nil {
-            runSettingsController = RunPreferencesController()
-            runSettingsController?.onClose = { [weak self] in self?.runSettingsController = nil }
-        }
-        runSettingsController?.showWindow(nil)
-        runSettingsController?.window?.makeKeyAndOrderFront(nil)
-    }
-
-    /// Settings › Project Folders (M17 T17.12): built on open, released on close.
-    @objc private func showProjectFolders() {
-        endHotkeyRecording()
-        if projectFoldersController == nil {
-            projectFoldersController = ProjectFoldersPreferencesController()
-            projectFoldersController?.onClose = { [weak self] in self?.projectFoldersController = nil }
-        }
-        projectFoldersController?.showWindow(nil)
-        projectFoldersController?.window?.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func showFileDefaults() {
-        endHotkeyRecording()
-        if fileDefaultsController == nil {
-            fileDefaultsController = DefaultApplicationPreferencesController()
-            fileDefaultsController?.onClose = { [weak self] in self?.fileDefaultsController = nil }
-        }
-        fileDefaultsController?.showWindow(nil)
-        fileDefaultsController?.window?.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func exportSettings() {
-        endHotkeyRecording()
+    /// Resizes the window to `page`'s fitting size, keeping the top edge and the
+    /// horizontal centre, clamped into the screen's visible frame. Animated only
+    /// while the window is visible.
+    private func fitWindow(to page: SettingsPage) {
         guard let window else { return }
-        do {
-            let data = try SettingsArchive.export()
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [.json]
-            panel.nameFieldStringValue = "Karu-settings.json"
-            panel.beginSheetModal(for: window) { [weak self] response in
-                guard response == .OK, let url = panel.url else { return }
-                do {
-                    try data.write(to: url, options: .atomic)
-                    self?.settingsResult.stringValue = L10n.t(.settingsExported)
-                }
-                catch { self?.presentSettingsError(error) }
-            }
-        } catch { presentSettingsError(error) }
-    }
-
-    @objc private func importSettings() {
-        endHotkeyRecording()
-        guard let window else { return }
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-        panel.beginSheetModal(for: window) { [weak self] response in
-            guard response == .OK, let url = panel.url, let self else { return }
-            do {
-                let document = try SettingsArchive.read(from: url)
-                let alert = NSAlert()
-                alert.messageText = L10n.t(.settingsImport)
-                alert.informativeText = L10n.t(.settingsImportConfirm)
-                alert.addButton(withTitle: L10n.t(.settingsImportAction))
-                alert.addButton(withTitle: L10n.t(.shortcutCancel))
-                alert.beginSheetModal(for: window) { [weak self] result in
-                    guard result == .alertFirstButtonReturn else { return }
-                    do { try SettingsArchive.apply(document) }
-                    catch { self?.presentSettingsError(error) }
-                }
-            } catch { self.presentSettingsError(error) }
+        // A page about to be installed is still detached (zero frame); only an
+        // installed one needs a layout pass, `fittingSize` works either way.
+        if page.view.window != nil { page.view.layoutSubtreeIfNeeded() }
+        let size = page.view.fittingSize
+        let current = window.frame
+        let layout = window.contentLayoutRect
+        var frame = NSRect(x: 0, y: 0,
+                           width: size.width + (current.width - layout.width),
+                           height: size.height + (current.height - layout.height))
+        frame.origin = NSPoint(x: (current.midX - frame.width / 2).rounded(), y: current.maxY - frame.height)
+        if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
+            if frame.maxX > visible.maxX { frame.origin.x = visible.maxX - frame.width }
+            if frame.minX < visible.minX { frame.origin.x = visible.minX }
+            if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
+            if frame.minY < visible.minY { frame.origin.y = min(visible.minY, visible.maxY - frame.height) }
         }
+        guard frame != current else { return }
+        window.setFrame(frame, display: window.isVisible, animate: window.isVisible)
     }
 
-    private func presentSettingsError(_ error: Error) {
-        settingsResult.stringValue = ""
-        guard let window else { return }
-        NSAlert(error: error).beginSheetModal(for: window)
+    public override func showWindow(_ sender: Any?) {
+        // Reopened after a close released the pages: rebuild the current one.
+        if pages.isEmpty { showPage(selectedPage) }
+        super.showWindow(sender)
     }
 
+    // MARK: - Toolbar
+
+    public func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        SettingsPageID.allCases.map(\.toolbarIdentifier)
+    }
+
+    public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        SettingsPageID.allCases.map(\.toolbarIdentifier)
+    }
+
+    public func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        SettingsPageID.allCases.map(\.toolbarIdentifier)
+    }
+
+    public func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                        willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard let id = SettingsPageID(toolbarIdentifier: itemIdentifier) else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.label = id.title
+        item.paletteLabel = id.title
+        item.image = NSImage(systemSymbolName: id.symbolName, accessibilityDescription: id.title)
+        item.target = self
+        item.action = #selector(toolbarItemSelected(_:))
+        return item
+    }
+
+    @objc private func toolbarItemSelected(_ sender: NSToolbarItem) {
+        guard let id = SettingsPageID(toolbarIdentifier: sender.itemIdentifier) else { return }
+        select(id)
+    }
+
+    // MARK: - Notifications
+
+    /// Toolbar labels and the window title; each loaded page re-pulls its own
+    /// strings and reports its new size.
+    @objc func languageDidChange() {
+        for item in window?.toolbar?.items ?? [] {
+            guard let id = SettingsPageID(toolbarIdentifier: item.itemIdentifier) else { continue }
+            item.label = id.title
+            item.paletteLabel = id.title
+        }
+        window?.title = selectedPage.title
+    }
+
+    /// Pushes the imported editor flags to every open editor. Done here, not by
+    /// the Editing page, which may not exist when an import happens.
     @objc private func settingsImported() {
-        settingsResult.stringValue = L10n.t(.settingsImported)
-        let language = selectedLanguage
-        loadState()
-        rebuildIndentLanguagePopup(selecting: language)
-        reloadIndentWidth()
-        updateHotkeyButtonTitle()
-        Self.forEachEditorTextView {
+        forEachEditorTextView {
             $0.indentRainbowEnabled = IndentRainbow.defaultEnabled
             $0.autoClosePairsEnabled = AutoClosePairs.defaultEnabled
             $0.needsDisplay = true
         }
     }
 
-    private func styleSectionLabel(_ label: NSTextField, text: String) {
-        label.stringValue = text
-        label.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+    // MARK: - Window delegate
+
+    public func windowDidResignKey(_ notification: Notification) {
+        pages[selectedPage]?.pageWillDeactivate()
     }
 
-    private func separator() -> NSView {
-        let box = NSBox()
-        box.boxType = .separator
-        box.translatesAutoresizingMaskIntoConstraints = false
-        box.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        return box
+    public func windowDidBecomeKey(_ notification: Notification) {
+        pages[selectedPage]?.pageDidBecomeActive()
     }
 
-    // MARK: - Loading current state
-
-    private func loadState() {
-        selectCurrentUILanguage()
-
-        let modules = ModuleSettings()
-        for (i, module) in FeatureModule.allCases.enumerated() {
-            moduleButtons[i].state = modules.isEnabled(module) ? .on : .off
-        }
-
-        let indent = IndentSettings()
-        usesSpacesButton.state = indent.usesSpaces ? .on : .off
-        rainbowButton.state = IndentRainbow.defaultEnabled ? .on : .off
-        autoCloseButton.state = AutoClosePairs.defaultEnabled ? .on : .off
-        autoSaveButton.state = AutoSavePolicy.defaultEnabled ? .on : .off
-
-        languagePopup.selectItem(at: 0)
-        reloadIndentWidth()
-
-        let size = EditorFontSettings().fontSize
-        fontStepper.doubleValue = Double(size)
-        updateFontLabel()
-
-        scratchpadFontStepper.doubleValue = Double(ScratchpadStore.fontSize())
-        updateScratchpadFontLabel()
-    }
-
-    /// Selects the popup row matching the stored UI-language override, or "System"
-    /// (row 0) when no override is set.
-    private func selectCurrentUILanguage() {
-        if let raw = UserDefaults.standard.string(forKey: L10n.defaultsKey),
-           let language = AppLanguage(rawValue: raw),
-           let index = AppLanguage.allCases.firstIndex(of: language) {
-            uiLanguagePopup.selectItem(at: index + 1)   // +1 for the System row
-        } else {
-            uiLanguagePopup.selectItem(at: 0)
-        }
-    }
-
-    private var selectedLanguage: String {
-        languagePopup.selectedItem?.representedObject as? String ?? Self.languages[0].id
-    }
-
-    /// Indent-width languages that are visible in the shared language list
-    /// (T16.2 follow-up: the popup used to list every language regardless).
-    /// Falls back to the full list if everything offered here is hidden.
-    static func indentLanguages(settings: LanguageMenuSettings = LanguageMenuSettings()) -> [(id: String, title: String)] {
-        let visible = languages.filter { settings.isVisible($0.id) }
-        return visible.isEmpty ? languages : visible
-    }
-
-    /// Rebuilds the indent-width popup from the language list, keeping
-    /// `selecting` (default: the current choice) when it is still offered.
-    private func rebuildIndentLanguagePopup(selecting language: String? = nil) {
-        let keep = language ?? (languagePopup.numberOfItems > 0 ? selectedLanguage : nil)
-        languagePopup.removeAllItems()
-        for lang in Self.indentLanguages() {
-            languagePopup.addItem(withTitle: lang.title)
-            languagePopup.lastItem?.representedObject = lang.id
-        }
-        if let keep, let item = languagePopup.itemArray.first(where: { $0.representedObject as? String == keep }) {
-            languagePopup.select(item)
-        } else {
-            languagePopup.selectItem(at: 0)
-        }
-    }
-
-    @objc private func indentLanguagesChanged() {
-        rebuildIndentLanguagePopup()
-        reloadIndentWidth()
-    }
-
-    private func reloadIndentWidth() {
-        let width = IndentSettings().width(for: selectedLanguage)
-        indentStepper.integerValue = width
-        indentValueLabel.stringValue = "\(width)"
-    }
-
-    private func updateFontLabel() {
-        fontValueLabel.stringValue = "\(Int(fontStepper.doubleValue.rounded())) pt"
-    }
-
-    private func updateScratchpadFontLabel() {
-        scratchpadFontValueLabel.stringValue = "\(Int(scratchpadFontStepper.doubleValue.rounded())) pt"
-    }
-
-    // MARK: - Actions
-
-    @objc private func moduleToggled(_ sender: NSButton) {
-        let module = FeatureModule.allCases[sender.tag]
-        // ModuleSettings broadcasts a change notification; the highlight /
-        // completion engines already listen and attach or release state live.
-        ModuleSettings().setEnabled(sender.state == .on, for: module)
-    }
-
-    @objc private func languageChanged(_ sender: NSPopUpButton) {
-        reloadIndentWidth()
-    }
-
-    /// UI-language row: row 0 is "System" (clears the override); rows 1… map to
-    /// `AppLanguage.allCases`. `L10n.set` persists and broadcasts, driving the
-    /// live relayout of this window and every open editor.
-    @objc private func uiLanguageChanged(_ sender: NSPopUpButton) {
-        let index = sender.indexOfSelectedItem
-        if index <= 0 {
-            L10n.set(nil)
-        } else {
-            L10n.set(AppLanguage.allCases[index - 1])
-        }
-    }
-
-    /// Re-pulls every localized string after a language switch. Called from the
-    /// `L10n.didChangeNotification` observer so the window updates in place.
-    @objc private func languageDidChange() {
-        settingsResult.stringValue = ""
-        window?.title = L10n.t(.prefTitle)
-        shortcutsButton.title = L10n.t(.shortcutTitle)
-        languageListButton.title = L10n.t(.languageListTitle)
-        runSettingsButton.title = L10n.t(.runSettingsTitle)
-        projectFoldersButton.title = L10n.t(.projectFoldersTitle)
-        fileDefaultsButton.title = L10n.t(.fileDefaultsTitle)
-        exportButton.title = L10n.t(.settingsExport)
-        importButton.title = L10n.t(.settingsImport)
-        styleSectionLabel(modulesHeader, text: L10n.t(.prefModules))
-        styleSectionLabel(editorHeader, text: L10n.t(.prefEditor))
-        uiLanguageRowLabel.stringValue = L10n.t(.prefLanguageLabel)
-        indentRowLabel.stringValue = L10n.t(.prefIndentWidthLabel)
-        fontRowLabel.stringValue = L10n.t(.prefFontSizeLabel)
-        hotkeyRowLabel.stringValue = L10n.t(.prefScratchpadHotkeyLabel)
-        scratchpadFontRowLabel.stringValue = L10n.t(.prefScratchpadFontSizeLabel)
-        hotkeyResetButton.title = L10n.t(.prefHotkeyReset)
-        // Keep the "press new shortcut…" prompt when the switch happened mid-record.
-        if hotkeyMonitor != nil { hotkeyButton.title = L10n.t(.prefHotkeyRecording) }
-        usesSpacesButton.title = L10n.t(.prefInsertSpaces)
-        rainbowButton.title = L10n.t(.prefIndentRainbow)
-        autoCloseButton.title = L10n.t(.prefAutoClosePairs)
-        autoSaveButton.title = L10n.t(.prefAutoSaveOnFocusLoss)
-        for (i, module) in FeatureModule.allCases.enumerated() {
-            moduleButtons[i].title = module.displayName
-        }
-        // Rebuild the language popup's "System" row (its language names stay in
-        // their own tongue); keep the current selection.
-        let selected = uiLanguagePopup.indexOfSelectedItem
-        uiLanguagePopup.item(at: 0)?.title = L10n.t(.prefLanguageSystem)
-        uiLanguagePopup.selectItem(at: selected)
-    }
-
-    @objc private func indentWidthChanged(_ sender: NSStepper) {
-        let width = sender.integerValue
-        UserDefaults.standard.set(width, forKey: IndentSettings.widthKey(for: selectedLanguage))
-        indentValueLabel.stringValue = "\(width)"
-        // Indent width feeds the rainbow block computation; repaint open editors.
-        redrawOpenEditors()
-    }
-
-    @objc private func usesSpacesToggled(_ sender: NSButton) {
-        UserDefaults.standard.set(sender.state == .on, forKey: IndentSettings.usesSpacesKey)
-    }
-
-    @objc private func rainbowToggled(_ sender: NSButton) {
-        let enabled = sender.state == .on
-        UserDefaults.standard.set(enabled, forKey: IndentRainbow.enabledKey)
-        // Push to open editors so the toggle is visible immediately.
-        Self.forEachEditorTextView { $0.indentRainbowEnabled = enabled }
-    }
-
-    @objc private func autoCloseToggled(_ sender: NSButton) {
-        let enabled = sender.state == .on
-        UserDefaults.standard.set(enabled, forKey: AutoClosePairs.enabledKey)
-        // Push to open editors so the toggle takes effect without reopening.
-        Self.forEachEditorTextView { $0.autoClosePairsEnabled = enabled }
-    }
-
-    @objc private func autoSaveToggled(_ sender: NSButton) {
-        // Read live from UserDefaults by each window's focus-loss handler, so no
-        // per-editor push is needed — just persist the flag.
-        UserDefaults.standard.set(sender.state == .on, forKey: AutoSavePolicy.enabledKey)
-    }
-
-    @objc private func fontSizeChanged(_ sender: NSStepper) {
-        // `setFontSize` broadcasts `EditorFontSettings.didChangeNotification`, which
-        // every open editor window observes to re-apply the size live (new windows
-        // read the value at creation time). This panel updates its own label here.
-        EditorFontSettings().setFontSize(CGFloat(sender.doubleValue))
-        updateFontLabel()
-    }
-
-    @objc private func scratchpadFontSizeChanged(_ sender: NSStepper) {
-        // Broadcasts `ScratchpadStore.fontDidChangeNotification`; a visible pad
-        // re-applies the size live, a hidden one picks it up when next shown.
-        ScratchpadStore.setFontSize(CGFloat(sender.doubleValue))
-        updateScratchpadFontLabel()
-    }
-
-    /// Re-reads the shared font size into the stepper / label after a zoom command
-    /// changed it outside this window. The scratchpad row follows too: while the
-    /// pad has no size of its own it mirrors the editor's.
-    @objc private func fontSizeDidChangeExternally() {
-        let size = EditorFontSettings().fontSize
-        fontStepper.doubleValue = Double(size)
-        updateFontLabel()
-        scratchpadFontSizeDidChangeExternally()
-    }
-
-    /// Re-reads the pad's font size after ⌘+ / ⌘- inside the scratchpad changed it.
-    @objc private func scratchpadFontSizeDidChangeExternally() {
-        scratchpadFontStepper.doubleValue = Double(ScratchpadStore.fontSize())
-        updateScratchpadFontLabel()
-    }
-
-    // MARK: - Scratchpad hot-key recorder (T15.1)
-
-    /// Click once to arm, click again to give up. While armed a local key monitor
-    /// takes over the keyboard for this window.
-    @objc private func hotkeyButtonClicked(_ sender: NSButton) {
-        if hotkeyMonitor != nil {
-            endHotkeyRecording()
-        } else {
-            beginHotkeyRecording()
-        }
-    }
-
-    private func beginHotkeyRecording() {
-        NotificationCenter.default.post(name: HotKeyCenter.recordingDidChange, object: true)
-        hotkeyButton.title = L10n.t(.prefHotkeyRecording)
-        hotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window else { return event }
-            return self.captureHotkey(event) ? nil : event
-        }
-    }
-
-    /// Returns true when the event was consumed by the recorder. Everything typed
-    /// while armed is swallowed — including keys that are *not* a valid binding,
-    /// which simply leave the recorder waiting rather than committing a shortcut
-    /// the system would never deliver.
-    private func captureHotkey(_ event: NSEvent) -> Bool {
-        if event.keyCode == 53 {   // Esc — give up, keep the old binding
-            endHotkeyRecording()
-            return true
-        }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        // A global hot key needs at least one of ⌘ / ⌥ / ⌃; ⇧ alone would make
-        // every capital letter unusable everywhere else on the system.
-        guard flags.contains(.command) || flags.contains(.option) || flags.contains(.control) else {
-            return true
-        }
-        guard let stroke = ShortcutStroke(event: event),
-              let command = ShortcutSettings.shared.commands.first(where: { $0.id == ShortcutSettings.globalID }) else { return true }
-        let conflicts = ShortcutSettings.shared.set([stroke], for: command)
-        endHotkeyRecording()
-        showShortcutConflicts(conflicts)
-        return true
-    }
-
-    /// The single exit from the recording state: removes the monitor (always) and
-    /// puts the current binding back on the button.
-    private func endHotkeyRecording() {
-        if let hotkeyMonitor {
-            NSEvent.removeMonitor(hotkeyMonitor)
-            NotificationCenter.default.post(name: HotKeyCenter.recordingDidChange, object: false)
-        }
-        hotkeyMonitor = nil
-        updateHotkeyButtonTitle()
-    }
-
-    @objc private func updateHotkeyButtonTitle() {
-        guard let command = ShortcutSettings.shared.commands.first(where: { $0.id == ShortcutSettings.globalID }) else { return }
-        let binding = ShortcutSettings.shared.binding(for: command)
-        hotkeyButton.title = binding.isEmpty ? L10n.t(.shortcutNone) : binding.map(\.display).joined(separator: " ")
-    }
-
-    private func showShortcutConflicts(_ conflicts: [ShortcutCommand]) {
-        guard !conflicts.isEmpty, let window else { return }
-        let alert = NSAlert()
-        alert.messageText = L10n.t(.shortcutConflict, conflicts.map(\.title).joined(separator: ", "))
-        alert.beginSheetModal(for: window)
-    }
-
-    @objc private func hotkeyResetClicked(_ sender: NSButton) {
-        endHotkeyRecording()
-        guard let command = ShortcutSettings.shared.commands.first(where: { $0.id == ShortcutSettings.globalID }) else { return }
-        showShortcutConflicts(ShortcutSettings.shared.reset(command))
-        updateHotkeyButtonTitle()
-    }
-
-    public func windowDidResignKey(_ notification: Notification) { endHotkeyRecording() }
-
-    /// Closing the window while the recorder is armed must not leave its monitor
-    /// eating keystrokes for the rest of the session.
+    /// Deactivates the current page (stops key recording, commits edits), then
+    /// releases every page so nothing (sheets, the toolchain manager) outlives
+    /// the window.
     public func windowWillClose(_ notification: Notification) {
-        endHotkeyRecording()
-    }
-
-    // MARK: - Live application helpers
-
-    private func redrawOpenEditors() {
-        Self.forEachEditorTextView { $0.needsDisplay = true }
-    }
-
-    /// Walks every window's view tree and applies `body` to each `EditorTextView`.
-    private static func forEachEditorTextView(_ body: (EditorTextView) -> Void) {
-        for window in NSApp.windows {
-            guard let content = window.contentView else { continue }
-            for textView in editorTextViews(in: content) {
-                body(textView)
-            }
+        if let page = pages[selectedPage] {
+            page.pageWillDeactivate()
+            page.view.removeFromSuperview()
         }
-    }
-
-    private static func editorTextViews(in view: NSView) -> [EditorTextView] {
-        var result: [EditorTextView] = []
-        if let textView = view as? EditorTextView {
-            result.append(textView)
-        }
-        for subview in view.subviews {
-            result += editorTextViews(in: subview)
-        }
-        return result
+        pages.removeAll()
+        onClose?()
     }
 }

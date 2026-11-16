@@ -135,6 +135,9 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case prefIndentWidthLabel, prefInsertSpaces, prefIndentRainbow, prefAutoClosePairs, prefFontSizeLabel
     case prefAutoSaveOnFocusLoss
     case prefLanguageLabel, prefLanguageSystem
+    // Settings window toolbar tabs and the Code page's module row label.
+    case settingsTabGeneral, settingsTabEditing, settingsTabCode, settingsTabRun, settingsTabShortcuts
+    case prefModulesLabel
     // Preferences — scratchpad hot-key recorder (T15.1).
     case prefScratchpadHotkeyLabel, prefHotkeyRecording, prefHotkeyReset
     // Preferences — scratchpad font size (independent of the editor's, T15.3).

@@ -1,18 +1,24 @@
 import AppKit
 
-/// "Run…" sub-window of Settings (T16.3b): per runnable language, where its
-/// tool comes from (Auto / Karu installed / System PATH / Custom path), the
-/// custom path, and a Detect button that runs the locator in the background.
-/// Plus the C / C++ extra flags. Built when opened from Settings and released
-/// through `onClose`, like the language-list window. Edits apply immediately
+/// Settings › Run page (T16.3b): the Run module toggle, then per runnable
+/// language, where its tool comes from (Auto / Karu installed / System PATH /
+/// Custom path), the custom path, and a Detect button that runs the locator in
+/// the background. Plus the C / C++ extra flags. Built when the page is first
+/// selected and released with the Settings window. Edits apply immediately
 /// through `RunSettings` (machine-specific, not part of the settings archive).
 ///
 /// T16.5: each row's trailing `managedSlot` shows the Karu-managed toolchain
 /// (status, Install / Update / Cancel, Uninstall) through a `ToolchainManager`
-/// held only while the window is open (an install keeps the manager alive by
+/// held only while the page exists (an install keeps the manager alive by
 /// itself); Swift / Rust rows show whether Apple's Command Line Tools exist.
-final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
-    var onClose: (() -> Void)?
+@MainActor
+final class RunPreferencesController: NSObject, SettingsPage, NSTextFieldDelegate {
+    var view: NSView { content }
+    var onContentSizeChange: (() -> Void)?
+    private let content = NSStackView()
+    /// Toggle for `FeatureModule.run`.
+    let moduleButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let modules: ModuleSettings
 
     /// Controls for one language. `managedSlot` is the trailing column holding
     /// the row's `ManagedControls` (empty for Bash).
@@ -87,8 +93,10 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
          manager: ToolchainManager? = nil,
          probes: ToolchainProbes = .system,
          languageMenu: LanguageMenuSettings = LanguageMenuSettings(),
-         installCommandLineTools: @escaping () -> Void = RunPreferencesController.launchCommandLineToolsInstaller) {
+         installCommandLineTools: @escaping () -> Void = RunPreferencesController.launchCommandLineToolsInstaller,
+         modules: ModuleSettings = ModuleSettings()) {
         let manager = manager ?? ToolchainManager.acquire()
+        self.modules = modules
         self.languageMenu = languageMenu
         self.settings = settings ?? RunSettings(center: center)
         self.center = center
@@ -100,11 +108,11 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
         self.manager = manager
         self.probes = probes
         self.installCommandLineTools = installCommandLineTools
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        super.init(window: window)
-        window.delegate = self
+        super.init()
+
+        moduleButton.target = self
+        moduleButton.action = #selector(moduleToggled(_:))
+        moduleButton.identifier = NSUserInterfaceItemIdentifier("settings.module.run")
 
         let grid = NSGridView()
         grid.rowSpacing = 6
@@ -137,15 +145,23 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
         help.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         help.preferredMaxLayoutWidth = 700
 
-        let content = NSStackView(views: [help, grid])
+        content.setViews([moduleButton, help, grid], in: .top)
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 14
         content.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
-        window.contentView = content
+        // A leading-aligned stack does not reserve its trailing inset for the
+        // widest view, so the grid ran to the window's right edge.
+        content.trailingAnchor.constraint(greaterThanOrEqualTo: grid.trailingAnchor,
+                                          constant: content.edgeInsets.right).isActive = true
 
         center.addObserver(self, selector: #selector(reloadState),
                            name: RunSettings.didChangeNotification, object: nil)
+        // Toggles made from the editor toolbar's module menu show up live.
+        NotificationCenter.default.addObserver(self, selector: #selector(reloadModuleState),
+                                               name: ModuleSettings.didChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(reloadModuleState),
+                                               name: SettingsArchive.didImport, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(languageListChanged),
                                                name: LanguageMenuSettings.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(reloadStrings),
@@ -154,14 +170,11 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
                                    name: ToolchainManager.didChangeNotification, object: manager)
         reloadStrings()
         reloadState()
-        // Size after the strings are in, so the fit matches the visible rows.
+        reloadModuleState()
         applyLanguageVisibility()
-        window.center()
         manager.refresh()
         probeCommandLineTools()
     }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Whether `language`'s row is shown (follows the shared language list).
     func isRowVisible(_ language: RunnableLanguage) -> Bool {
@@ -169,39 +182,44 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     /// Hides the rows of languages unchecked in Settings › Language List and
-    /// refits the window. Toolchains stay installed; hiding is display only.
+    /// reports the new size. Toolchains stay installed; hiding is display only.
     func applyLanguageVisibility() {
         for (language, rowsForLanguage) in gridRows {
             let hidden = !languageMenu.isVisible(language.identifier)
             rowsForLanguage.forEach { $0.isHidden = hidden }
         }
-        refitWindow()
+        contentSizeChanged()
     }
 
-    /// Resizes the window to its content, keeping the top edge in place. Row
+    /// Lays the page out and tells the host its size may have changed. Row
     /// contents (Detect results, toolchain / CLT status) arrive asynchronously
-    /// and can change the fitting height after the window was first sized.
-    func refitWindow() {
-        guard let window, let content = window.contentView else { return }
-        content.layoutSubtreeIfNeeded()
-        let size = content.fittingSize
-        let current = window.contentRect(forFrameRect: window.frame).size
-        guard abs(size.height - current.height) > 0.5 || abs(size.width - current.width) > 0.5 else { return }
-        var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
-        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
-        window.setFrame(frame, display: true)
+    /// and can change the fitting height after the page was first shown.
+    func contentSizeChanged() {
+        // Only once hosted: a detached page still has its zero autoresizing
+        // frame, and laying that out fights the content's required size on
+        // every status tick. `fittingSize` does not need a layout pass.
+        if content.window != nil { content.layoutSubtreeIfNeeded() }
+        onContentSizeChange?()
     }
 
     private var refitScheduled = false
-    /// Coalesces refits from several label updates into one per runloop turn.
+    /// Coalesces size reports from several label updates into one per runloop turn.
     private func scheduleRefit() {
         guard !refitScheduled else { return }
         refitScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.refitScheduled = false
-            self.refitWindow()
+            self.contentSizeChanged()
         }
+    }
+
+    @objc private func reloadModuleState() {
+        moduleButton.state = modules.isEnabled(.run) ? .on : .off
+    }
+
+    @objc private func moduleToggled(_ sender: NSButton) {
+        modules.setEnabled(sender.state == .on, for: .run)
     }
 
     @objc private func languageListChanged() {
@@ -300,7 +318,7 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
     // MARK: State
 
     @objc private func reloadStrings() {
-        window?.title = L10n.t(.runSettingsTitle).replacingOccurrences(of: "…", with: "")
+        moduleButton.title = FeatureModule.run.displayName
         help.stringValue = L10n.t(.runSettingsHelp)
         cFlagsLabel.stringValue = L10n.t(.runCFlags)
         cppFlagsLabel.stringValue = L10n.t(.runCppFlags)
@@ -321,7 +339,7 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
     /// Re-reads `RunSettings` (also after a change made elsewhere). A field
     /// being edited keeps its in-progress text.
     @objc func reloadState() {
-        let editing = window?.firstResponder as? NSText
+        let editing = view.window?.firstResponder as? NSText
         func isEditing(_ field: NSTextField) -> Bool {
             editing != nil && field.currentEditor() === editing
         }
@@ -479,7 +497,7 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
 
     private func showUninstallAlert(_ entry: ToolchainManifestEntry, usage: Int64?,
                                     completion: @escaping (Bool) -> Void) {
-        guard let window else { return }
+        guard let window = view.window else { return }
         let version = manager.state(for: entry.id).installedVersion ?? entry.version
         let store = manager.store
         let paths = [store.toolchainDirectory(entry.id).path, store.cacheDirectory(entry.id).path]
@@ -501,7 +519,7 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     /// Opens the system "install Command Line Tools" dialog.
-    static func launchCommandLineToolsInstaller() {
+    nonisolated static func launchCommandLineToolsInstaller() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
         process.arguments = ["--install"]
@@ -511,7 +529,7 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
         try? process.run()
     }
 
-    func windowDidBecomeKey(_ notification: Notification) {
+    func pageDidBecomeActive() {
         // Returning from the system CLT installer: re-check.
         if commandLineToolsInstalled == false { probeCommandLineTools() }
     }
@@ -556,7 +574,7 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @objc private func chooseTapped(_ sender: NSButton) {
-        guard let language = language(forTag: sender.tag), let window else { return }
+        guard let language = language(forTag: sender.tag), let window = view.window else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -601,9 +619,9 @@ final class RunPreferencesController: NSWindowController, NSWindowDelegate, NSTe
         if let row = row(for: language) { renderDetection(for: row) }
     }
 
-    func windowWillClose(_ notification: Notification) {
-        // End editing so an uncommitted path / flags edit is saved.
-        window?.makeFirstResponder(nil)
-        onClose?()
+    /// Leaving the page, losing key or closing the window: end editing so an
+    /// uncommitted path / flags edit is saved.
+    func pageWillDeactivate() {
+        view.window?.makeFirstResponder(nil)
     }
 }

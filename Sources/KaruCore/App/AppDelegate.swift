@@ -3,9 +3,10 @@ import AppKit
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowControllers: [EditorWindowController] = []
 
-    /// Single shared preferences window; created on first use, then just
-    /// brought forward on subsequent opens.
-    private lazy var preferencesController = PreferencesWindowController()
+    /// The Settings window while it is open; created on demand, brought forward
+    /// on later opens, and released after it closes so none of its pages,
+    /// sheets or toolchain state stay resident.
+    private var preferencesController: PreferencesWindowController?
 
     /// Sparkle updater (M11). Created in `applicationDidFinishLaunching` only
     /// when running from a bundled .app — the bare test/benchmark binary has no
@@ -1106,6 +1107,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc public func showPreferences(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
+        let preferencesController: PreferencesWindowController
+        if let existing = self.preferencesController {
+            preferencesController = existing
+        } else {
+            preferencesController = PreferencesWindowController()
+            preferencesController.onClose = { [weak self, weak preferencesController] in
+                // Drop it on the next turn: not inside its own delegate callback.
+                DispatchQueue.main.async {
+                    guard let self, let closed = preferencesController,
+                          self.preferencesController === closed,
+                          closed.window?.isVisible != true else { return }
+                    self.preferencesController = nil
+                }
+            }
+            self.preferencesController = preferencesController
+        }
         preferencesController.showWindow(nil)
         if let window = preferencesController.window {
             // The panel must land in front of the editor no matter what: follow

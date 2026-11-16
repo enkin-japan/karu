@@ -251,16 +251,16 @@ struct LanguageMenuSettingsTests {
         let (defaults, cleanup) = isolated()
         defer { cleanup() }
         let settings = LanguageMenuSettings(defaults: defaults, center: NotificationCenter())
-        let all = PreferencesWindowController.indentLanguages(settings: settings).map(\.id)
+        let all = EditingSettingsPage.indentLanguages(settings: settings).map(\.id)
         #expect(all.contains("java") && all.contains("cpp") && all.contains("markdown"))
         for id in ["java", "cpp", "c", "typescript"] { settings.setVisible(false, for: id) }
-        let filtered = PreferencesWindowController.indentLanguages(settings: settings).map(\.id)
+        let filtered = EditingSettingsPage.indentLanguages(settings: settings).map(\.id)
         #expect(!filtered.contains("java") && !filtered.contains("cpp") && !filtered.contains("c")
                 && !filtered.contains("typescript"))
         #expect(filtered.contains("markdown") && filtered.contains("python"))
         #expect(filtered.count == all.count - 4)
         // Hiding everything offered there falls back to the full list.
         for id in all { settings.setVisible(false, for: id) }
-        #expect(PreferencesWindowController.indentLanguages(settings: settings).map(\.id) == all)
+        #expect(EditingSettingsPage.indentLanguages(settings: settings).map(\.id) == all)
     }
 }

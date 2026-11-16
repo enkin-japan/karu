@@ -253,7 +253,7 @@ struct RunPreferencesToolchainTests {
         let manager = ToolchainManager(store: store, manifest: ToolchainManifest.all,
                                        downloader: FixtureDownloader(source: dir))
         let controller = makeController(manager: manager)
-        defer { controller.close() }
+        defer { controller.pageWillDeactivate() }
 
         // Every row but Bash has slot controls.
         for row in controller.rows {
@@ -319,9 +319,9 @@ struct RunPreferencesToolchainTests {
         // Install again, close the window mid-download, reopen: progress shows.
         js.actionButton.performClick(nil)
         #expect(await waitFor { (manager.state(for: "node").activity?.fraction ?? 0) >= 0.5 })
-        controller.close()
+        controller.pageWillDeactivate()
         controller = makeController(manager: manager)
-        defer { controller.close() }
+        defer { controller.pageWillDeactivate() }
         let js2 = try #require(controller.managedControls[.javascript])
         #expect(js2.actionButton.title == L10n.t(.runToolchainCancel))
         #expect(js2.statusLabel.stringValue.contains(L10n.t(.runToolchainDownloading, percent)))
@@ -370,7 +370,7 @@ struct RunPreferencesToolchainTests {
                                        downloader: FixtureDownloader(source: dir))
         var launches = 0
         let controller = makeController(manager: manager, developerTools: installed, onInstallCLT: { launches += 1 })
-        defer { controller.close() }
+        defer { controller.pageWillDeactivate() }
         #expect(await waitFor { controller.commandLineToolsInstalled != nil })
         for language in [RunnableLanguage.swift, .rust] {
             let controls = try #require(controller.managedControls[language])

@@ -296,7 +296,7 @@ struct RunPreferencesTests {
         let controller = RunPreferencesController(settings: settings, center: center, makeLocator: {
             ToolchainLocator(managed: NoManagedToolchains(), loginPath: loginPath, probes: probes)
         }, manager: manager, probes: probes, installCommandLineTools: {})
-        defer { controller.close() }
+        defer { controller.pageWillDeactivate() }
 
         #expect(controller.rows.map(\.language) == RunnableLanguage.allCases)
         for row in controller.rows {
@@ -359,17 +359,17 @@ struct RunPreferencesTests {
             makeLocator: { ToolchainLocator(managed: NoManagedToolchains(), probes: probes) },
             manager: ToolchainManager(store: ToolchainStore(root: toolchainRoot)),
             probes: probes, languageMenu: languageMenu, installCommandLineTools: {})
-        defer { controller.close() }
+        defer { controller.pageWillDeactivate() }
 
         #expect(!controller.isRowVisible(.typescript) && !controller.isRowVisible(.cpp))
         #expect(controller.isRowVisible(.javascript) && controller.isRowVisible(.c)
                 && controller.isRowVisible(.python))
-        let shrunk = controller.window?.frame.height ?? 0
+        let shrunk = controller.view.fittingSize.height
 
         languageMenu.setVisible(true, for: "cpp")
         controller.applyLanguageVisibility()
         #expect(controller.isRowVisible(.cpp))
-        #expect((controller.window?.frame.height ?? 0) > shrunk)
+        #expect(controller.view.fittingSize.height > shrunk)
     }
 }
 

@@ -1,9 +1,15 @@
 import AppKit
 
-/// Built only when opened from Settings. Closing disarms the recorder; command
+/// Settings › Shortcuts page. Built when the page is first selected; leaving the
+/// page, losing key or closing the window disarms the recorder. Command
 /// definitions come from the same catalog used by menus and text-view routing.
-final class ShortcutPreferencesController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-    var onClose: (() -> Void)?
+@MainActor
+final class ShortcutPreferencesController: NSObject, SettingsPage, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    /// Fixed page size.
+    static let pageSize = NSSize(width: 720, height: 480)
+
+    let view = NSView()
+    var onContentSizeChange: (() -> Void)?
     private let settings: ShortcutSettings
     private let search = NSSearchField()
     private let table = NSTableView()
@@ -20,16 +26,10 @@ final class ShortcutPreferencesController: NSWindowController, NSWindowDelegate,
 
     init(settings: ShortcutSettings? = nil) {
         self.settings = settings ?? .shared
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 550),
-                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 700, height: 450)
-        super.init(window: window)
-        window.delegate = self
-        window.center()
+        super.init()
         search.delegate = self
         let command = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("command"))
-        command.width = 480
+        command.width = 430
         let binding = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("binding"))
         binding.width = 230
         table.addTableColumn(command); table.addTableColumn(binding)
@@ -48,8 +48,11 @@ final class ShortcutPreferencesController: NSWindowController, NSWindowDelegate,
         let actions = NSStackView(views: [record, sequence, clear, reset, resetAll])
         actions.spacing = 8
         message.textColor = .secondaryLabelColor
-        let content = NSView()
-        window.contentView = content
+        message.preferredMaxLayoutWidth = Self.pageSize.width - 36
+        let content = view
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.widthAnchor.constraint(equalToConstant: Self.pageSize.width).isActive = true
+        content.heightAnchor.constraint(equalToConstant: Self.pageSize.height).isActive = true
         for view in [search, scroll, actions, message] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
@@ -75,7 +78,6 @@ final class ShortcutPreferencesController: NSWindowController, NSWindowDelegate,
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: HotKeyCenter.didChangeNotification, object: nil)
         refreshLanguage()
     }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit {
         if let monitor {
             NSEvent.removeMonitor(monitor)
@@ -86,7 +88,6 @@ final class ShortcutPreferencesController: NSWindowController, NSWindowDelegate,
     @objc private func refreshLanguage() {
         stopRecording()
         settings.reloadTitles()
-        window?.title = L10n.t(.shortcutTitle).replacingOccurrences(of: "…", with: "")
         search.placeholderString = L10n.t(.shortcutSearch)
         table.tableColumns[0].title = L10n.t(.shortcutCommand)
         table.tableColumns[1].title = L10n.t(.shortcutBinding)
@@ -97,6 +98,7 @@ final class ShortcutPreferencesController: NSWindowController, NSWindowDelegate,
         sequence.title = L10n.t(.shortcutSequence)
         message.stringValue = L10n.t(.shortcutHelp)
         reload()
+        onContentSizeChange?()
     }
     @objc private func reload() {
         let selectedID = selected?.id
@@ -135,7 +137,7 @@ final class ShortcutPreferencesController: NSWindowController, NSWindowDelegate,
         record.title = L10n.t(.prefHotkeyRecording)
         message.stringValue = L10n.t(.shortcutRecordingHelp)
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window, self.window?.isKeyWindow == true else { return event }
+            guard let self, let window = self.view.window, event.window === window, window.isKeyWindow else { return event }
             if event.keyCode == 53 { self.stopRecording(); return nil }
             guard let stroke = ShortcutStroke(event: event), stroke.valid else { return nil }
             self.captured.append(stroke)
@@ -174,12 +176,12 @@ final class ShortcutPreferencesController: NSWindowController, NSWindowDelegate,
         alert.informativeText = L10n.t(.shortcutResetConfirm)
         alert.addButton(withTitle: L10n.t(.prefHotkeyReset))
         alert.addButton(withTitle: L10n.t(.shortcutCancel))
-        guard let window else { return }
+        guard let window = view.window else { return }
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             self?.settings.resetAll(); self?.reload()
         }
     }
-    func windowWillClose(_ notification: Notification) { stopRecording(); onClose?() }
-    func windowDidResignKey(_ notification: Notification) { stopRecording() }
+    /// Leaving the page, losing key or closing the window disarms the recorder.
+    func pageWillDeactivate() { stopRecording() }
 }

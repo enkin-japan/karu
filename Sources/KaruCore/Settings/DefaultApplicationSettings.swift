@@ -71,16 +71,21 @@ final class DefaultApplicationPreferencesController: NSWindowController, NSWindo
     private let applyButton = NSButton()
     private let refreshButton = NSButton()
     private let message = NSTextField(wrappingLabelWithString: "")
-    private var busy = false
+    private let titleLabel = SettingsSheet.titleLabel()
+    private(set) var doneButton: NSButton!
+    private(set) var busy = false
 
     init(service: DefaultApplicationManaging? = nil, types: [DefaultFileType]? = nil) {
         self.service = service ?? DefaultApplicationSettings()
         self.types = types ?? DefaultApplicationSettings.fileTypes()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 510),
-                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.minSize = NSSize(width: 620, height: 430)
+        let window = SettingsSheetWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 540),
+                                         styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.minSize = NSSize(width: 620, height: 460)
         super.init(window: window)
         window.delegate = self; window.center()
+        window.onCancel = { [weak self] in self?.dismissSheet() }
+        doneButton = SettingsSheet.doneButton(target: self, action: #selector(doneClicked(_:)))
+        titleLabel.stringValue = SettingsSheet.title(.fileDefaultsTitle)
         window.title = L10n.t(.fileDefaultsTitle)
         search.placeholderString = L10n.t(.fileDefaultsSearch); search.delegate = self
         for (id, title, width) in [("format", L10n.t(.fileDefaultsFormat), 360.0), ("app", L10n.t(.fileDefaultsCurrent), 270.0)] {
@@ -96,9 +101,14 @@ final class DefaultApplicationPreferencesController: NSWindowController, NSWindo
         refreshButton.target = self; refreshButton.action = #selector(refresh)
         let buttons = NSStackView(views: [applyButton, refreshButton]); buttons.spacing = 8
         let content = NSView(); window.contentView = content
-        for view in [search, scroll, buttons, message] { view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view) }
+        for view in [titleLabel, search, scroll, buttons, message, doneButton!] {
+            view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view)
+        }
         NSLayoutConstraint.activate([
-            search.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+            titleLabel.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+            titleLabel.leadingAnchor.constraint(equalTo: search.leadingAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: search.trailingAnchor),
+            search.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 12),
             search.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
             search.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
             scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 12),
@@ -107,12 +117,33 @@ final class DefaultApplicationPreferencesController: NSWindowController, NSWindo
             buttons.leadingAnchor.constraint(equalTo: search.leadingAnchor),
             buttons.bottomAnchor.constraint(equalTo: message.topAnchor, constant: -10),
             message.leadingAnchor.constraint(equalTo: search.leadingAnchor), message.trailingAnchor.constraint(equalTo: search.trailingAnchor),
-            message.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+            message.bottomAnchor.constraint(equalTo: doneButton.topAnchor, constant: -12),
             message.heightAnchor.constraint(greaterThanOrEqualToConstant: 70),
+            doneButton.trailingAnchor.constraint(equalTo: search.trailingAnchor),
+            doneButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
         ])
+        NotificationCenter.default.addObserver(self, selector: #selector(languageDidChange),
+                                               name: L10n.didChangeNotification, object: nil)
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// Done / Esc: ends the sheet (closes the window when it is not a sheet),
+    /// never while an assignment is running (same rule as `windowShouldClose`).
+    func dismissSheet() {
+        guard !busy else { return }
+        SettingsSheet.dismiss(window)
+    }
+
+    @objc private func doneClicked(_ sender: Any?) { dismissSheet() }
+
+    @objc private func languageDidChange() {
+        titleLabel.stringValue = SettingsSheet.title(.fileDefaultsTitle)
+        doneButton.title = L10n.t(.findDone)
+        refresh()
+    }
+
     @objc private func refresh() {
         guard !busy else { return }
         window?.title = L10n.t(.fileDefaultsTitle).replacingOccurrences(of: "…", with: "")

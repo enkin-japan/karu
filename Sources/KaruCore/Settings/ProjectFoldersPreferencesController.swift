@@ -5,10 +5,13 @@ import AppKit
 /// indexed file count, index size on disk and status, plus Clear Index and
 /// Remove; Add Folder… opens a directory-only panel (injectable for tests).
 /// A notice explains the file cap when a folder hit it. Built when opened from
-/// Settings and released through `onClose`, like the other sub-windows.
+/// Settings › Code, presented as a sheet on the Settings window and released
+/// when it ends (or through `onClose`).
 /// Folder paths are machine-local (`ProjectFolderStore`), never exported.
 final class ProjectFoldersPreferencesController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
+    private let titleLabel = SettingsSheet.titleLabel()
+    private(set) var doneButton: NSButton!
 
     struct Row {
         let path: String
@@ -44,11 +47,13 @@ final class ProjectFoldersPreferencesController: NSWindowController, NSWindowDel
          chooseFolder: FolderChooser? = nil) {
         self.index = index
         self.center = center
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 260),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = SettingsSheetWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 260),
+                                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
+        window.onCancel = { [weak self] in self?.dismissSheet() }
+        doneButton = SettingsSheet.doneButton(target: self, action: #selector(doneClicked(_:)))
         self.chooseFolder = chooseFolder ?? { [weak self] reply in self?.presentOpenPanel(reply) }
 
         help.textColor = .secondaryLabelColor
@@ -72,11 +77,20 @@ final class ProjectFoldersPreferencesController: NSWindowController, NSWindowDel
         grid.columnSpacing = 12
         grid.rowAlignment = .firstBaseline
 
-        let content = NSStackView(views: [help, grid, emptyLabel, limitNotice, addButton])
+        let doneRow = SettingsSheet.trailingRow(doneButton)
+        let content = NSStackView(views: [titleLabel, help, grid, emptyLabel, limitNotice, addButton, doneRow])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 14
         content.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
+        // A leading-aligned stack does not reserve its trailing inset for its
+        // widest view; without this the grid ran to the window's right edge.
+        for wide in [help, grid] as [NSView] {
+            content.trailingAnchor.constraint(greaterThanOrEqualTo: wide.trailingAnchor,
+                                              constant: content.edgeInsets.right).isActive = true
+        }
+        doneRow.widthAnchor.constraint(equalTo: content.widthAnchor,
+                                       constant: -(content.edgeInsets.left + content.edgeInsets.right)).isActive = true
         window.contentView = content
         // At least the help text's wrapping width: the fitted window followed
         // the grid, and in Chinese (short column titles and buttons) it came
@@ -104,7 +118,9 @@ final class ProjectFoldersPreferencesController: NSWindowController, NSWindowDel
     // MARK: - Content
 
     @objc private func reloadStrings() {
-        window?.title = L10n.t(.projectFoldersTitle).replacingOccurrences(of: "…", with: "")
+        window?.title = SettingsSheet.title(.projectFoldersTitle)
+        titleLabel.stringValue = SettingsSheet.title(.projectFoldersTitle)
+        doneButton.title = L10n.t(.findDone)
         help.stringValue = L10n.t(.projectFoldersHelp)
         emptyLabel.stringValue = L10n.t(.projectFoldersEmpty)
         addButton.title = L10n.t(.projectFoldersAdd)
@@ -193,15 +209,25 @@ final class ProjectFoldersPreferencesController: NSWindowController, NSWindowDel
                    statusLabel: statusLabel, clearButton: clearButton, removeButton: removeButton)
     }
 
-    /// Resizes the window to its content, keeping the top edge in place.
+    /// Resizes the window to its content, keeping the top edge in place. As a
+    /// sheet it also stays centred on its parent (a sheet hangs from the
+    /// parent's title bar, so the top edge must not move).
     private func refitWindow() {
         guard let window, let content = window.contentView else { return }
         content.layoutSubtreeIfNeeded()
         let size = content.fittingSize
         var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
-        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        let x = window.sheetParent.map { $0.frame.midX - frame.width / 2 } ?? window.frame.minX
+        frame.origin = NSPoint(x: x.rounded(), y: window.frame.maxY - frame.height)
         window.setFrame(frame, display: window.isVisible)
     }
+
+    /// Done / Esc: ends the sheet (closes the window when it is not a sheet).
+    func dismissSheet() {
+        SettingsSheet.dismiss(window)
+    }
+
+    @objc private func doneClicked(_ sender: Any?) { dismissSheet() }
 
     // MARK: - Actions
 

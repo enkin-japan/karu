@@ -132,7 +132,9 @@ Sources/
     Inference/          内置类型表（TypeTableStore，mmap 懒加载）与 TypeExpr 类型表达式解析（M17 T17.10 起）
     Workspace/          项目文件夹与跨文件符号索引（WorkspaceIndex，SQLite，后台队列 + FSEvents；M17 T17.12 起）
     Format/             JSON/JSONL/XML/plist pretty-printer
-    Settings/           偏好（每语言缩进宽度等，UserDefaults）+ 偏好窗口
+    Settings/           偏好（每语言缩进宽度等，UserDefaults）+ 设置窗口：一个工具栏标签式窗口
+                        （通用 / 编辑 / 代码 / 运行 / 草稿本 / 快捷键），各页实现 SettingsPage，首次切换时创建，
+                        关窗后连同窗口控制器一起释放；语言列表、项目文件夹、默认打开方式以 sheet 呈现
     TextModel/          LineIndex（换行偏移索引）等共享数据结构
 Tests/
   KaruCoreTests/  单元测试（LineIndex、tokenizer、formatter、缩进逻辑为主）
