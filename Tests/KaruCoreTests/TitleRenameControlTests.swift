@@ -69,4 +69,21 @@ struct TitleRenameControlTests {
         #expect(window.isDocumentEdited)
         #expect(title.accessibilityLabel() == "● " + window.title)
     }
+
+    /// Indent width is set per language in Settings only: the editor toolbar
+    /// carries no indent control, just the language and module popups.
+    @Test func editorToolbarHasNoIndentControl() throws {
+        let defaults = UserDefaults(suiteName: "TitleRenameControlTests-\(UUID().uuidString)")!
+        let controller = EditorWindowController()
+        controller.sessionStore = SessionStore(defaults: defaults)
+        controller.draftStore = DraftStore(directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("KaruTitleDrafts-\(UUID().uuidString)", isDirectory: true))
+        defer { controller.close() }
+        let toolbar = try #require(controller.window?.toolbar)
+        let ids = toolbar.items.map(\.itemIdentifier.rawValue)
+        #expect(!ids.contains { $0.contains("indent") })
+        #expect(ids.first == "dev.enkin.toolbar.language")
+        #expect(ids.dropFirst().first == "dev.enkin.toolbar.format")
+        #expect(toolbar.items.compactMap { $0.view as? NSPopUpButton }.count == 2)
+    }
 }

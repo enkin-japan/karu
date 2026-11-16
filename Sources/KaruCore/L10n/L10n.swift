@@ -116,7 +116,6 @@ public enum L10nKey: String, CaseIterable, Sendable {
     // Language menu.
     case menuLanguage, languageAuto
     // Toolbar labels / tooltips.
-    case toolbarIndentLabel, toolbarIndentTooltip
     case toolbarFeatureModulesTooltip, toolbarSettingsLabel
     case formatAction
     // Find bar.

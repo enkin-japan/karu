@@ -261,8 +261,6 @@ extension L10n {
         .menuLanguage: "Language",
         .languageAuto: "Auto",
 
-        .toolbarIndentLabel: "Indent",
-        .toolbarIndentTooltip: "Indent width",
         .toolbarFeatureModulesTooltip: "Feature modules",
         .toolbarSettingsLabel: "Settings",
         .formatAction: "Format",
@@ -589,8 +587,6 @@ extension L10n {
         .menuLanguage: "语言",
         .languageAuto: "自动",
 
-        .toolbarIndentLabel: "缩进",
-        .toolbarIndentTooltip: "缩进宽度",
         .toolbarFeatureModulesTooltip: "功能模块",
         .toolbarSettingsLabel: "设置",
         .formatAction: "格式化",
@@ -917,8 +913,6 @@ extension L10n {
         .menuLanguage: "言語",
         .languageAuto: "自動",
 
-        .toolbarIndentLabel: "インデント",
-        .toolbarIndentTooltip: "インデント幅",
         .toolbarFeatureModulesTooltip: "機能モジュール",
         .toolbarSettingsLabel: "設定",
         .formatAction: "フォーマット",

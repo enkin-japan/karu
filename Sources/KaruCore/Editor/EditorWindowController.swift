@@ -414,9 +414,6 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         updateWindowState()
         refreshStatusBar()
         toolbarController?.reloadStrings()
-        // Configuration imports also broadcast this notification; keep the
-        // displayed indentation in sync with the newly restored preference.
-        toolbarController?.refreshIndent()
         findBar.reloadStrings()
         saveFailureBanner.reloadStrings()
     }
@@ -1379,14 +1376,6 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         (textView as? EditorTextView)?.languageIdentifier ?? ""
     }
 
-    /// The indent width currently in effect (explicit override → detected unit →
-    /// language default), so the toolbar popup shows what the editor actually
-    /// uses rather than just the stored default.
-    var currentEffectiveIndentWidth: Int {
-        (textView as? EditorTextView)?.effectiveIndentWidth
-            ?? IndentSettings().width(for: currentLanguageIdentifierValue)
-    }
-
     /// Manual override to a specific language (from the Language menu or the
     /// toolbar popup). Suppresses automatic detection until Auto is chosen again.
     func chooseLanguage(identifier: String) {
@@ -1415,14 +1404,6 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             setDocumentLanguage(nil, editorIdentifier: "")
             maybeAutoDetectLanguage()
         }
-    }
-
-    /// Sets the indent width for the current language (from the toolbar popup)
-    /// and repaints open editors so the indent rainbow reflects the new width.
-    func setIndentWidth(_ width: Int) {
-        let language = currentLanguageIdentifierValue
-        UserDefaults.standard.set(width, forKey: IndentSettings.widthKey(for: language))
-        textView.needsDisplay = true
     }
 
     // MARK: - Menu validation
