@@ -82,6 +82,23 @@ struct HighlightMaintenanceTests {
         func caret(_ location: Int) {
             textView.setSelectedRange(NSRange(location: location, length: 0))
         }
+
+        /// Types `text` at the selection, as the keyboard does.
+        func type(_ text: String) {
+            textView.insertText(text, replacementRange: textView.selectedRange())
+        }
+
+        /// Indices in `range` (default: the whole document) that carry a
+        /// background.
+        func tinted(in range: NSRange? = nil) -> [Int] {
+            let range = range ?? NSRange(location: 0, length: ns.length)
+            return (range.location..<NSMaxRange(range)).filter { background(at: $0) != nil }
+        }
+
+        /// Lets main-queue work queued by an edit run.
+        func pump(milliseconds: Int = 30) async {
+            try? await Task.sleep(for: .milliseconds(milliseconds))
+        }
     }
 
     private let theme = HighlightTheme()
@@ -189,6 +206,176 @@ struct HighlightMaintenanceTests {
         editor.controller.findBarForTesting.hide()
         #expect(editor.background(at: 1) === bracket)
         #expect(editor.background(at: 4) === bracket)
+    }
+
+    /// A search match on `)` keeps the search colour after an edit inside the
+    /// pair re-tints it, and after the caret leaves the pair.
+    @Test func searchColourSurvivesTheBracketTintAfterAnEdit() async throws {
+        let editor = try Editor("g(ab) )\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.find(NSRange(location: 4, length: 1))      // search for `)`
+        let search = try #require(editor.background(at: 6))
+        #expect(editor.background(at: 4) === search)
+
+        editor.caret(4)                                   // just before `)`
+        let bracket = try #require(editor.background(at: 1))
+        #expect(bracket !== search)
+        #expect(editor.background(at: 4) === search)
+
+        editor.type("c")                                  // `g(abc|) )`
+        await editor.pump()
+        #expect(editor.background(at: 1) === bracket)
+        #expect(editor.background(at: 5) === search)
+        #expect(editor.background(at: 7) === search)
+
+        editor.caret(3)                                   // away from the pair
+        #expect(editor.background(at: 1) == nil)
+        #expect(editor.background(at: 5) === search)
+        #expect(editor.background(at: 7) === search)
+    }
+
+    // MARK: - The bracket tint follows edits
+
+    @Test func bracketTintFollowsTypingAfterTheOpener() async throws {
+        let editor = try Editor("x(y)\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.caret(2)
+        #expect(editor.background(at: 1) != nil)
+        #expect(editor.background(at: 3) != nil)
+        editor.type("a")                                  // `x(a|y)`
+        editor.caret(0)
+        #expect(editor.tinted() == [])
+        await editor.pump()
+        #expect(editor.tinted() == [])
+    }
+
+    @Test func bracketTintFollowsAPaste() async throws {
+        let editor = try Editor("call(arg)\nzz\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.caret(5)
+        #expect(editor.background(at: 8) != nil)
+        editor.type("first, ")
+        editor.caret(editor.ns.length)
+        #expect(editor.background(at: 15) == nil)
+        #expect(editor.tinted() == [])
+    }
+
+    @Test func deletingTheOpenerClearsTheCloser() async throws {
+        let editor = try Editor("ab (c)\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.caret(4)
+        #expect(editor.background(at: 5) != nil)
+        editor.textView.deleteBackward(nil)               // `ab |c)`
+        #expect(editor.background(at: 4) == nil)
+        await editor.pump()
+        #expect(editor.background(at: 4) == nil)
+        editor.caret(0)
+        #expect(editor.tinted() == [])
+    }
+
+    /// Typing `)` inside a word with the same-word tint: the word
+    /// highlighter's asynchronous clear covers the whole paragraph, and the
+    /// new pair's tint must come back over it.
+    @Test func bracketTintSurvivesTheWordTintClear() async throws {
+        let editor = try Editor("(foo) foo\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.caret(3)                                   // `(fo|o) foo`
+        await editor.waitForWordScan()
+        let word = try #require(editor.background(at: 6))
+        #expect(editor.background(at: 1) === word)
+
+        editor.type(")")                                  // `(fo)|o) foo`
+        let bracket = try #require(editor.background(at: 0))
+        #expect(bracket !== word)
+        #expect(editor.background(at: 3) === bracket)
+
+        await editor.pump(milliseconds: 20)               // the asynchronous clear
+        #expect(editor.background(at: 0) === bracket)
+        #expect(editor.background(at: 3) === bracket)
+
+        await editor.pump(milliseconds: 420)              // and the rescan
+        #expect(editor.background(at: 0) === bracket)
+        #expect(editor.background(at: 3) === bracket)
+        #expect(editor.background(at: 5) == nil)
+    }
+
+    /// Undo puts the caret back beside `(`, so the pair is re-tinted where it
+    /// was; redo then shifts the closer again.
+    @Test func bracketTintFollowsUndoAndRedo() async throws {
+        let editor = try Editor("x(y)\nzz\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.caret(2)
+        editor.type("a")
+        editor.type("b")
+        let undoManager = try #require(editor.textView.undoManager)
+        #expect(undoManager.canUndo)
+        undoManager.undo()                                // `x(|y)`
+        #expect(editor.tinted() == [1, 3])
+        undoManager.redo()                                // `x(ab|y)`
+        editor.caret(editor.ns.length - 2)                // inside `zz`
+        let line = editor.ns.lineRange(for: NSRange(location: 0, length: 0))
+        #expect(editor.tinted(in: line) == [])
+        await editor.pump()
+        #expect(editor.tinted(in: line) == [])
+    }
+
+    /// Forward delete of the closer does not move the caret, so only the
+    /// text-change path can clear the opener.
+    @Test func forwardDeletingTheCloserClearsTheOpener() async throws {
+        let editor = try Editor("x()\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.caret(2)
+        #expect(editor.background(at: 1) != nil)
+        editor.textView.deleteForward(nil)                // `x(|`
+        await editor.pump()
+        #expect(editor.background(at: 1) == nil)
+        #expect(editor.tinted() == [])
+    }
+
+    /// Text that replaces a tinted bracket programmatically carries no tint
+    /// once the caret moves away.
+    @Test func replacedBracketCarriesNoTint() async throws {
+        let editor = try Editor("x(y)\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.caret(2)
+        #expect(editor.background(at: 1) != nil)
+        let storage = try #require(editor.textView.textStorage)
+        storage.replaceCharacters(in: NSRange(location: 1, length: 1), with: "[")
+        editor.textView.didChangeText()
+        #expect(editor.background(at: 1) == nil)
+        editor.caret(0)
+        #expect(editor.tinted() == [])
+        await editor.pump()
+        #expect(editor.tinted() == [])
+    }
+
+    /// A batched edit reports the union of its changes. A tinted bracket
+    /// inside that union that no change touched keeps its character; it must
+    /// carry no leftover tint once the caret leaves.
+    @Test func batchedEditAroundABracketLeavesNoTint() async throws {
+        let editor = try Editor("x(y)\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.caret(2)
+        #expect(editor.tinted() == [1, 3])
+        let storage = try #require(editor.textView.textStorage)
+        storage.beginEditing()
+        storage.replaceCharacters(in: NSRange(location: 2, length: 1), with: "zz")
+        storage.replaceCharacters(in: NSRange(location: 0, length: 1), with: "w")
+        storage.endEditing()
+        editor.textView.didChangeText()                   // `w(zz)`
+        editor.caret(0)
+        #expect(editor.tinted() == [])
+        await editor.pump()
+        #expect(editor.tinted() == [])
     }
 
     // MARK: - VH2: the word tint follows scrolling

@@ -272,6 +272,29 @@
   - 补修后：不限宽 `swift test` 10 轮全过（38–43 s）；`scripts/test.sh` 3 轮全过。1711 个用例 / 200 个套件。
 - 此后全量测试用 `scripts/test.sh`。
 
+### 第二批进度：括号底色（2026-11-17）
+
+- 状态：✅ 自动化通过，已提交并装本机，待用户实机测。未升版本。
+- 改动（implementer 实施，main 审查 diff）：
+  - 新增 `Sources/KaruCore/Editor/BracketPairHighlighter.swift`，接管原来 `EditorWindowController` 里的 `bracketHighlight` 和
+    `updateBracketMatchHighlight()`。常驻状态仍是固定大小：最多两个单字符范围、一个标志、一个合并的待办任务。
+  - 记录随编辑移动：在 `textStorageWillProcessEditing`（拿到的是精确的编辑范围）里，编辑之前的一端不动，编辑之后的一端按长度差平移，
+    被编辑覆盖的一端从记录里去掉。回调里只改记录，不动布局。
+  - 编辑后重算：`selectionDidChange` 照旧调 `update()`；光标不动的编辑由 `textDidChange` 调 `refreshIfNeeded()`；
+    不发 `textDidChange` 的程序化编辑由一个合并的 `DispatchQueue.main.async` 兜底。关窗时 `cancel()`。
+  - 优先级 搜索 > 括号 > 同词：同词底色画或清之后，先 `restore(intersecting:)` 把括号底色补回，再重贴搜索命中；
+    括号自己画或清之后重贴搜索命中；查找栏整篇清底色后括号和同词各自重画。`WordOccurrenceHighlighter` 没有改。
+- 实测得到的事实（裸 `NSTextView` 探针，用完已删）：编辑时布局管理器会让临时属性跟着编辑点之后的文字移动；新插入或替换进来的字符不带底色；
+  成批编辑（`beginEditing` / `endEditing`）报告的合并范围内，临时属性整段被清掉。所以被编辑覆盖的一端不会留下底色，从记录里去掉即可。
+  原来的缺陷只是「记录没跟着移动，而真正的底色跟着文字移动了」。
+- 新增窗口级测试 9 条（`HighlightMaintenanceTests`）：`x(|y)` 打字后移走光标、`call(|arg)` 插入一段后移到文末、退格删掉 `(`、
+  带同词底色时在词中打 `)`（清除后和重扫后两次检查）、撤销再重做后移走光标、向前删除 `)`、搜索命中在 `)` 上时编辑后仍是搜索色、
+  程序化替换 `(`、成批编辑。前五条在修复前失败（共 11 处断言）。方案里原定的「打 `ab` 再撤销」在旧代码上碰巧通过
+  （撤销把光标放回 `(` 旁边），所以加了一步重做，旧代码会在 `)` 上留下孤立底色。
+- 验证：`scripts/test.sh` 1720 个用例 / 200 个套件通过（45 s）；视觉冒烟 `VISUAL OK`、`FOLD GEOMETRY OK`；
+  内存基准全部通过（空文档 19.2 MB，1 MB JSON 22.6，10 MB Python 57.5，1000 行 py 21.9、ts 22.1）。
+- 未单独覆盖：兜底的异步重算只在程序化编辑不发 `textDidChange` 时才起作用，夹具里的编辑都会发，所以没有单独的用例。
+
 ## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
 
 - 状态：✅ 已修复（2026-11-17），见上一节「三项待处理问题的深度测试与修复方案」的第一部分和「第一批进度」。

@@ -91,6 +91,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// given, so an unchanged language builds no definition.
     private var wordHighlighterLanguage = ""
 
+    /// Matched-bracket background tint. Registered on the observer hub (which
+    /// holds observers weakly, so this controller retains it) to follow edits;
+    /// recomputed from `selectionDidChange` and, for edits that leave the
+    /// caret in place, from `textDidChange`. Fixed-size state (at most two
+    /// ranges), cancelled on teardown.
+    private var bracketHighlighter: BracketPairHighlighter!
+
     /// Run current buffer (T16.3b, Run/RunSessionController.swift). The session
     /// (runner + output panel) is created on first Run / Show Output and
     /// released on panel close, window close or `run` module off. The other
@@ -182,26 +189,6 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// keystroke (a document-level property, and detection scans the whole buffer),
     /// so the status bar just renders this stored value.
     private var currentLineEnding: LineEnding = .lf
-
-    /// The two one-character ranges most recently painted by the bracket-match
-    /// highlight (opener + closer), or `nil` when none is showing. Fixed-size
-    /// state (never a growing structure): it exists only so the *next*
-    /// `selectionDidChange` can clear exactly what it drew before recomputing.
-    private var bracketHighlight: (open: NSRange, close: NSRange)?
-
-    /// Low-saturation background tint for the matched bracket pair, resolved per
-    /// appearance (mirrors `HighlightTheme`'s dynamic-colour approach). Bracket
-    /// highlighting uses `.backgroundColor` — the same temporary attribute key
-    /// as the find bar and the same-word tint. The key does not stack: the last
-    /// writer wins and a removal removes whatever colour is there, so after
-    /// painting or clearing the pair the find bar's search matches are
-    /// re-applied on top (search wins), and a find-bar wipe repaints the pair
-    /// (`FindBarController.onHighlightsReset`).
-    private static let bracketMatchColor = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.55, green: 0.58, blue: 0.66, alpha: 0.42)
-            : NSColor(srgbRed: 0.36, green: 0.42, blue: 0.52, alpha: 0.26)
-    }
 
     public convenience init() {
         let window = NSWindow(
@@ -319,25 +306,33 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         observerHub.add(wordHighlighter)
         self.wordHighlighter = wordHighlighter
 
+        let bracketHighlighter = BracketPairHighlighter(textView: textView)
+        observerHub.add(bracketHighlighter)
+        self.bracketHighlighter = bracketHighlighter
+
         // Find bar shares the window's LineIndex; it sits above the editor in a
         // vertical stack and collapses out of layout when hidden.
         let findBar = FindBarController(textView: textView, lineIndex: lineIndex)
         self.findBar = findBar
 
-        // The find bar, the bracket matcher and the same-word tint share the
+        // The find bar, the bracket pair and the same-word tint share the
         // `.backgroundColor` temporary attribute, which does not stack (last
-        // writer wins; a removal removes every colour). Search matches win:
-        // after the word tint paints or clears, the matches it touched are
-        // re-applied on top; when the find bar wipes the document's background
+        // writer wins; a removal removes every colour). Priority is search
+        // match > bracket pair > word tint: after the bracket pair paints or
+        // clears, the search matches it touched are re-applied on top; after
+        // the word tint paints or clears, the pair is restored and then the
+        // search matches; when the find bar wipes the document's background
         // (recompute / hide), the bracket pair and the word tint repaint.
-        wordHighlighter.onBackgroundChanged = { [weak findBar] ranges in
+        bracketHighlighter.onBackgroundChanged = { [weak findBar] ranges in
+            findBar?.reapplyHighlights(intersecting: ranges)
+        }
+        wordHighlighter.onBackgroundChanged = { [weak findBar, weak bracketHighlighter] ranges in
+            bracketHighlighter?.restore(intersecting: ranges)
             findBar?.reapplyHighlights(intersecting: ranges)
         }
         findBar.onHighlightsReset = { [weak self] in
             guard let self else { return }
-            // The wipe already removed the pair's attribute.
-            self.bracketHighlight = nil
-            self.updateBracketMatchHighlight()
+            self.bracketHighlighter.backgroundWasReset()
             self.wordHighlighter.backgroundWasReset()
         }
 
@@ -781,46 +776,16 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         maybeAutoDetectLanguage()
         refreshStatusBar()
         scheduleDraftFlush()
+        // An edit that leaves the caret in place (forward delete of the
+        // closer) need not post a selection change; recompute the pair here
+        // unless `selectionDidChange` already did since the edit.
+        bracketHighlighter.refreshIfNeeded()
     }
 
     @objc private func selectionDidChange(_ notification: Notification) {
         refreshStatusBar()
-        updateBracketMatchHighlight()
+        bracketHighlighter.update()
         wordHighlighter.selectionChanged()
-    }
-
-    /// Recomputes the matched-bracket background highlight for the current caret.
-    /// Clears the previous pair (the two ranges this controller recorded; the
-    /// removal takes any colour there, so the find bar's matches are re-applied
-    /// over them), then, when the caret is adjacent to a balanced bracket, tints
-    /// both the opener and its match — again with search matches re-applied on
-    /// top, so a bracket that is a search hit keeps the search colour.
-    /// Storage-free apart from the two-range `bracketHighlight` marker; the match
-    /// itself is a transient scan (`BracketMatcher.findMatch`).
-    private func updateBracketMatchHighlight() {
-        guard let layoutManager = textView.layoutManager else { return }
-
-        if let previous = bracketHighlight {
-            let length = textView.textStorage?.length ?? 0
-            let cleared = [previous.open, previous.close].filter { NSMaxRange($0) <= length }
-            for range in cleared {
-                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
-            }
-            bracketHighlight = nil
-            findBar.reapplyHighlights(intersecting: cleared)
-        }
-
-        // Only highlight for a plain caret (no active selection).
-        let selection = textView.selectedRange()
-        guard selection.length == 0,
-              let match = BracketMatcher.findMatch(text: textView.string, caret: selection.location) else {
-            return
-        }
-        let color = Self.bracketMatchColor
-        layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: match.open)
-        layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: match.close)
-        bracketHighlight = match
-        findBar.reapplyHighlights(intersecting: [match.open, match.close])
     }
 
     // MARK: - Jump to matching bracket (first-responder target)
@@ -1637,6 +1602,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         documentAnalysis?.cancelPendingWork()
         // Nor does a pending same-word scan, nor its viewport observers.
         wordHighlighter?.cancel()
+        // Nor a pending bracket-pair refresh.
+        bracketHighlighter?.cancel()
         // A run never outlives its window (T16.3b).
         tearDownRunSession()
         // Session bookkeeping (T14.8). Closing a window *by hand* is the user
