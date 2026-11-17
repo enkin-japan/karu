@@ -359,16 +359,149 @@ struct SyntaxConstantTests {
         }
     }
 
-    @Test func constDeclarationLookback() {
-        let ns = "const a = 1; let b = 2; const [c, ...d] = e; const {f, g: h} = i; for (const j of k) {} var l"
-            as NSString
-        #expect(HighlightEngine.isConstDeclaration(at: ns.range(of: "a =").location, in: ns))
-        #expect(!HighlightEngine.isConstDeclaration(at: ns.range(of: "b =").location, in: ns))
-        #expect(HighlightEngine.isConstDeclaration(at: ns.range(of: "c,").location, in: ns))
-        #expect(HighlightEngine.isConstDeclaration(at: ns.range(of: "d]").location, in: ns))
-        #expect(HighlightEngine.isConstDeclaration(at: ns.range(of: "h}").location, in: ns))
-        #expect(HighlightEngine.isConstDeclaration(at: ns.range(of: "j of").location, in: ns))
-        #expect(!HighlightEngine.isConstDeclaration(at: ns.range(of: "l", options: .backwards).location, in: ns))
+    /// Every declaration of `text` with its `const` flag, read through the
+    /// ranged iterator over the whole text.
+    private func constFlags(_ language: String, _ text: String) -> [(name: String, constant: Bool)] {
+        let scan = DeclarationScan.scan(text: text, languageIdentifier: language)
+        var out: [(name: String, constant: Bool)] = []
+        scan.forEachDeclaration(from: 0, to: Int.max) { _, name, _, constant in out.append((name, constant)) }
+        return out
+    }
+
+    private func flag(_ flags: [(name: String, constant: Bool)], _ name: String) -> Bool? {
+        flags.first { $0.name == name }?.constant
+    }
+
+    /// The JS / TS walker flags every binding of a `const` declaration
+    /// (LEDGER VH4): all declarators, destructuring, `for (const …)`,
+    /// `export const`, `declare const`; never `let` / `var` / `using`, nor a
+    /// `const f = () =>` function or a `const enum`.
+    @Test func javascriptConstDeclarationsAreFlaggedByTheWalker() {
+        for language in ["javascript", "typescript"] {
+            let text = """
+            const a = 1, b = 2;
+            const c = 1,
+                d = 2;
+            const /* note */ value = 1;
+            const {x, y: w} = o, z = 3;
+            const [p, ...rest] = xs;
+            for (const j of xs) {}
+            export const exported = 1;
+            let l = 1, m = 2;
+            var v = 1;
+            using u = r;
+            const f = () => 1;
+            """
+            let flags = constFlags(language, text)
+            for name in ["a", "b", "c", "d", "value", "x", "w", "z", "p", "rest", "j", "exported"] {
+                #expect(flag(flags, name) == true, "\(language): \(name)")
+            }
+            for name in ["l", "m", "v", "u", "f"] {
+                #expect(flag(flags, name) == false, "\(language): \(name)")
+            }
+            // `y` is a key, not a binding.
+            #expect(flag(flags, "y") == nil)
+        }
+        let ts = constFlags("typescript", """
+            const a: number = 1, b: string = "x";
+            declare const g: number;
+            const enum E { K }
+            let h: number = 1;
+            """)
+        #expect(flag(ts, "a") == true)
+        #expect(flag(ts, "b") == true)
+        #expect(flag(ts, "g") == true)
+        #expect(flag(ts, "E") == false)
+        #expect(flag(ts, "h") == false)
+    }
+
+    /// Go: `const` names (single-line and grouped) are flagged, `var` names
+    /// are not; no other brace language flags anything.
+    @Test func goConstDeclarationsAreFlaggedByTheWalker() {
+        let go = constFlags("go", """
+            package main
+
+            const a = 1
+            const b, c = 1, 2
+            const (
+            	A = iota
+            	B
+            	C
+            	D int = 4
+            )
+            var x = 1
+            var (
+            	y = 2
+            	z int
+            )
+            func f() {
+            	const k = 1
+            	var n = 2
+            }
+            """)
+        for name in ["a", "b", "c", "A", "B", "C", "D", "k"] { #expect(flag(go, name) == true, "\(name)") }
+        for name in ["x", "y", "z", "n", "f"] { #expect(flag(go, name) == false, "\(name)") }
+        for (language, text) in [("rust", "const A: i32 = 1;\nstatic B: i32 = 2;\nfn f() { let c = 1; }\n"),
+                                 ("c", "const int a = 1;\nint f(void) { const int b = 2; return b; }\n"),
+                                 ("cpp", "const int a = 1;\nconstexpr int b = 2;\n"),
+                                 ("csharp", "class K { const int A = 1; }\n"),
+                                 ("java", "class K { static final int A = 1; }\n"),
+                                 ("swift", "let a = 1\nvar b = 2\n")] {
+            let scan = DeclarationScan.scan(text: text, languageIdentifier: language)
+            #expect(scan.constantBits.isEmpty, "\(language)")
+        }
+    }
+
+    /// A scan without any `const` declaration stores no flag bytes.
+    @Test func noConstDeclarationsNoFlagBytes() {
+        let python = DeclarationScan.scan(text: "def f(a):\n    b = a\n    return b\n", languageIdentifier: "python")
+        #expect(!python.declarations.isEmpty)
+        #expect(python.constantBits.isEmpty)
+        let js = DeclarationScan.scan(text: "let a = 1, b = 2;\nvar c = 3;\nfunction f(d) { let e = d; }\n",
+                                      languageIdentifier: "javascript")
+        #expect(js.declarations.count >= 5)
+        #expect(js.constantBits.isEmpty)
+        // One flagged declaration: bytes only up to its ordinal.
+        let one = DeclarationScan.scan(text: "let a = 1;\nconst b = 2;\nlet c = 3, d = 4;\n",
+                                       languageIdentifier: "javascript")
+        #expect(one.constantBits == [0b10])
+        // The regex reference path flags nothing.
+        let legacy = DeclarationScan.regexScan("const a = 1;\n" as NSString, languageIdentifier: "javascript")
+        #expect(legacy.constantBits.isEmpty)
+    }
+
+    /// The ranged iterator derives each declaration's ordinal from the seek
+    /// point it starts at (seek `k` precedes ordinal `(k + 1) * seekStride`):
+    /// alternating `const` / `let` lines across several seek boundaries,
+    /// every range start agrees with the full decode.
+    @Test func constFlagsThroughSeekPoints() {
+        var text = ""
+        for i in 0..<150 { text += (i % 2 == 0 ? "const" : "let") + " n\(i) = \(i);\n" }
+        let scan = DeclarationScan.scan(text: text, languageIdentifier: "javascript")
+        let all = scan.declarations
+        #expect(all.count == 150)
+        #expect(scan.declarationSeeks.count == 4)   // before ordinals 64 and 128
+        // Ordinal n is `n<n>`, constant when n is even.
+        for (ordinal, declaration) in all.enumerated() { #expect(declaration.name == "n\(ordinal)") }
+        let ns = text as NSString
+        func lineStart(_ i: Int) -> Int { ns.range(of: "n\(i) =").location }
+        for first in [0, 1, 62, 63, 64, 65, 66, 126, 127, 128, 129, 130, 149] {
+            for to in [lineStart(first) + 1, lineStart(min(149, first + 3)) + 1, ns.length] {
+                var got: [(String, Bool)] = []
+                scan.forEachDeclaration(from: lineStart(first), to: to) { _, name, _, constant in
+                    got.append((name, constant))
+                }
+                #expect(!got.isEmpty)
+                for (offset, entry) in got.enumerated() {
+                    let ordinal = first + offset
+                    #expect(entry.0 == "n\(ordinal)" && entry.1 == (ordinal % 2 == 0), "from \(first): \(entry)")
+                }
+            }
+        }
+        // The three-argument iterator is unchanged.
+        var names: [String] = []
+        scan.forEachDeclaration(from: lineStart(64), to: lineStart(66)) { _, name, _ in names.append(name) }
+        #expect(names == ["n64", "n65"])
     }
 }
 
@@ -460,6 +593,90 @@ struct SyntaxPositionRoleTests {
         #expect(p.colour(of: "a,") === theme.color(for: .constant))
         #expect(p.colour(of: "b]") === theme.color(for: .constant))
         #expect(p.colour(of: "limit", occurrence: 2) === theme.color(for: .symbolVariable))
+    }
+
+    /// Every binding of a JS / TS `const` declaration takes the constant
+    /// colour at its declaration, whatever lies between it and `const`
+    /// (LEDGER VH4); `let` / `var` bindings and references do not change.
+    @Test(arguments: ["javascript", "typescript"])
+    func javascriptConstDeclaratorsAreConstants(_ language: String) {
+        let typed = language == "typescript" ? "const ta: number = 1, tb: string = \"x\";\n" : ""
+        let p = Painter("""
+            const a = 1, b = 2;
+            const c = 1,
+                d = 2;
+            \(typed)const {x, y: w} = o, z = 3;
+            const [p, ...rest] = xs;
+            const /* note */ value = 1;
+            for (const j of xs) {}
+            export const exported = 1;
+            let l = 1, m = 2;
+            var v = 1;
+            use(b, z);
+
+            """, language: language)
+        let constant = theme.color(for: .constant)
+        let variable = theme.color(for: .symbolVariable)
+        #expect(constant !== variable)
+        for word in ["a =", "b =", "c =", "d =", "x,", "w}", "z =", "p,", "rest]", "value", "j of", "exported"] {
+            #expect(p.colour(of: word) === constant, "\(language): \(word)")
+        }
+        if !typed.isEmpty {
+            #expect(p.colour(of: "ta:") === constant)
+            #expect(p.colour(of: "tb:") === constant)
+        }
+        for word in ["l =", "m =", "v ="] {
+            #expect(p.colour(of: word) === variable, "\(language): \(word)")
+        }
+        // References keep today's colour (variable).
+        #expect(p.colour(of: "b,", occurrence: 1) === variable)
+        #expect(p.colour(of: "z)") === variable)
+    }
+
+    /// Go: `const` names are constants at their declaration, single-line
+    /// and grouped (typed entries too); `var` names stay variables.
+    @Test func goConstDeclarationsAreConstants() {
+        let p = Painter("""
+            package main
+
+            const a = 1
+            const b, c = 1, 2
+            const (
+            	A = iota
+            	B
+            	C
+            	D int = 4
+            )
+            var x = 1
+            var (
+            	y = 2
+            )
+
+            """, language: "go")
+        let constant = theme.color(for: .constant)
+        let variable = theme.color(for: .symbolVariable)
+        for word in ["a =", "b,", "c =", "A =", "\tB\n", "\tC\n", "D int"] {
+            let at = p.ns.range(of: word).location + (word.hasPrefix("\t") ? 1 : 0)
+            #expect(p.colour(at: at) === constant, "\(word.debugDescription)")
+        }
+        #expect(p.colour(of: "x =") === variable)
+        #expect(p.colour(of: "y =") === variable)
+    }
+
+    /// The flag follows the declaration across seek points: alternating
+    /// `const` / `let` lines around ordinals 64 and 128.
+    @Test func constColourAcrossSeekPoints() {
+        var text = ""
+        for i in 0..<150 { text += (i % 2 == 0 ? "const" : "let") + " n\(i) = \(i);\n" }
+        let p = Painter(text, language: "javascript")
+        let constant = theme.color(for: .constant)
+        let variable = theme.color(for: .symbolVariable)
+        for i in [0, 1, 62, 63, 64, 65, 66, 127, 128, 129, 130, 149] {
+            let at = p.ns.range(of: " n\(i) =").location + 1
+            p.textView.scrollRangeToVisible(NSRange(location: at, length: 0))
+            p.engine.appearanceDidChange()
+            #expect(p.colour(at: at) === (i % 2 == 0 ? constant : variable), "n\(i)")
+        }
     }
 
     /// Roles are mapped through the edit journal before the rescan lands,

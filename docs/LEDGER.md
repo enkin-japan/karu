@@ -109,6 +109,27 @@
   - 已知未处理（改动前就有）：编辑恰好落在已涂色的词里时，记录的范围被扩大，随后的清除可能顺带擦掉相邻的括号底色，
     下一次选区变化恢复。
   - 未做：在已安装的 App 里用鼠标键盘验证滚动和查找栏（留给用户实测）。
+- ✅ 第三批 VH4（main 定设计，implementer 实现，main 审查 diff 并复跑验收，2026-11-17）：自动化通过，已装本机，**待用户实测**。
+  - 与原方案的不同（main 开工前改定）：不新增「常量」声明种类。`DeclarationScan.codeTable` 的 4 位种类码已用满，
+    加种类要把码加宽，所有快照都会变大；而且三十来个文件里有对 `.variable` 的判断，逐处核对风险高。
+    改为种类仍是 `.variable`，另加按声明序号索引的位图 `DeclarationScan.constantBits`（一条声明一位，只存到最后一个常量为止，
+    没有 `const` 的扫描为空）。只有着色读这个标记，补全、导航、作用域查询、推断看到的声明与种类和以前完全一样。
+    `IdentifierPolicy.constDeclarationsAreConstants` 开关保留（仍只有 JS/TS 和 Go 打开），含义改为「走查器标记的常量声明用常量色」。
+  - 改动：`DeclarationBuilder.declare` 新增 `constant` 参数写位图；`forEachDeclaration(from:to:)` 新增带标记的四参数版本，
+    序号由 seek 点推出（第 k 个 seek 指向序号 (k+1)×64 的声明）；JS/TS 走查器在 `const` 声明（各声明项、解构、`for (const …)`、
+    `export const`、`declare const`）里标记 `.variable` 绑定；Go 走查器标记单行 `const` 和 `const ( … )` 组；
+    `HighlightEngine.roleTokens` 读标记，删除 `isConstDeclaration` 回扫。Rust、C、C++、C#、Java、Swift 不标记，着色不变。
+  - 测试：删除只测回扫函数的 `constDeclarationLookback`，新增 7 个（走查器标记 JS/TS、Go；无 `const` 时位图为空；
+    跨 seek 点的标记；`Painter` 级的 JS/TS、Go 颜色与跨 seek 点颜色）。implementer 把 seek 序号改错后实测跨 seek 用例失败。
+  - 验收（main 复跑）：`swift test --no-parallel` 1711 tests / 200 suites 全通过（126 s），没有任何已有用例的预期被改动；
+    视觉冒烟 VISUAL OK、FOLD GEOMETRY OK；内存基准空文档 19.2 MB、1 MB JSON 22.6 MB、10 MB Python 57.1 MB、
+    1000 行 py 21.7 MB、ts 21.9 MB，全部 PASS。
+  - 快照大小：10 MB Python（验收样本）位图为空，不增加。有 `const` 的文档会增加：implementer 用 `KARU_DECL_BENCH` 实测
+    10 MB JavaScript 声明流 219,619 → 228,901 B（位图 9,282 B），10 MB TSX 367,477 → 384,569 B（位图 17,092 B）。
+    方案里写的「10 MB 快照大小不增加」对含 `const` 的 JS/TS 不成立，增量约为每条声明 1 位。
+  - 未做：在已安装的 App 里看实际颜色（留给用户实测）；与 VS Code 的一致率没有重测（VS Code 已移除，
+    仓库内的一致率用例随全量测试通过）。
+- VH5 搁置（用户决定）。三批均未升版本、未发布、未推送。
 
 ## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
 

@@ -94,6 +94,7 @@ public struct DeclarationQueryIndex: Sendable {
             && scopeSeeks == other.scopeSeeks && namedClasses == other.namedClasses
             && scan.names == other.scan.names && scan.encodedLocations == other.scan.encodedLocations
             && scan.outline == other.scan.outline && scan.documentLength == other.scan.documentLength
+            && scan.constantBits == other.scan.constantBits
     }
 
     // MARK: - Build

@@ -169,13 +169,21 @@ public struct DeclarationScan: Sendable, Equatable {
     /// declarations, ascending. Empty for the regex path (decoded from the
     /// start instead).
     let declarationSeeks: [Int32]
+    /// Declarations read in a `const` declaration (VH4: JS / TS `const`,
+    /// Go `const`; the highlighter's constant colour): bit `n % 8` of byte
+    /// `n / 8` is set for the declaration with ordinal `n` in
+    /// `encodedLocations` (0-based, document order). The kind stays
+    /// `.variable`; only the highlighter reads the flag. Holds bytes only up
+    /// to the highest flagged ordinal: empty for a scan without one (and for
+    /// the regex path).
+    let constantBits: [UInt8]
 
     /// Declarations between two seek points.
     static let seekStride = 64
 
     init(languageIdentifier: String, table: WordIndex.SymbolTable, completionSymbols: Set<String>,
          names: [String], encodedLocations: [UInt8], outline: [UInt8], scopeCount: Int, documentLength: Int,
-         declarationSeeks: [Int32] = [], hasEmbeddedRegions: Bool = false) {
+         declarationSeeks: [Int32] = [], hasEmbeddedRegions: Bool = false, constantBits: [UInt8] = []) {
         self.languageIdentifier = languageIdentifier
         self.table = table
         self.completionSymbols = completionSymbols
@@ -186,6 +194,7 @@ public struct DeclarationScan: Sendable, Equatable {
         self.scopeCount = scopeCount
         self.documentLength = documentLength
         self.declarationSeeks = declarationSeeks
+        self.constantBits = constantBits
     }
 
     private static func empty(_ languageIdentifier: String, length: Int) -> DeclarationScan {
@@ -194,9 +203,17 @@ public struct DeclarationScan: Sendable, Equatable {
     }
 
     /// Bytes held by the compact storage (names' payload estimate, both
-    /// streams), for memory reports.
+    /// streams), for memory reports. `declarations` includes the
+    /// per-declaration `constantBits`.
     var compactStorageBytes: (names: Int, declarations: Int, outline: Int) {
-        (names.reduce(0) { $0 + $1.utf8.count + 16 }, encodedLocations.count, outline.count)
+        (names.reduce(0) { $0 + $1.utf8.count + 16 }, encodedLocations.count + constantBits.count, outline.count)
+    }
+
+    /// Whether the declaration with ordinal `ordinal` is flagged constant.
+    @inline(__always)
+    func isConstant(ordinal: Int) -> Bool {
+        let byte = ordinal >> 3
+        return byte < constantBits.count && constantBits[byte] & (1 << UInt8(ordinal & 7)) != 0
     }
 
     // MARK: - Kind codes
@@ -259,6 +276,13 @@ public struct DeclarationScan: Sendable, Equatable {
     /// declarations in the range plus at most `seekStride` (T17.7: the
     /// highlighter's position roles for its band).
     public func forEachDeclaration(from: Int, to: Int, _ body: (Int, String, DeclarationKind) -> Void) {
+        forEachDeclaration(from: from, to: to) { location, name, kind, _ in body(location, name, kind) }
+    }
+
+    /// `forEachDeclaration(from:to:_:)` that also yields whether the
+    /// declaration was read in a `const` declaration (`constantBits`; VH4,
+    /// the highlighter's constant colour).
+    public func forEachDeclaration(from: Int, to: Int, _ body: (Int, String, DeclarationKind, Bool) -> Void) {
         guard to > from else { return }
         var reader = Reader(encodedLocations)
         var location = 0
@@ -269,16 +293,24 @@ public struct DeclarationScan: Sendable, Equatable {
             let mid = (low + high) / 2
             if Int(declarationSeeks[mid * 2 + 1]) < from { low = mid + 1 } else { high = mid }
         }
+        // Seek `k` (0-based) is written just before the declaration with
+        // ordinal `(k + 1) * seekStride` (`DeclarationBuilder.declare`), so
+        // starting at seek `low - 1` the next ordinal is `low * seekStride`.
+        var ordinal = 0
         if low > 0 {
             reader.index = Int(declarationSeeks[(low - 1) * 2])
             location = Int(declarationSeeks[(low - 1) * 2 + 1])
+            ordinal = low * Self.seekStride
         }
+        let flags = !constantBits.isEmpty
         while !reader.atEnd {
             location += reader.varint()
             let nameKind = reader.varint()
+            defer { ordinal += 1 }
             if location < from { continue }
             if location >= to { return }
-            body(location, names[nameKind >> 4], Self.decode(code: nameKind & 15).0)
+            body(location, names[nameKind >> 4], Self.decode(code: nameKind & 15).0,
+                 flags && isConstant(ordinal: ordinal))
         }
     }
 

@@ -37,6 +37,10 @@ struct DeclarationBuilder: Sendable {
     /// them (T17.7: the highlighter decodes only its band).
     private var declarationCount = 0
     private var seeks: [Int32] = []
+    /// Bit `n` set: declaration number `n` (its ordinal in `encoded`) was
+    /// declared by `const` (VH4, `DeclarationScan.constantBits`). Grown
+    /// only up to the highest such ordinal: empty without any.
+    private var constantBits: [UInt8] = []
     /// Declarations that arrived out of document order and were dropped
     /// (a walker bug; tests assert it stays 0).
     private(set) var droppedOutOfOrder = 0
@@ -138,9 +142,11 @@ struct DeclarationBuilder: Sendable {
     }
 
     /// Records the declaration named by `token`; returns its name index.
+    /// `constant`: the walker read it in a `const` declaration (JS / TS,
+    /// Go; VH4) — flagged by its ordinal, the kind is unchanged.
     @discardableResult
     mutating func declare(_ text: NSString, _ token: DeclToken, kind: DeclarationScan.DeclarationKind,
-                          listed: Bool) -> Int32 {
+                          listed: Bool, constant: Bool = false) -> Int32 {
         guard token.end > token.start else { return -1 }
         guard token.start >= lastLocation else {
             droppedOutOfOrder += 1
@@ -160,6 +166,13 @@ struct DeclarationBuilder: Sendable {
         if declarationCount > 0, declarationCount % DeclarationScan.seekStride == 0 {
             seeks.append(Int32(clamping: encoded.count))
             seeks.append(Int32(clamping: lastLocation))
+        }
+        if constant {
+            let byte = declarationCount >> 3
+            if constantBits.count <= byte {
+                constantBits.append(contentsOf: repeatElement(0, count: byte + 1 - constantBits.count))
+            }
+            constantBits[byte] |= 1 << UInt8(declarationCount & 7)
         }
         declarationCount += 1
         appendVarint(token.start - lastLocation)
@@ -348,7 +361,8 @@ struct DeclarationBuilder: Sendable {
                                outline: outline.withUnsafeBufferPointer { Array($0) },
                                scopeCount: order.count, documentLength: documentLength,
                                declarationSeeks: seeks.withUnsafeBufferPointer { Array($0) },
-                               hasEmbeddedRegions: scopeOnly)
+                               hasEmbeddedRegions: scopeOnly,
+                               constantBits: constantBits.withUnsafeBufferPointer { Array($0) })
     }
 }
 

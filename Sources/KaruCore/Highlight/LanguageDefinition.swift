@@ -89,8 +89,11 @@ public struct IdentifierPolicy: Sendable {
     public var otherIdentifiers: TokenKind?
     /// Declaration kind → colour at the declared name.
     public var roles: [DeclarationScan.DeclarationKind: TokenKind]
-    /// A `.variable` declaration written after `const` (JS / TS
-    /// `const x`, destructuring included; Go `const x`) is `.constant`.
+    /// A `.variable` declaration the walker read in a `const` declaration
+    /// (JS / TS `const x`: every declarator, destructuring and `for (const
+    /// …)` included; Go `const x` and `const ( … )` groups) is `.constant`.
+    /// The walker flags the declaration in the scan
+    /// (`DeclarationScan.constantBits`); no text is read back.
     public var constDeclarationsAreConstants: Bool
     /// `$` is an identifier character (JS / TS).
     public var dollarIdentifiers: Bool

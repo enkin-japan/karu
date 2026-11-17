@@ -1119,7 +1119,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         let exact = journal.isEmpty
         var out: [(range: NSRange, kind: TokenKind)] = []
         var span = 0
-        snapshot.scan.forEachDeclaration(from: from, to: to + 1) { location, name, kind in
+        snapshot.scan.forEachDeclaration(from: from, to: to + 1) { location, name, kind, isConstant in
             if embedded.isEmpty, hostPolicy.roles[kind] == nil { return }
             let length = name.utf16.count
             guard let live = exact ? location : journal.mapFromBase(location),
@@ -1134,41 +1134,14 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             guard var role = policy.roles[kind],
                   ns.compare(name, options: .literal, range: NSRange(location: live, length: length)) == .orderedSame
             else { return }
-            if kind == .variable, policy.constDeclarationsAreConstants,
-               Self.isConstDeclaration(at: live, in: ns) {
+            // The walker flagged a `const` declaration's binding (VH4).
+            if kind == .variable, isConstant, policy.constDeclarationsAreConstants {
                 role = .constant
             }
             if let last = out.last, NSMaxRange(last.range) > live { return }
             out.append((NSRange(location: live, length: length), role))
         }
         return out
-    }
-
-    /// Whether the binding name at `location` is declared by `const`: going
-    /// back over blanks, line breaks, `,` `[` `{` `:` `.` and other binding
-    /// names (destructuring: `const {a, b: c}`, `const [x, ...rest]`), at
-    /// most 160 units, the first `const` / `let` / `var` word decides.
-    nonisolated static func isConstDeclaration(at location: Int, in ns: NSString) -> Bool {
-        let floor = max(0, location - 160)
-        var q = location - 1
-        func isWord(_ u: unichar) -> Bool {
-            u == 95 || u == 36 || (48...57).contains(u) || (65...90).contains(u) || (97...122).contains(u)
-        }
-        while q >= floor {
-            let u = ns.character(at: q)
-            if isWord(u) {
-                var s = q
-                while s > floor, isWord(ns.character(at: s - 1)) { s -= 1 }
-                let word = ns.substring(with: NSRange(location: s, length: q - s + 1))
-                if word == "const" { return true }
-                if word == "let" || word == "var" { return false }
-                q = s - 1
-                continue
-            }
-            guard [UInt16(32), 9, 10, 13, 44, 91, 123, 58, 46].contains(u) else { return false }
-            q -= 1
-        }
-        return false
     }
 
     /// The identifier tokens of `range` for `language` (pure, T17.8a): the

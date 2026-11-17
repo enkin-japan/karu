@@ -298,6 +298,9 @@ struct BraceDeclarationWalker: Sendable {
         /// Type body: the declared type name (constructor detection).
         var typeName: Int32 = -1
         var groupKind: GroupKind = .none
+        /// Go `const ( … )` group: its names are flagged constant in the
+        /// scan (VH4, the highlighter's constant colour).
+        var groupConst = false
     }
 
     // MARK: - State
@@ -623,13 +626,17 @@ struct BraceDeclarationWalker: Sendable {
     /// Declares `t` in the scope the nearest declaring frame gives it.
     /// `constant`: listed like a file-level variable wherever it appears
     /// (Rust `const` / `static` items, also in traits and impls).
+    /// `constDeclaration`: a Go `const` name, flagged constant in the scan
+    /// (VH4; unrelated to `constant`, and only Go sets it).
     @discardableResult
     private mutating func declare(_ t: DeclToken, _ kind: Kind, _ text: NSString,
-                                  _ b: inout DeclarationBuilder, constant: Bool = false) -> Int32 {
+                                  _ b: inout DeclarationBuilder, constant: Bool = false,
+                                  constDeclaration: Bool = false) -> Int32 {
         let owner = ensureDeclScope(&b)
         let global = constant || frames[owner].role == .module || frames[owner].role == .group && owner <= 1
         noteDeclared(t.start)
-        return b.declare(text, t, kind: kind, listed: isListed(constant ? .variable : kind, global: global))
+        return b.declare(text, t, kind: kind, listed: isListed(constant ? .variable : kind, global: global),
+                         constant: constDeclaration)
     }
 
     /// The kind a variable-like binding gets in the nearest declaring frame.
@@ -1408,6 +1415,7 @@ struct BraceDeclarationWalker: Sendable {
             if n.kind == .lparen {
                 var frame = newFrame(.group, n)
                 frame.groupKind = .variable
+                frame.groupConst = t.keyword == .const
                 frames[top].stmtStart = false
                 push(frame)
                 return 2
@@ -1415,8 +1423,9 @@ struct BraceDeclarationWalker: Sendable {
             let end = identifierList(a, from: 1)
             if end == Self.need { return 0 }
             var j = 1
+            let constDeclaration = t.keyword == .const
             while j < end, let u = a.at(j) {
-                if isName(u, text) { declare(u, .variable, text, &b) }
+                if isName(u, text) { declare(u, .variable, text, &b, constDeclaration: constDeclaration) }
                 j += 1
             }
             return expressionStatementCount(max(1, end))
@@ -2404,8 +2413,9 @@ struct BraceDeclarationWalker: Sendable {
                     return 0
                 }
                 var j = 0
+                let constDeclaration = frames[top].groupConst
                 while j < end, let u = a.at(j) {
-                    if isName(u, text) { declare(u, .variable, text, &b) }
+                    if isName(u, text) { declare(u, .variable, text, &b, constDeclaration: constDeclaration) }
                     j += 1
                 }
                 return max(1, end)

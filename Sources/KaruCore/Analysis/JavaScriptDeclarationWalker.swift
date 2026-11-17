@@ -24,7 +24,9 @@ import Foundation
 ///   TS `interface` / `type` / `enum` / `namespace` names and generic type
 ///   parameters as `.type`. TS type annotations (parameters, declarators,
 ///   fields, return types, `as` / `satisfies`) are skipped, never bindings;
-///   parameter modifiers (`private readonly x`) are skipped.
+///   parameter modifiers (`private readonly x`) are skipped. Every
+///   `.variable` binding of a `const` declaration is flagged constant in the
+///   scan (VH4, the highlighter's constant colour); its kind stays `.variable`.
 /// - **Scopes**: function (from `(` or its generics `<`), arrow (from its
 ///   parameter list or single parameter; an expression body ends at the next
 ///   `,` / `;` / closing bracket / ASI line break of its frame), class (from
@@ -92,8 +94,14 @@ struct JavaScriptDeclarationWalker: Sendable {
         var pending: Pending = .none
         var decl: DeclState = .none
         var declKind: Kind = .variable
+        /// The declaration started by `declKind` is a `const` one: its
+        /// `.variable` bindings are flagged constant in the scan (VH4, the
+        /// highlighter's constant colour). Set by every `startDeclaration`.
+        var declConst = false
         var entry: Entry = .start
         var bindKind: Kind = .parameter
+        /// A pattern frame's bindings belong to a `const` declaration.
+        var bindConst = false
         var arrow = false
         var isCatch = false
         var isDeclaration = false
@@ -274,8 +282,8 @@ struct JavaScriptDeclarationWalker: Sendable {
     }
 
     private mutating func declare(_ t: DeclToken, _ kind: Kind, _ text: NSString,
-                                  _ b: inout DeclarationBuilder) -> Int32 {
-        b.declare(text, t, kind: kind, listed: true)
+                                  _ b: inout DeclarationBuilder, constant: Bool = false) -> Int32 {
+        b.declare(text, t, kind: kind, listed: true, constant: constant && kind == .variable)
     }
 
     // MARK: - Lookahead
@@ -724,9 +732,10 @@ struct JavaScriptDeclarationWalker: Sendable {
         return expressionToken(t, buf, final, text, &b)
     }
 
-    private mutating func startDeclaration(_ kind: Kind) {
+    private mutating func startDeclaration(_ kind: Kind, constant: Bool = false) {
         frames[top].decl = .binding
         frames[top].declKind = kind
+        frames[top].declConst = constant
         frames[top].stmtStart = false
     }
 
@@ -742,7 +751,7 @@ struct JavaScriptDeclarationWalker: Sendable {
         switch t.keyword {
         case .const:
             if typescript, n1?.keyword == .enum { return enumDeclaration(at: 1, buf, final, text, &b) }
-            startDeclaration(.variable)
+            startDeclaration(.variable, constant: true)
             return 1
         case .let:
             guard let n1, Self.isBindable(n1) || n1.kind == .lbracket || n1.kind == .lbrace else { return nil }
@@ -853,7 +862,7 @@ struct JavaScriptDeclarationWalker: Sendable {
                     return 0
                 }
                 if f.declKind == .variable { ensureBlockScope(&b) }
-                let name = declare(t, kind, text, &b)
+                let name = declare(t, kind, text, &b, constant: f.declConst)
                 frames[top].decl = .afterBinding
                 frames[top].arrowName = kind == .function ? name : -1
                 return 1
@@ -863,6 +872,7 @@ struct JavaScriptDeclarationWalker: Sendable {
                 frames[top].decl = .afterBinding
                 var frame = newFrame(t.kind == .lbrace ? .objectPattern : .arrayPattern, t)
                 frame.bindKind = f.declKind
+                frame.bindConst = f.declConst
                 frame.entry = .key
                 push(frame)
                 return 1
@@ -911,7 +921,10 @@ struct JavaScriptDeclarationWalker: Sendable {
         if frames[top].decl != .none, let n = declToken(t, buf, final, text, &b) { return n }
         if frames[top].stmtStart, t.kind == .ident {
             switch t.keyword {
-            case .const, .let, .using:
+            case .const:
+                startDeclaration(.variable, constant: true)
+                return 1
+            case .let, .using:
                 startDeclaration(.variable)
                 return 1
             case .var:
@@ -1503,6 +1516,7 @@ struct JavaScriptDeclarationWalker: Sendable {
             frames[top].entry = .afterParam
             var frame = newFrame(t.kind == .lbrace ? .objectPattern : .arrayPattern, t)
             frame.bindKind = frames[top].bindKind
+            frame.bindConst = frames[top].bindConst
             frame.entry = .key
             push(frame)
             return 1
@@ -1534,6 +1548,7 @@ struct JavaScriptDeclarationWalker: Sendable {
                                        _ b: inout DeclarationBuilder) -> Int {
         let object = frames[top].role == .objectPattern
         let kind = frames[top].bindKind
+        let constant = frames[top].bindConst
         switch frames[top].entry {
         case .afterTarget:
             switch t.kind {
@@ -1559,12 +1574,13 @@ struct JavaScriptDeclarationWalker: Sendable {
         case .rest, .target:
             frames[top].entry = .afterTarget
             if Self.isBindable(t) {
-                _ = declare(t, kind, text, &b)
+                _ = declare(t, kind, text, &b, constant: constant)
                 return 1
             }
             if t.kind == .lbrace || t.kind == .lbracket {
                 var frame = newFrame(t.kind == .lbrace ? .objectPattern : .arrayPattern, t)
                 frame.bindKind = kind
+                frame.bindConst = constant
                 frame.entry = .key
                 push(frame)
             }
@@ -1587,6 +1603,7 @@ struct JavaScriptDeclarationWalker: Sendable {
             frames[top].entry = .afterTarget
             var frame = newFrame(t.kind == .lbrace ? .objectPattern : .arrayPattern, t)
             frame.bindKind = kind
+            frame.bindConst = constant
             frame.entry = .key
             push(frame)
             return 1
@@ -1598,7 +1615,7 @@ struct JavaScriptDeclarationWalker: Sendable {
                     return 2
                 }
             }
-            if Self.isBindable(t) { _ = declare(t, kind, text, &b) }
+            if Self.isBindable(t) { _ = declare(t, kind, text, &b, constant: constant) }
             frames[top].entry = .afterTarget
             return 1
         default:
