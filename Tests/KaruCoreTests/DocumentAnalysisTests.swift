@@ -26,7 +26,7 @@ private func pump(_ seconds: TimeInterval) async {
 /// debounced rescan may take longer than a fixed pump to get its main-thread
 /// slice. Checks that something did *not* happen keep a fixed `pump`.
 @MainActor
-private func pump(until done: () -> Bool, timeout: TimeInterval = 3) async {
+private func pump(until done: () -> Bool, timeout: TimeInterval = 60) async {
     let deadline = Date().addingTimeInterval(timeout)
     while !done(), Date() < deadline {
         try? await Task.sleep(nanoseconds: 10_000_000)

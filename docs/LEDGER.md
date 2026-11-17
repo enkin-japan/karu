@@ -245,9 +245,36 @@
     改掉被锁定的第三条断言；`KARU_T177_BENCH=1 swift test --filter HighlightPassBenchmark` 前后对比不退步；
     用临时探针统计 Karu 的 Swift 源码上误染数量（修复前 1438 处）下降九成以上，探针用完删除。
 
+### 第一批进度：并行全量测试（2026-11-17）
+
+- 状态：✅ 已完成并提交。只改测试、脚本和文档，没有动产品代码，所以没有重装本机，也没有跑视觉冒烟和内存基准。
+- 改动（chore-worker 实施，main 审查 diff）：
+  - 新增 `scripts/test.sh`：以并发宽度 8 调用 `swift test`（`KARU_TEST_WIDTH` 可改，已设置
+    `SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH` 时不覆盖），参数原样透传。`docs/DEVELOPMENT.md` 和 `AGENTS.md` 把它定为全量测试命令，
+    过滤运行仍用 `swift test --filter`，`swift test --no-parallel` 是较慢的退路。
+  - 崩溃：`ToolchainManagerTests.swift` 两处等待之后的 `diskUsage!`（python、node）改成 `try #require`。排查过测试目录，没有别的「等待后强制解包」。
+  - 等待上限：公用的 `waitFor` / `waitUntil` / `pump(until:)` 默认上限统一到 60 s（`ToolchainManagerTests`、`AnalysisSchedulerTests`、
+    `SyntaxAnalysisTests`、`RunProcessTests`，以及实测中新暴露的 `CompletionControllerTests`、`CompletionFreshnessTests`、`DocumentAnalysisTests`，
+    这三处原来只有 3 s）。条件满足即返回，通过的运行不变慢。
+  - 耗时断言改成相对被测对象的真实界限：`cancelDuringExtractKillsTarAndLeavesNothing` 改用独立线程发取消、断言 < 25 s（假 tar 睡 30 s）；
+    `backgroundLeftoverDoesNotHangTheRun` < 25 s（后台 `sleep 30`）；`stopKillsTheWholeProcessGroup` < 30 s（孙进程睡 100 s）；
+    `stopEscalatesToSIGKILL` 上限 < 45 s，下限 1.5 s 不变。
+  - `LongLineSlicingTests.swift` 的反向对照改成确定的：对编辑点和探测点之间的每个过期检查点各走一遍，要求至少一个画错。
+    变异检查：把过期检查点换成空表后该断言失败，说明对照有效，已还原。
+- 验收中新发现并修掉的一处：不限宽第 7 轮测试进程崩溃（SIGTRAP）。崩溃报告显示 `scratchpadFontSizeInheritsTheEditorUntilItIsSetOnce`
+  不在主线程上调用 `EditorFontSettings.setFontSize`，它广播的字号通知被别的测试里开着的编辑器窗口在后台线程收到，
+  `TextStorageObserverHub` 的主线程断言触发。属于测试之间的串扰，产品里这个设置只在主线程上改。
+  给 `PreferencesTests`、`ScratchpadTests` 里 4 个会广播字号通知的测试加了 `@MainActor`。
+- 没有改的等待上限（不在本次失败名单里，下次再出现停顿时最可能受影响）：`RunSessionTests.waitUntil`（10 s）、
+  `WorkspaceIndexTests.elapsedUntil`（5 s）、`FoldScanTests.waitForPublish`（30 s）、`DeclarationScopeTests` 的 pump（20 s）。
+- 实测（macOS 27.2.1，12 核）：
+  - 补修前：`scripts/test.sh` 10 轮全过（40–43 s）；不限宽 `swift test` 10 轮 9 过 1 崩溃（上面那一处）；`swift test --no-parallel` 通过（130 s）。
+  - 补修后：不限宽 `swift test` 10 轮全过（38–43 s）；`scripts/test.sh` 3 轮全过。1711 个用例 / 200 个套件。
+- 此后全量测试用 `scripts/test.sh`。
+
 ## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
 
-- 状态：⬜ 未修复；根因已查清、方案已写，见上一节「三项待处理问题的深度测试与修复方案」第一部分（2026-11-17）。
+- 状态：✅ 已修复（2026-11-17），见上一节「三项待处理问题的深度测试与修复方案」的第一部分和「第一批进度」。
   与产品代码的行为无关，只影响 `swift test` 并行全量运行的稳定性。下面是当时的记录，「偶发」和「可能的方向」已被新的实测取代。
 - 现象：`swift test`（默认并行）全量运行时，带固定等待上限的用例在机器有负载时偶发超时，每次失败的用例不固定；
   同一份代码不并行（`swift test --no-parallel`，约 121 s）或单独跑对应套件都通过。v0.13.0 发版当晚并行跑四次，四次各失败一条。

@@ -15,7 +15,7 @@ private func isolatedDefaults() -> UserDefaults {
 }
 
 @MainActor
-private func pump(until done: () -> Bool, timeout: TimeInterval = 3) async {
+private func pump(until done: () -> Bool, timeout: TimeInterval = 60) async {
     let deadline = Date().addingTimeInterval(timeout)
     while !done(), Date() < deadline {
         try? await Task.sleep(nanoseconds: 10_000_000)

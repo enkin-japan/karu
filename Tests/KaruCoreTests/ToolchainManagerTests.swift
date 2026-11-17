@@ -28,7 +28,8 @@ func gatedDownloader(_ archive: URL, gate: DownloadGate) -> FixtureDownloader {
 }
 
 @MainActor
-func waitFor(timeout: TimeInterval = 10, _ condition: () -> Bool) async -> Bool {
+// Returns as soon as the condition holds; the limit only matters when the thread pool is starved.
+func waitFor(timeout: TimeInterval = 60, _ condition: () -> Bool) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while !condition(), Date() < deadline {
         try? await Task.sleep(nanoseconds: 10_000_000)
@@ -262,7 +263,8 @@ struct RunPreferencesToolchainTests {
 
         let py = try #require(controller.managedControls[.python])
         #expect(await waitFor { manager.state(for: "python").diskUsage != nil })
-        let usage = RunMessages.megabytes(manager.state(for: "python").diskUsage!)
+        let pythonUsage = try #require(manager.state(for: "python").diskUsage)
+        let usage = RunMessages.megabytes(pythonUsage)
         #expect(py.statusLabel.stringValue == L10n.t(.runToolchainInstalledSize, "3.14.10", usage))
         #expect(py.actionButton.isHidden) // already current
         #expect(py.uninstallButton?.isHidden == false)
@@ -335,8 +337,9 @@ struct RunPreferencesToolchainTests {
         #expect(controller.detections[.javascript] != nil)
         #expect(controller.detections[.python] == nil)
         #expect(await waitFor { manager.state(for: "node").diskUsage != nil })
+        let nodeUsage = try #require(manager.state(for: "node").diskUsage)
         #expect(js2.statusLabel.stringValue.contains(L10n.t(.runToolchainInstalledSize, "1.0",
-                                                             RunMessages.megabytes(manager.state(for: "node").diskUsage!))))
+                                                             RunMessages.megabytes(nodeUsage))))
         #expect(js2.actionButton.isHidden)
         #expect(js2.uninstallButton?.isHidden == false)
 

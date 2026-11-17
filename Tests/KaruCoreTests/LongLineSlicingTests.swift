@@ -762,26 +762,36 @@ struct LongLineSlicingEngineTests {
         await pump(0.3)
         full = await FullPass.detached("json", painter.textView.string)
         await painter.paint(at: probe.location + 1)
-        let band = try #require(painter.engine.paintedRange)
+        _ = try #require(painter.engine.paintedRange)
         expectBandMatches(painter, full, "after edit")
         let after = painter.colours(in: NSRange(location: probe.location + 1, length: probe.length))
         #expect(after != before, "the edit did not change the colours downstream")
         // Resuming from the un-invalidated checkpoints would paint it wrong.
-        // From `probe` (not the painted band's start, which varies with the
-        // background catch-up's timing): a stale checkpoint after the edit
-        // lies before it (asserted above), so the stale walk starts in the
-        // flipped state.
-        var staleStore = stale
-        let bounds = HighlightEngine.BandBounds(start: probe.location, startMidLine: true,
-                                                end: max(NSMaxRange(band), NSMaxRange(probe)), endMidLine: true)
-        let fromStale = HighlightEngine.bandTokens(in: painter.ns, bounds: bounds, language: def,
-                                                   checkpoints: &staleStore)
-        var freshStore = CheckpointStore()
-        let fromFresh = HighlightEngine.bandTokens(in: painter.ns, bounds: bounds, language: def,
-                                                   checkpoints: &freshStore)
-        #expect(fromStale.tokens.map(\.range) != fromFresh.tokens.map(\.range)
-                || fromStale.tokens.map(\.kind) != fromFresh.tokens.map(\.kind),
-                "stale checkpoints happen to give the right answer")
+        // Deterministic: instead of depending on which checkpoint a walk
+        // happens to resume from (that varies with the background catch-up's
+        // timing, and a stale state is sometimes correct by luck), walk from
+        // every stale entry lying between the edit and `probe`. `start` is
+        // `ruleContext` past the entry, so the resume point
+        // (`start - ruleContext`) is exactly that entry; its stale state lies
+        // before the edit, so the quote flip is missing. At least one entry
+        // must give a different (wrong) answer from a fresh walk.
+        var anyDiffers = false
+        for entry in stale.entries where entry.offset > editAt && entry.offset < probe.location {
+            var staleStore = stale
+            let start = entry.offset + LanguageDefinition.ruleContext
+            let bounds = HighlightEngine.BandBounds(start: start, startMidLine: true,
+                                                    end: start + 2_000, endMidLine: true)
+            let fromStale = HighlightEngine.bandTokens(in: painter.ns, bounds: bounds, language: def,
+                                                       checkpoints: &staleStore)
+            var freshStore = CheckpointStore()
+            let fromFresh = HighlightEngine.bandTokens(in: painter.ns, bounds: bounds, language: def,
+                                                       checkpoints: &freshStore)
+            if fromStale.tokens.map(\.range) != fromFresh.tokens.map(\.range)
+                || fromStale.tokens.map(\.kind) != fromFresh.tokens.map(\.kind) {
+                anyDiffers = true
+            }
+        }
+        #expect(anyDiffers, "stale checkpoints happen to give the right answer")
     }
 
     @Test func minifiedJavaScriptIsPaintedInSlicesThatMatchAFullPass() async throws {

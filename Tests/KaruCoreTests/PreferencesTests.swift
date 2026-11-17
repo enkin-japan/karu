@@ -31,7 +31,9 @@ private func isolatedDefaults() -> UserDefaults {
     #expect(settings.fontSize == EditorFontSettings.defaultFontSize)
 }
 
-@Test func setFontSizePersistsClampedValue() {
+// Main actor: the setter broadcasts a notification that every open editor
+// window in the test process handles, and they require the main thread.
+@MainActor @Test func setFontSizePersistsClampedValue() {
     let defaults = isolatedDefaults()
     let settings = EditorFontSettings(defaults: defaults)
     settings.setFontSize(20)

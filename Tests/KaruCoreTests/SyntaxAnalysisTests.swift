@@ -21,7 +21,7 @@ private func pump(_ seconds: TimeInterval) async {
 }
 
 @MainActor
-private func pump(until done: () -> Bool, timeout: TimeInterval = 10) async {
+private func pump(until done: () -> Bool, timeout: TimeInterval = 60) async {
     let deadline = Date().addingTimeInterval(timeout)
     while !done(), Date() < deadline {
         try? await Task.sleep(nanoseconds: 10_000_000)
@@ -111,7 +111,7 @@ struct SyntaxAnalysisTests {
         let doc = Document(text: source, language: "typescript")
         defer { doc.close() }
         await pump(until: { doc.analysis.syntaxAnalysis.lastBuildStats.slices > 0 || doc.analysis.syntax != nil },
-                   timeout: 3)
+                   timeout: 60)
         // Edit while (or after) building; whatever was in flight is dropped.
         doc.replace(NSRange(location: 5, length: 0), with: "let inserted = 1;\n")
         await pump(until: { doc.analysis.syntax != nil })

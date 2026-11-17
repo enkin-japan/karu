@@ -25,7 +25,7 @@ private func spin(micros: UInt64) {
 @MainActor
 // Returns as soon as `done`; the generous timeout only matters when a busy
 // parallel test run keeps the main thread from the scheduler's slices.
-private func waitUntil(timeout: TimeInterval = 10, _ done: () -> Bool) async {
+private func waitUntil(timeout: TimeInterval = 60, _ done: () -> Bool) async {
     let deadline = Date().addingTimeInterval(timeout)
     while !done(), Date() < deadline {
         try? await Task.sleep(nanoseconds: 5_000_000)

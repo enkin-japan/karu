@@ -16,7 +16,9 @@
 ## 工程与环境
 
 - SPM targets：`KaruApp` / `KaruCore` / `KaruCoreTests`；最低 macOS 13。
-- 使用 `swift build`、`swift test`；测试框架为 Swift Testing，涉及 AppKit 使用 `@MainActor`。
+- 使用 `swift build`；完整测试用 `scripts/test.sh`（限制并行宽度为 8，可用 `KARU_TEST_WIDTH` 调整；不限宽度时
+  CPU 密集测试占满线程池，GCD 全局队列与 `Task.sleep` 唤醒会停滞数秒而使限时等待超时；`swift test --no-parallel` 是较慢的退路），
+  过滤运行仍用 `swift test --filter`；测试框架为 Swift Testing，涉及 AppKit 使用 `@MainActor`。
   历史环境只有 Command Line Tools，维护时核对当前工具链，不假定完整 Xcode 可用。
 - `Sources/KaruCore/App/` 管应用/文档/恢复，`Editor/` 管编辑交互与窗口，
   `TextModel/` 管共享索引，`Highlight/` 管着色，`Scratchpad/` 管独立草稿本。
@@ -47,7 +49,7 @@
 | 改动 | 必要验证 |
 |---|---|
 | 仅文档/代理配置 | diff 检查、引用检查、TOML 解析、Codex 配置加载；不启动 App |
-| 逻辑功能或修复 | `swift build`、相关 `swift test --filter <实际测试名>`；应用代码交付前运行 `swift test` |
+| 逻辑功能或修复 | `swift build`、相关 `swift test --filter <实际测试名>`；应用代码交付前运行 `scripts/test.sh` |
 | UI、绘制、折叠 | 上述检查 + `bash scripts/visual-smoke.sh`；按问题增加真实 App 探针与交互验证 |
 | 高亮、索引、大文件、常驻状态 | 上述适用检查 + `bash scripts/mem-benchmark.sh`，必要时同环境对照已知良好版本 |
 | 保存、崩溃恢复、草稿本 | 隔离存储的状态机测试 + 对应真实入口验证，核对关闭/退出/崩溃不同路径 |

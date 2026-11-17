@@ -141,8 +141,10 @@ private final class Harness {
         #expect(runner.start(plan))
     }
 
+    // The timeouts below are ceilings only: each helper returns as soon as the
+    // result arrives, and a long limit matters only when the thread pool is starved.
     @discardableResult
-    func wait(timeout: TimeInterval = 10) async -> RunResult? {
+    func wait(timeout: TimeInterval = 60) async -> RunResult? {
         let deadline = Date().addingTimeInterval(timeout)
         while result == nil, Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
@@ -150,7 +152,7 @@ private final class Harness {
         return result
     }
 
-    func waitForOutput(containing needle: String, timeout: TimeInterval = 5) async -> Bool {
+    func waitForOutput(containing needle: String, timeout: TimeInterval = 60) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !runner.output.text.contains(needle), Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
@@ -162,7 +164,7 @@ private final class Harness {
         runner.output.segments.filter { $0.stream == stream }.map(\.text).joined()
     }
 
-    func run(_ plan: RunPlan, timeout: TimeInterval = 10) async -> RunResult? {
+    func run(_ plan: RunPlan, timeout: TimeInterval = 60) async -> RunResult? {
         start(plan)
         return await wait(timeout: timeout)
     }
@@ -240,13 +242,15 @@ struct RunProcessTests {
 
         let stopped = Date()
         h.runner.stop()
-        let result = await h.wait(timeout: 5)
-        #expect(Date().timeIntervalSince(stopped) < 3)
+        let result = await h.wait(timeout: 60)
+        // The grandchild sleeps 100 s; a prompt stop ends the run far earlier,
+        // and the margin absorbs scheduler stalls under a parallel run.
+        #expect(Date().timeIntervalSince(stopped) < 30)
         #expect(result?.wasStopped == true)
         #expect(result?.completion == .finished(.signaled(SIGTERM)))
 
         // The grandchild is gone (reaped by launchd shortly after the signal).
-        let deadline = Date().addingTimeInterval(3)
+        let deadline = Date().addingTimeInterval(60)
         while kill(grandchild, 0) == 0, Date() < deadline { try? await Task.sleep(nanoseconds: 20_000_000) }
         #expect(kill(grandchild, 0) == -1)
     }
@@ -259,13 +263,13 @@ struct RunProcessTests {
         #expect(await h.waitForOutput(containing: "ready"))
         let stopped = Date()
         h.runner.stop()
-        let result = await h.wait(timeout: 12)
+        let result = await h.wait(timeout: 60)
         let elapsed = Date().timeIntervalSince(stopped)
         #expect(result?.completion == .finished(.signaled(SIGKILL)))
         // The lower bound proves the TERM grace period; the upper bound only
         // guards against never escalating, and a loaded parallel run can add
-        // seconds of scheduling delay.
-        #expect(elapsed >= 1.5 && elapsed < 10)
+        // seconds of scheduling delay (the ceiling stays well under the 60 s wait).
+        #expect(elapsed >= 1.5 && elapsed < 45)
     }
 
     @Test func stopAllStopsLiveRuns() async throws {
@@ -278,8 +282,8 @@ struct RunProcessTests {
         #expect(await b.waitForOutput(containing: "b"))
         #expect(CodeRunner.activeProcessCount >= 2)
         CodeRunner.stopAll(force: true)
-        #expect(await a.wait(timeout: 3)?.completion == .finished(.signaled(SIGKILL)))
-        #expect(await b.wait(timeout: 3)?.completion == .finished(.signaled(SIGKILL)))
+        #expect(await a.wait(timeout: 60)?.completion == .finished(.signaled(SIGKILL)))
+        #expect(await b.wait(timeout: 60)?.completion == .finished(.signaled(SIGKILL)))
         #expect(CodeRunner.activeProcessCount == 0)
     }
 
@@ -288,11 +292,13 @@ struct RunProcessTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let h = Harness()
         let started = Date()
-        let result = await h.run(shellPlan("/bin/sleep 30 & echo $!", in: dir), timeout: 5)
+        let result = await h.run(shellPlan("/bin/sleep 30 & echo $!", in: dir), timeout: 60)
         #expect(result?.completion == .finished(.exited(0)))
-        #expect(Date().timeIntervalSince(started) < 3)
+        // The background `sleep 30` must not hold the run open: finishing
+        // clearly before 30 s proves it did not wait for the leftover.
+        #expect(Date().timeIntervalSince(started) < 25)
         let pid = try #require(Int32(h.text(.stdout).trimmingCharacters(in: .whitespacesAndNewlines)))
-        let deadline = Date().addingTimeInterval(4)
+        let deadline = Date().addingTimeInterval(60)
         while kill(pid, 0) == 0, Date() < deadline { try? await Task.sleep(nanoseconds: 20_000_000) }
         #expect(kill(pid, 0) == -1) // leftover group member terminated
     }
@@ -381,7 +387,7 @@ struct RunProcessTests {
         #expect(h.runner.isRunning)
         #expect(h.runner.start(shellPlan("echo second", in: dir)) == false)
         h.runner.stop()
-        #expect(await h.wait(timeout: 4)?.wasStopped == true)
+        #expect(await h.wait(timeout: 60)?.wasStopped == true)
     }
 
     // MARK: Two-step plans with a fake compiler script
@@ -434,7 +440,7 @@ struct RunProcessTests {
         #expect(h.text(.stdout) == "ran in \(physicalPath(dir))\n")
 
         // The finished run's temp directory is removed.
-        let deadline = Date().addingTimeInterval(3)
+        let deadline = Date().addingTimeInterval(60)
         while FileManager.default.fileExists(atPath: plan.directory.path), Date() < deadline {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -451,7 +457,7 @@ struct RunProcessTests {
         h.start(plan)
         #expect(await h.waitForOutput(containing: "compiling"))
         h.runner.stop()
-        let result = await h.wait(timeout: 4)
+        let result = await h.wait(timeout: 60)
         #expect(result?.completion == .compileFailed(.signaled(SIGTERM)))
         #expect(result?.wasStopped == true)
         #expect(!h.runner.output.text.contains("SHOULD_NOT_RUN"))

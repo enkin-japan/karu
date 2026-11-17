@@ -304,10 +304,16 @@ struct ToolchainInstallerTests {
         #expect(throws: ToolchainInstallError.cancelled) {
             try slow.install(entry, cancellation: cancellation) { activity in
                 guard activity == .extracting else { return }
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { cancellation.cancel() }
+                // A dedicated thread: the GCD global queue can stall when the pool is saturated.
+                let canceller = Thread {
+                    Thread.sleep(forTimeInterval: 0.3)
+                    cancellation.cancel()
+                }
+                canceller.start()
             }
         }
-        #expect(Date().timeIntervalSince(started) < 10)
+        // The fake tar sleeps 30 s, so finishing clearly earlier proves it was killed.
+        #expect(Date().timeIntervalSince(started) < 25)
         #expect(!FileManager.default.fileExists(atPath: store.toolchainDirectory("fake").path))
         #expect(ToolchainFixtures.stagingIsEmpty(store))
     }

@@ -84,7 +84,9 @@ private func makeFontDefaults() -> (UserDefaults, () -> Void) {
     return (defaults, { UserDefaults().removePersistentDomain(forName: name) })
 }
 
-@Test func scratchpadFontSizeInheritsTheEditorUntilItIsSetOnce() {
+// Main actor: the setter broadcasts a notification that every open editor
+// window in the test process handles, and they require the main thread.
+@MainActor @Test func scratchpadFontSizeInheritsTheEditorUntilItIsSetOnce() {
     let (defaults, cleanup) = makeFontDefaults()
     defer { cleanup() }
 
@@ -97,7 +99,9 @@ private func makeFontDefaults() -> (UserDefaults, () -> Void) {
     #expect(ScratchpadStore.fontSize(defaults: defaults) == 20)
 }
 
-@Test func scratchpadFontSizeBecomesIndependentOnceSet() {
+// Main actor: the setter broadcasts a notification that every open editor
+// window in the test process handles, and they require the main thread.
+@MainActor @Test func scratchpadFontSizeBecomesIndependentOnceSet() {
     let (defaults, cleanup) = makeFontDefaults()
     defer { cleanup() }
 
@@ -112,7 +116,9 @@ private func makeFontDefaults() -> (UserDefaults, () -> Void) {
     #expect(EditorFontSettings(defaults: defaults).fontSize == 11)
 }
 
-@Test func scratchpadFontSizeRoundTripsAndClampsToTheEditorRange() {
+// Main actor: the setter broadcasts a notification that every open editor
+// window in the test process handles, and they require the main thread.
+@MainActor @Test func scratchpadFontSizeRoundTripsAndClampsToTheEditorRange() {
     let (defaults, cleanup) = makeFontDefaults()
     defer { cleanup() }
 

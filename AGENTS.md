@@ -48,6 +48,8 @@ Karu（軽）是原生 macOS 纯文本编辑器，仓库目录仍名为 TinyEdit
 
 - 按 DEVELOPMENT.md 的验证矩阵执行：Swift Testing（`import Testing`），AppKit 测试使用
   `@MainActor`。不引入 XCTest 或完整 Xcode 作为既有工程的必要前提。
+- 完整测试运行用 `scripts/test.sh`（限制并行宽度，避免线程池饥饿导致限时等待误报超时；
+  `swift test --no-parallel` 是较慢的退路）；过滤运行仍用 `swift test --filter`。
 - UI 改动须跑视觉冒烟；布局、滚动、窗口、输入法问题按需真机验证。
   单测或全量快照通过，不能代替真实交互路径的验收。
 - 配置/文档改动检查格式、引用与加载；无需为此启动 App、安装构建或跑全部 Swift 测试。
