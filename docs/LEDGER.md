@@ -136,7 +136,8 @@
 ## 三项待处理问题的深度测试与修复方案（2026-11-17）
 
 - 用户要求：并行全量测试超时、括号底色被擦掉、VH5 三项，先深度测试再给修复方案。
-- 状态：✅ 测试完成，方案已写；**均未修复**，等用户确认。只改了台账；所有探针测试文件和临时改动已删除、还原，工作区干净。
+- 状态：✅ 测试完成，方案已写，**用户 2026-11-17 已确认（VH5 用甲），尚未开工**：用户答复「按建议，但是先方案落盘，等我 /compact 之后再开工」。
+  开工顺序和实现提示见本节末尾「开工安排」。只改了台账；所有探针测试文件和临时改动已删除、还原，工作区干净。
   探针的原始输出在会话临时目录，不保证保留，关键数字都抄在下面。环境：macOS 27.2.1，12 核，Swift 6.4.2。
 
 ### 一、并行全量测试超时
@@ -204,13 +205,45 @@
 - 一条只用扫描结果的简单规则也实测过：名字若在「最外层所在函数」内被声明为变量或参数，或在所在类里被声明为属性，就不算函数。
   在上面的语料上判对 1265 / 1286 处变量、121 / 121 处属性，误把 8 处函数值判成变量。
 - 方案（需要用户选）：
-  - **甲（建议）**：按上面的简单规则判断，命中就按变量处理，否则保持函数色；Java 额外规定非调用位置的裸名字不是方法（Java 里方法不能当值，只有 `::名字`）。
+  - **甲（建议，用户已选定）**：按上面的简单规则判断，命中就按变量处理，否则保持函数色；Java 额外规定非调用位置的裸名字不是方法（Java 里方法不能当值，只有 `::名字`）。
     回调、`#selector`、尾随闭包调用保持函数色。只对「既在函数表里、又被声明为变量 / 参数 / 属性」的名字做判断，这组名字在发布快照时算好；
     同一个函数内的判断结果在一次着色里复用。验收要加：10 MB 高亮单趟计时不退步，Karu 的 Swift 源码上误染数量下降九成以上。工作量中等。
   - **乙**：六种语言都改成只有 `name(` 是函数色。改动最小（各语言的策略开关），与 TextMate 基线一致，上述错误全部消失；
     代价是回调、`#selector`、尾随闭包调用也失去函数色（Karu 源码里 247 处）。
   - **不改**：维持现状。
   - 甲、乙都要改被锁定的断言 `parameterNamedLikeAFunctionGetsTheParameterColourAtItsDeclaration`（第三条）。
+
+### 开工安排（用户已确认，/compact 之后开始）
+
+- 顺序：第一批并行测试 → 第二批括号底色 → 第三批 VH5 甲。每批做完：针对性测试、全量测试、`scripts/visual-smoke.sh`、
+  `scripts/mem-benchmark.sh`、记台账、提交、装本机，再查上下文占用（超过 50% 停下并用提醒工具通知）。不升版本、不发布、不推送。
+  第一批完成后全量测试改用 `scripts/test.sh`；在那之前仍用 `swift test --no-parallel`。
+- 第一批（测试与脚本，交 chore-worker，失败两次升 implementer；`scripts/test.sh` 是新脚本，不在只许 main 动的清单里）：
+  - 涉及文件：新增 `scripts/test.sh`；`Tests/KaruCoreTests/` 下的 `ToolchainManagerTests.swift`（公用 `waitFor` 在第 31 行附近，强制解包在第 265 行）、
+    `ToolchainInstallerTests.swift`（第 296–312 行）、`AnalysisSchedulerTests.swift`（`waitUntil`）、`SyntaxAnalysisTests.swift`、
+    `RunProcessTests.swift`（第 293 行附近）、`LongLineSlicingTests.swift`（第 770–785 行）；`docs/DEVELOPMENT.md`、`AGENTS.md` 的测试命令。
+  - 验证办法：不限宽的 `swift test` 连跑 10 轮看失败数；需要看线程池停顿时，可临时加一个探针测试（一个普通线程每 20 ms 向
+    `DispatchQueue.global()` 和主队列各投一个任务并记录延迟，另一个 detached 任务记录 `Task.sleep` 的唤醒间隔），用完删除。
+- 第二批（交 implementer，main 审查）：
+  - 涉及文件：`Sources/KaruCore/Editor/EditorWindowController.swift`（`bracketHighlight`、`updateBracketMatchHighlight`、
+    `wordHighlighter.onBackgroundChanged` 的接线），可新增 `Editor/BracketPairHighlighter.swift`；测试加在 `HighlightMaintenanceTests.swift`
+    （已有 `Editor` 夹具，带 `caret(_:)`、`background(at:)`、`waitForWordScan()`）。
+  - 必须覆盖的出错操作（`.txt` 文件，括号后是光标位置）：`x(|y)` 打 `a` 后把光标移到 0，`)` 不应有底色；`call(|arg)` 插入 `first, ` 后把光标移到文末，
+    `)` 不应有底色；`ab (c)` 光标在 `(` 后退格，剩下的 `)` 不应有底色；`(fo|o) foo` 等同词底色出现后打 `)`，新配对两端都应有底色；
+    `x(|y)` 打 `ab` 再撤销、光标移走，不留底色。
+- 第三批（main 定设计，交 implementer，main 审查）：
+  - 涉及文件：`Sources/KaruCore/Highlight/HighlightEngine.swift`（`identifierTokens`、`roleTokens`、`documentAnalysisDidChange`）、
+    `Highlight/LanguageDefinition.swift`（`IdentifierPolicy` 加开关）、六种语言的策略（`Highlight/Languages/` 下 C、C++、Java、C#、Swift、Go）、
+    `Analysis/DeclarationScan.swift`（如需新的查询辅助）；测试在 `SyntaxCategoryTests.swift`。
+  - 规则：名字在函数表里、当前位置不是声明、后面不是 `(`，且该名字在「最外层所在函数（`scopeChain(at:)` 里最外层的 function / lambda）」范围内
+    被声明为 `.variable` / `.parameter` / `.functionScopedVariable`，或在最内层所在类范围内被声明为 `.property`，就不按函数色画
+    （改走该语言的 `otherIdentifiers`）。Java 另加：非调用位置、前面不是 `::` 的裸名字一律不按函数色。
+  - 实现要点：需要判断的名字集合（函数表 ∩ 被声明为变量 / 参数 / 属性的名字）在发布快照时算好，为空就完全不走新逻辑；
+    一次着色里按所在函数缓存结果；用过期快照着色时，位置先经编辑日志映射（与 `roleTokens` 相同），映射不了就保持现状。
+    只用 `scopeChain` 和 `forEachDeclaration(from:to:)`，不要用 `visibleBindings`（5 MB 上 230 ms / 次）也不要为着色去建查询索引。
+  - 测试：六种语言各一组（参数遮蔽、局部变量同名、Java / Swift 字段与方法同名、回调与函数指针仍为函数色、Swift 的 `#selector` 和尾随闭包调用仍为函数色）；
+    改掉被锁定的第三条断言；`KARU_T177_BENCH=1 swift test --filter HighlightPassBenchmark` 前后对比不退步；
+    用临时探针统计 Karu 的 Swift 源码上误染数量（修复前 1438 处）下降九成以上，探针用完删除。
 
 ## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
 
