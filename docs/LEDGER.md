@@ -11,7 +11,7 @@
 
 - 范围：`HighlightEngine` 的标识符角色、声明发布与颜色失效，`WordOccurrenceHighlighter` 的词边界、
   视口刷新及与搜索背景的共存。审查基线 `a40ea9a`，开工时工作区干净。
-- 状态：✅ 审查、复现、main 复核均完成；**下列问题均未修复**，修复方案见本节末尾，等用户确认后开工。
+- 状态：✅ 审查、复现、main 复核均完成；**下列问题均未修复**，修复方案见本节末尾，用户已确认，待开工。
   只改了台账，未改业务源码和已有测试，未安装、未发布。
 - 上午的审查（另一会话）：macOS 27.2.1、Swift 6.4.2，`swift test --filter 'wordRange|occurrences|wordHighlight|SyntaxPositionRole'`
   16 tests / 2 suites 全通过。探针链接当次构建的 `KaruCore.o`，用独立的 AppKit 视图和隔离的模块偏好，
@@ -42,7 +42,10 @@
 - 测试缺口：词匹配的 11 个纯函数测试没有覆盖上述字符边界，也没有与查找栏、括号匹配共存的测试；
   旧回归测试只覆盖文末删除不崩溃；`rolesFollowEditsBeforeTheRescan` 只检查发布前的映射，没有检查新快照发布后的重画。
 
-### 修复方案（待用户确认，未开工）
+### 修复方案（用户 2026-11-17 已确认，尚未开工）
+
+- 用户答复「/compact 之后开始修」。按下面三批顺序做：第一批 VH1 → 第二批 VH3、VH2、VH6 → 第三批 VH4。
+  VH5 用户尚未定方向，先不动，等前三批完成后再提。进度按批记在本节末尾。
 
 - 第一批，VH1（`Highlight/HighlightEngine.swift`，改动小，main 直接做）：
   - 重画时记下所用声明快照的版本；用过期快照画的记为空。
