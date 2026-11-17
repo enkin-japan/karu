@@ -958,14 +958,17 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         presentLanguageRanking(ranking)
     }
 
-    /// Detects a file's language: by extension, else by ranking its content
-    /// (no minimum-content gate: the file is complete). A confident ranking is
-    /// applied; candidates are offered.
+    /// Detects a file's language. A file with an extension is decided by that
+    /// extension alone: a registered one gives its language, any other leaves
+    /// the file Plain Text with no content detection and no suggestions (the
+    /// user named the file; guessing over that is not wanted). Only a file
+    /// without an extension is ranked by content (no minimum-content gate: the
+    /// file is complete): a confident ranking is applied, candidates are offered.
     private func detectFileLanguage(url: URL, text: String) {
         let ext = url.pathExtension
         var identifier = LanguageRegistry.identifier(forExtension: ext)
         var ranking = LanguageRanking.none
-        if identifier == nil {
+        if identifier == nil, ext.isEmpty {
             ranking = languageRanker(text)
             if let confident = ranking.confident {
                 identifier = LanguageRegistry.canonicalIdentifier(confident)

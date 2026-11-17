@@ -204,14 +204,57 @@ struct LanguageSuggestionTests {
     @Test func loadingAnotherDocumentClearsTheDismissal() throws {
         let f = try Fixture(Self.candidates("python", "swift"))
         defer { f.cleanup() }
-        f.controller.load(url: try f.file("one.txt", Self.codeish))
+        f.controller.load(url: try f.file("one", Self.codeish))
         #expect(f.banner.isShowing)
         f.banner.closeButton.performClick(nil)
         #expect(!f.banner.isShowing)
 
-        f.controller.load(url: try f.file("two.txt", Self.codeish))
+        f.controller.load(url: try f.file("two", Self.codeish))
         #expect(!f.controller.languageSuggestionDismissed)
         #expect(f.banner.isShowing)
+    }
+
+    // A file with an extension is decided by the extension alone (user
+    // decision 2026-11-17): no content detection, no band, no menu section.
+
+    @Test func aFileWithAnUnregisteredExtensionIsNeitherRankedNorOffered() throws {
+        let f = try Fixture(Self.candidates("python", "swift"))
+        defer { f.cleanup() }
+        f.controller.load(url: try f.file("notes.txt", Self.codeish))
+        #expect(f.stub.calls == 0)
+        #expect(!f.banner.isShowing)
+        #expect(f.menuSuggestions == nil)
+        #expect(f.controller.documentAnalysis.languageIdentifier.isEmpty)
+
+        // Typing in it does not start detection either.
+        f.type(Self.longInsertion)
+        #expect(f.stub.calls == 0)
+        #expect(!f.controller.hasPendingLanguageRanking)
+        #expect(!f.banner.isShowing)
+    }
+
+    @Test func aConfidentRankingDoesNotOverrideAnUnregisteredExtension() throws {
+        let f = try Fixture(Self.confident("python"))
+        defer { f.cleanup() }
+        f.controller.load(url: try f.file("script.conf", Self.codeish))
+        #expect(f.stub.calls == 0)
+        #expect(f.controller.documentAnalysis.languageIdentifier.isEmpty)
+
+        // Picking Auto again re-reads the extension; it still does not guess.
+        f.controller.chooseAutoLanguage()
+        #expect(f.stub.calls == 0)
+        #expect(f.controller.documentAnalysis.languageIdentifier.isEmpty)
+        #expect(!f.banner.isShowing)
+    }
+
+    @Test func renamingToAnUnregisteredExtensionWithdrawsTheBand() throws {
+        let f = try Fixture(Self.candidates("python"))
+        defer { f.cleanup() }
+        f.controller.load(url: try f.file("notes", Self.codeish))
+        #expect(f.banner.isShowing)
+        f.controller.renameFile(to: "notes.txt")
+        #expect(!f.banner.isShowing)
+        #expect(f.menuSuggestions == nil)
     }
 
     @Test func manualOverrideStopsRankingAndTheBand() throws {
@@ -245,7 +288,7 @@ struct LanguageSuggestionTests {
         #expect(f.menuSuggestions == nil)
     }
 
-    @Test func loadingAnUnknownExtensionRanksAtOnce() throws {
+    @Test func loadingAFileWithoutAnExtensionRanksAtOnce() throws {
         let f = try Fixture(Self.candidates("python", "swift"))
         defer { f.cleanup() }
         f.controller.load(url: try f.file("script", "x = 1\n"))
@@ -271,7 +314,7 @@ struct LanguageSuggestionTests {
     @Test func saveAsToAKnownExtensionHidesTheBand() throws {
         let f = try Fixture(Self.candidates("python"))
         defer { f.cleanup() }
-        f.controller.load(url: try f.file("notes.txt", Self.codeish))
+        f.controller.load(url: try f.file("notes", Self.codeish))
         #expect(f.banner.isShowing)
         f.controller.renameFile(to: "notes.py")
         #expect(f.controller.currentLanguageIdentifierValue == "python")
