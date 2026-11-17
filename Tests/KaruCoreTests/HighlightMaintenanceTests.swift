@@ -66,6 +66,22 @@ struct HighlightMaintenanceTests {
             } while controller.documentAnalysis.declarations == nil && Date() < deadline
             try? await Task.sleep(for: .milliseconds(60))
         }
+
+        /// Lets the debounced same-word scan (200 ms) run.
+        func waitForWordScan() async {
+            try? await Task.sleep(for: .milliseconds(350))
+        }
+
+        /// Selects `range` and opens the find bar, which seeds its query from
+        /// the selection.
+        func find(_ range: NSRange) {
+            textView.setSelectedRange(range)
+            controller.showFindBar(nil)
+        }
+
+        func caret(_ location: Int) {
+            textView.setSelectedRange(NSRange(location: location, length: 0))
+        }
     }
 
     private let theme = HighlightTheme()
@@ -118,5 +134,114 @@ struct HighlightMaintenanceTests {
         await editor.settle()
         #expect(editor.foreground(of: "run") === theme.color(for: .symbolFunction))
         #expect(editor.foreground(of: "speed") === theme.color(for: .parameter))
+    }
+
+    // MARK: - VH3: the search background wins over the word / bracket tints
+
+    @Test func searchColourSurvivesTheWordTint() async throws {
+        let text = "value value other value\n"
+        let editor = try Editor(text, fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.find(NSRange(location: 0, length: 5))
+        let search = try #require(editor.background(at: 0))
+        let values = [0, 6, 18]
+        for location in values { #expect(editor.background(at: location) === search) }
+
+        editor.caret(8)                 // inside the second `value`
+        await editor.waitForWordScan()
+        for location in values { #expect(editor.background(at: location) === search) }
+
+        editor.caret(14)                // inside `other`
+        await editor.waitForWordScan()
+        for location in values { #expect(editor.background(at: location) === search) }
+
+        // Hiding the bar wipes the search colour; the word tint for the caret
+        // in a `value` comes back without another caret move.
+        editor.caret(8)
+        await editor.waitForWordScan()
+        editor.controller.findBarForTesting.hide()
+        let tint = try #require(editor.background(at: 6))
+        #expect(tint !== search)
+        for location in values { #expect(editor.background(at: location) === tint) }
+        #expect(editor.background(at: 14) == nil)
+    }
+
+    @Test func searchColourSurvivesTheBracketTint() async throws {
+        let editor = try Editor("f(ab) zz\n", fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        editor.find(NSRange(location: 1, length: 1))      // search for `(`
+        let search = try #require(editor.background(at: 1))
+        #expect(editor.background(at: 4) == nil)
+
+        editor.caret(2)                                   // just past `(`
+        #expect(editor.background(at: 1) === search)
+        let bracket = try #require(editor.background(at: 4))
+        #expect(bracket !== search)
+
+        editor.caret(7)                                   // away from the pair
+        #expect(editor.background(at: 1) === search)
+        #expect(editor.background(at: 4) == nil)
+
+        // Hiding the bar with the caret at the pair repaints the pair.
+        editor.caret(2)
+        editor.controller.findBarForTesting.hide()
+        #expect(editor.background(at: 1) === bracket)
+        #expect(editor.background(at: 4) === bracket)
+    }
+
+    // MARK: - VH2: the word tint follows scrolling
+
+    @Test func wordTintFollowsScrolling() async throws {
+        let text = String(repeating: "alpha beta gamma\n\n", count: 1500)
+        let editor = try Editor(text, fileName: "sample.txt")
+        defer { editor.close() }
+        await editor.settle()
+        let length = editor.ns.length
+        let lastAlpha = editor.ns.range(of: "alpha", options: .backwards).location
+
+        editor.caret(2)
+        editor.textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        await editor.waitForWordScan()
+        #expect(editor.background(at: 0) != nil)
+        #expect(editor.background(at: lastAlpha) == nil)
+
+        editor.textView.scrollRangeToVisible(NSRange(location: length, length: 0))
+        await editor.waitForWordScan()
+        #expect(editor.background(at: lastAlpha) != nil)
+        #expect(editor.background(at: 0) == nil)
+
+        // A caret in whitespace (an empty line) paints nothing, scrolled or not.
+        editor.textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        editor.caret(17)
+        await editor.waitForWordScan()
+        #expect(editor.background(at: 18) == nil)
+        editor.textView.scrollRangeToVisible(NSRange(location: length, length: 0))
+        await editor.waitForWordScan()
+        #expect(editor.background(at: lastAlpha) == nil)
+    }
+
+    // MARK: - VH6: `$` is a word character in JS / TS only
+
+    @Test func dollarFollowsTheLanguage() async throws {
+        let js = try Editor("$value value\n", fileName: "sample.js")
+        defer { js.close() }
+        await js.settle()
+        js.caret(3)
+        await js.waitForWordScan()
+        #expect(js.background(at: 0) == nil)
+        #expect(js.background(at: 7) == nil)
+
+        for fileName in ["sample.py", "sample.txt"] {
+            let other = try Editor("$value value\n", fileName: fileName)
+            defer { other.close() }
+            await other.settle()
+            other.caret(3)
+            await other.waitForWordScan()
+            #expect(other.background(at: 1) != nil, "\(fileName)")
+            #expect(other.background(at: 7) != nil, "\(fileName)")
+            #expect(other.background(at: 0) == nil, "\(fileName)")
+        }
     }
 }

@@ -89,6 +89,26 @@
     `scripts/visual-smoke.sh` VISUAL OK、FOLD GEOMETRY OK；`scripts/mem-benchmark.sh`
     空文档 19.2 MB、1 MB JSON 22.2 MB、10 MB Python 56.9 MB，全部 PASS。
   - 未做：在已安装的 App 里用鼠标键盘验证（留给用户实测）。
+- ✅ 第二批 VH3、VH2、VH6（implementer 实现，main 审查 diff 并复跑验收，2026-11-17）：自动化通过，已装本机，**待用户实测**。
+  - VH3：`FindBarController` 新增 `reapplyHighlights(intersecting:)`（二分查找相交的匹配并重新涂搜索色，跳过零长度和越界的匹配）
+    和 `onHighlightsReset` 回调（整篇清背景并涂完自己的匹配后触发：重算、失败分支、关闭）。
+    `WordOccurrenceHighlighter` 新增 `onBackgroundChanged`（涂色、清除后报告范围）和 `backgroundWasReset()`。
+    `EditorWindowController` 把两头接起来，括号匹配清除和涂色之后也补涂搜索色。草稿本不设回调，行为不变。
+    三处不成立的注释已改正。
+  - VH2：同词高亮监听剪裁视图 bounds 和文本视图 frame 的变化，上次扫描时光标在词内才在 100 ms 后重扫当前视口；
+    扫描直接读 `textStorage.mutableString`，不再复制整篇文档；视口内只有一处命中、且不是光标所在的那一处时也涂色。
+    `windowWillClose` 里取消待执行的扫描并移除监听。
+  - VH6：词边界按完整字符判断（代理对解码、组合附加符跟随基字符、词至少两个字符且不计附加符）；
+    `$` 是否算词字符由 `dollarIsWordCharacter` 决定，编辑器在 `setDocumentLanguage` 里按语言的
+    `IdentifierPolicy.dollarIdentifiers` 设置（目前只有 JS / TS 为真）。为读这个开关，语言变化时多构建一次语言定义，
+    实测 0.3–1.5 ms，用完即释放。
+  - 测试：`WordOccurrenceHighlighterTests` 新增 7 个纯函数用例；`HighlightMaintenanceTests` 新增 4 个窗口级用例
+    （搜索色不被同词底色覆盖、不被括号底色覆盖、同词底色跟随滚动、`$` 跟随语言）。implementer 把源码还原后实测这 4 个全部失败。
+  - 验收（main 复跑）：`swift test --no-parallel` 1705 tests / 200 suites 全通过（126 s）；视觉冒烟 VISUAL OK、FOLD GEOMETRY OK；
+    内存基准空文档 19.2 MB、1 MB JSON 22.6 MB、10 MB Python 56.9 MB、1000 行 py 21.6 MB、ts 22.0 MB，全部 PASS，与第一批持平。
+  - 已知未处理（改动前就有）：编辑恰好落在已涂色的词里时，记录的范围被扩大，随后的清除可能顺带擦掉相邻的括号底色，
+    下一次选区变化恢复。
+  - 未做：在已安装的 App 里用鼠标键盘验证滚动和查找栏（留给用户实测）。
 
 ## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
 

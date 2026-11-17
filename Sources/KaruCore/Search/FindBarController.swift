@@ -34,6 +34,13 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     /// it to push its text down instead of letting the bar cover the first line.
     public var onVisibilityChanged: ((Bool) -> Void)?
 
+    /// Fires after the bar has removed the `.backgroundColor` temporary
+    /// attribute from the whole document — on `hide()` and on every recompute —
+    /// and has re-added its own matches. Other painters sharing that key (the
+    /// editor's bracket matcher and same-word tint) use it to repaint what the
+    /// wipe took. Unset (the scratchpad), the bar behaves as it always did.
+    public var onHighlightsReset: (() -> Void)?
+
     private weak var textView: NSTextView?
     private let lineIndex: LineIndex
     /// Narrow hosts (the scratchpad panel). Both hosts share one structure;
@@ -369,6 +376,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         clearHighlights()
         matches = []
         currentIndex = -1
+        onHighlightsReset?()
         if let textView { textView.window?.makeFirstResponder(textView) }
         onVisibilityChanged?(false)
     }
@@ -454,6 +462,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
             matches = []
             currentIndex = -1
             clearHighlights()
+            onHighlightsReset?()
             showError(error.description)
         case .success(let ranges):
             matches = ranges
@@ -548,6 +557,10 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
 
     // MARK: - Highlighting
 
+    /// Replaces every `.backgroundColor` temporary attribute in the document
+    /// with the match colour on each match. The key is shared with the
+    /// editor's bracket matcher and same-word tint and does not stack, so this
+    /// wipes theirs too; `onHighlightsReset` lets them repaint.
     private func applyHighlights() {
         guard let layoutManager = textView?.layoutManager else { return }
         clearHighlights()
@@ -555,12 +568,45 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
             layoutManager.addTemporaryAttributes([.backgroundColor: matchHighlight],
                                                  forCharacterRange: range)
         }
+        onHighlightsReset?()
     }
 
     private func clearHighlights() {
         guard let textView, let layoutManager = textView.layoutManager else { return }
-        let full = NSRange(location: 0, length: (textView.string as NSString).length)
+        let full = NSRange(location: 0, length: textView.textStorage?.length ?? 0)
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+    }
+
+    /// Re-adds the match colour on every match intersecting `ranges` (whole
+    /// match ranges). Other painters sharing the `.backgroundColor` key call
+    /// this after painting or clearing theirs, so that while the bar is shown
+    /// a character inside a search match always shows the search colour. A
+    /// no-op while hidden or without matches.
+    public func reapplyHighlights(intersecting ranges: [NSRange]) {
+        guard isShown, !matches.isEmpty, let textView,
+              let layoutManager = textView.layoutManager else { return }
+        // Matches can be momentarily stale after a programmatic edit.
+        let length = textView.textStorage?.length ?? 0
+        for range in ranges where range.length > 0 {
+            // `matches` comes from NSRegularExpression: ascending and
+            // non-overlapping, so their ends ascend too. First match ending
+            // after the range's start:
+            var low = 0
+            var high = matches.count
+            while low < high {
+                let mid = (low + high) / 2
+                if NSMaxRange(matches[mid]) <= range.location { low = mid + 1 } else { high = mid }
+            }
+            var i = low
+            while i < matches.count, matches[i].location < NSMaxRange(range) {
+                let match = matches[i]
+                if match.length > 0, NSMaxRange(match) <= length {
+                    layoutManager.addTemporaryAttributes([.backgroundColor: matchHighlight],
+                                                         forCharacterRange: match)
+                }
+                i += 1
+            }
+        }
     }
 
     // MARK: - Count / error display

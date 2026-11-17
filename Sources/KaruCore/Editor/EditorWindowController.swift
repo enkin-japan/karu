@@ -87,6 +87,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// `selectionDidChange`. Retained for the window's lifetime (its resident
     /// cost is one bounded range array), cancelled on teardown.
     private var wordHighlighter: WordOccurrenceHighlighter!
+    /// The language whose identifier rules (`$`) the word highlighter was last
+    /// given, so an unchanged language builds no definition.
+    private var wordHighlighterLanguage = ""
 
     /// Run current buffer (T16.3b, Run/RunSessionController.swift). The session
     /// (runner + output panel) is created on first Run / Show Output and
@@ -188,10 +191,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     /// Low-saturation background tint for the matched bracket pair, resolved per
     /// appearance (mirrors `HighlightTheme`'s dynamic-colour approach). Bracket
-    /// highlighting deliberately uses `.backgroundColor` — the same temporary
-    /// attribute the find bar uses — so where a match overlaps a search hit the
-    /// two tints visually stack; clearing only ever touches the two ranges this
-    /// controller recorded, never the find bar's attributes.
+    /// highlighting uses `.backgroundColor` — the same temporary attribute key
+    /// as the find bar and the same-word tint. The key does not stack: the last
+    /// writer wins and a removal removes whatever colour is there, so after
+    /// painting or clearing the pair the find bar's search matches are
+    /// re-applied on top (search wins), and a find-bar wipe repaints the pair
+    /// (`FindBarController.onHighlightsReset`).
     private static let bracketMatchColor = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? NSColor(srgbRed: 0.55, green: 0.58, blue: 0.66, alpha: 0.42)
@@ -319,6 +324,23 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         let findBar = FindBarController(textView: textView, lineIndex: lineIndex)
         self.findBar = findBar
 
+        // The find bar, the bracket matcher and the same-word tint share the
+        // `.backgroundColor` temporary attribute, which does not stack (last
+        // writer wins; a removal removes every colour). Search matches win:
+        // after the word tint paints or clears, the matches it touched are
+        // re-applied on top; when the find bar wipes the document's background
+        // (recompute / hide), the bracket pair and the word tint repaint.
+        wordHighlighter.onBackgroundChanged = { [weak findBar] ranges in
+            findBar?.reapplyHighlights(intersecting: ranges)
+        }
+        findBar.onHighlightsReset = { [weak self] in
+            guard let self else { return }
+            // The wipe already removed the pair's attribute.
+            self.bracketHighlight = nil
+            self.updateBracketMatchHighlight()
+            self.wordHighlighter.backgroundWasReset()
+        }
+
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         // The save-failure banner is hidden until needed; a stack view drops
         // hidden views from layout, so it takes no room until then.
@@ -433,8 +455,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         // A pending draft checkpoint holds only a weak reference, but cancel it
         // anyway so nothing is left scheduled behind a closed window.
         draftFlushWork?.cancel()
-        // The word highlighter cancels its own pending work item in its deinit,
-        // which runs as this controller (its sole owner) is released.
+        // The word highlighter is cancelled in `windowWillClose`, and cancels
+        // its own pending work and observers again in its deinit, which runs
+        // as this controller (its sole owner) is released.
     }
 
     private static func makeEditorView() -> (NSScrollView, NSTextView) {
@@ -767,20 +790,24 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     }
 
     /// Recomputes the matched-bracket background highlight for the current caret.
-    /// Clears the previous pair (only the two ranges this controller recorded —
-    /// never the find bar's own background attributes), then, when the caret is
-    /// adjacent to a balanced bracket, tints both the opener and its match.
+    /// Clears the previous pair (the two ranges this controller recorded; the
+    /// removal takes any colour there, so the find bar's matches are re-applied
+    /// over them), then, when the caret is adjacent to a balanced bracket, tints
+    /// both the opener and its match — again with search matches re-applied on
+    /// top, so a bracket that is a search hit keeps the search colour.
     /// Storage-free apart from the two-range `bracketHighlight` marker; the match
     /// itself is a transient scan (`BracketMatcher.findMatch`).
     private func updateBracketMatchHighlight() {
         guard let layoutManager = textView.layoutManager else { return }
 
         if let previous = bracketHighlight {
-            let length = (textView.string as NSString).length
-            for range in [previous.open, previous.close] where NSMaxRange(range) <= length {
+            let length = textView.textStorage?.length ?? 0
+            let cleared = [previous.open, previous.close].filter { NSMaxRange($0) <= length }
+            for range in cleared {
                 layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
             }
             bracketHighlight = nil
+            findBar.reapplyHighlights(intersecting: cleared)
         }
 
         // Only highlight for a plain caret (no active selection).
@@ -793,6 +820,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: match.open)
         layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: match.close)
         bracketHighlight = match
+        findBar.reapplyHighlights(intersecting: [match.open, match.close])
     }
 
     // MARK: - Jump to matching bracket (first-responder target)
@@ -879,11 +907,25 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// unit and refreshes the toolbar popup and status bar.
     private func setDocumentLanguage(_ identifier: String?, editorIdentifier: String? = nil) {
         documentAnalysis.setLanguage(identifier: identifier)
+        updateWordHighlighterIdentifierRules()
         let shown = editorIdentifier ?? identifier ?? ""
         setEditorLanguage(identifier: shown)
         redetectIndentUnit()
         toolbarController?.refreshAll()
         statusBar.updateLanguage(shown)
+    }
+
+    /// Tells the same-word highlighter whether `$` is an identifier character:
+    /// exactly when the document language's `IdentifierPolicy` says so (JS /
+    /// TS). Reads the policy from a definition built only when the resolved
+    /// language actually changed (language changes are rare: load, menu,
+    /// sniffer), and none for plain text.
+    private func updateWordHighlighterIdentifierRules() {
+        let language = documentAnalysis.languageIdentifier
+        guard language != wordHighlighterLanguage else { return }
+        wordHighlighterLanguage = language
+        wordHighlighter.dollarIsWordCharacter = language.isEmpty ? false
+            : LanguageRegistry.definition(forIdentifier: language)?.identifierPolicy.dollarIdentifiers ?? false
     }
 
     /// Records the language on the text view (it drives indent width, formatting
@@ -1593,6 +1635,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         isClosing = true
         // Pending analysis work never outlives its window (M17 T17.1).
         documentAnalysis?.cancelPendingWork()
+        // Nor does a pending same-word scan, nor its viewport observers.
+        wordHighlighter?.cancel()
         // A run never outlives its window (T16.3b).
         tearDownRunSession()
         // Session bookkeeping (T14.8). Closing a window *by hand* is the user
