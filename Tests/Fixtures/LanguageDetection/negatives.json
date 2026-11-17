@@ -1,0 +1,214 @@
+[
+ {
+  "name": "seed 中文笔记",
+  "text": "今天的待办事项\n1. 去超市买菜\n2. 给妈妈打电话\n3. 写周报，周五前交"
+ },
+ {
+  "name": "seed 英文笔记",
+  "text": "Meeting notes\n- discuss the roadmap for Q3\n- decide who owns the release\n- follow up with design next week"
+ },
+ {
+  "name": "seed 英文散文",
+  "text": "The quick brown fox jumps over the lazy dog. This is just a paragraph of plain English text, with nothing that looks like code in it at all."
+ },
+ {
+  "name": "zh weekend plan",
+  "text": "周末计划\n- 周六上午去图书馆还书\n- 下午和小王打羽毛球\n- 周日在家整理照片"
+ },
+ {
+  "name": "ja todo",
+  "text": "今日のやること\n・牛乳を買う\n・メールの返信\n・企画書を仕上げる（金曜まで）"
+ },
+ {
+  "name": "ja prose",
+  "text": "昨日は雨だったので、一日中家で本を読んでいました。夕方には少し晴れて、近所を散歩しました。"
+ },
+ {
+  "name": "zh meeting minutes",
+  "text": "会议纪要 2026-11-10\n参会：张三、李四、王五\n1. 确认下季度预算\n2. 新版本延期到12月发布\n3. 下次会议：下周三 14:00"
+ },
+ {
+  "name": "en email",
+  "text": "Hi Sarah,\n\nThanks for sending the draft. I've added a few comments on page 3, mostly about the timeline.\nCould we move the review to Thursday? Friday is a holiday here.\n\nBest,\nTom"
+ },
+ {
+  "name": "prose with select/update",
+  "text": "Select an option from the menu, then update the list and delete the old entries from the table."
+ },
+ {
+  "name": "prose with import/from",
+  "text": "Import the file from the folder, then export it as a PDF. If the import fails, try again."
+ },
+ {
+  "name": "prose with loop words",
+  "text": "For each item in the list, check whether it is in stock. While you wait, print the receipt and return the change."
+ },
+ {
+  "name": "app log",
+  "text": "2026-11-17 09:12:01 INFO  Server started on port 8080\n2026-11-17 09:12:05 WARN  Slow response from db (1203 ms)\n2026-11-17 09:13:44 ERROR Connection reset by peer\n2026-11-17 09:13:45 INFO  Reconnected"
+ },
+ {
+  "name": "access log",
+  "text": "127.0.0.1 - - [17/Nov/2026:10:00:01 +0000] \"GET /index.html HTTP/1.1\" 200 612 \"-\" \"curl/8.4.0\"\n127.0.0.1 - - [17/Nov/2026:10:00:02 +0000] \"POST /api/login HTTP/1.1\" 401 54 \"-\" \"Mozilla/5.0\""
+ },
+ {
+  "name": "java stack trace",
+  "text": "Exception in thread \"main\" java.lang.NullPointerException\n\tat com.example.App.run(App.java:42)\n\tat com.example.App.main(App.java:12)"
+ },
+ {
+  "name": "python traceback",
+  "text": "Traceback (most recent call last):\n  File \"main.py\", line 10, in <module>\n    result = compute(data)\n  File \"main.py\", line 4, in compute\n    return data[\"value\"] / 0\nZeroDivisionError: division by zero"
+ },
+ {
+  "name": "csv rows",
+  "text": "id,name,email,age\n1,Ann,ann@example.com,31\n2,Bo,bo@example.com,27\n3,Cy,cy@example.com,45"
+ },
+ {
+  "name": "csv semicolon",
+  "text": "date;amount;category\n2026-11-01;12,50;food\n2026-11-02;40,00;transport"
+ },
+ {
+  "name": "url list",
+  "text": "https://example.com/docs/getting-started\nhttps://github.com/example/repo/issues/42\nhttps://news.example.org/2026/11/17/article.html"
+ },
+ {
+  "name": "key value contact",
+  "text": "Name: Zhang Wei\nPhone: 138 0000 0000\nEmail: zhang.wei@example.com\nBirthday: 1990-05-12"
+ },
+ {
+  "name": "zh key value",
+  "text": "姓名：李雷\n电话：13900000000\n地址：北京市海淀区"
+ },
+ {
+  "name": "key value wifi notes",
+  "text": "Wifi: HomeNet-5G\nPassword: correct horse battery staple\nRouter: 192.168.1.1\nNotes: reboot if slow"
+ },
+ {
+  "name": "numbered steps",
+  "text": "1. Preheat the oven to 180°C.\n2. Mix flour, sugar and eggs.\n3. Bake for 25 minutes."
+ },
+ {
+  "name": "recipe",
+  "text": "Pancakes (serves 2)\n\nIngredients:\n- 1 cup flour\n- 1 egg\n- 3/4 cup milk\n- pinch of salt\n\nWhisk everything together and fry in a hot pan."
+ },
+ {
+  "name": "address",
+  "text": "John Smith\n42 Baker Street\nLondon NW1 6XE\nUnited Kingdom"
+ },
+ {
+  "name": "zh address",
+  "text": "收件人：王小明\n上海市浦东新区世纪大道100号\n邮编：200120"
+ },
+ {
+  "name": "single hash heading",
+  "text": "# Shopping\neggs, milk, bread, coffee"
+ },
+ {
+  "name": "arithmetic",
+  "text": "12 + 30 = 42\n42 * 2 = 84\n84 / 4 = 21"
+ },
+ {
+  "name": "formulas",
+  "text": "area = pi * r^2\nv = d / t\nE = m * c^2"
+ },
+ {
+  "name": "spreadsheet formulas",
+  "text": "=SUM(A1:A10)\n=AVERAGE(B2:B20)\n=IF(C2>100, \"high\", \"low\")"
+ },
+ {
+  "name": "day schedule",
+  "text": "Tuesday\n- 9:00 standup\n- 10:30 call with vendor\n- lunch with Mei\n- 15:00 dentist"
+ },
+ {
+  "name": "zh prose",
+  "text": "今天天气很好，我们去公园散步。路上遇到一位老朋友，聊了很久，回家的时候已经天黑了。"
+ },
+ {
+  "name": "zh prose with code words",
+  "text": "如果 import 失败，先检查文件路径；然后在 settings 里把 timeout 调大一点，再重新 select 一次数据源。"
+ },
+ {
+  "name": "ja minutes",
+  "text": "議事録（11月17日）\n出席：田中、佐藤、鈴木\n・新機能のリリース日を決定\n・次回は来週月曜 10:00"
+ },
+ {
+  "name": "checkbox todo",
+  "text": "TODO\n[ ] call the bank\n[ ] renew passport\n[x] pay rent"
+ },
+ {
+  "name": "commit message",
+  "text": "Fix crash when opening empty files\n\nThe reader assumed at least one line. Return early instead,\nand add a test for the zero-length case."
+ },
+ {
+  "name": "chat transcript",
+  "text": "[10:02] Anna: are we still on for lunch?\n[10:03] Ben: yes, 12:30 at the usual place\n[10:03] Anna: great, see you there"
+ },
+ {
+  "name": "poem",
+  "text": "The woods are lovely, dark and deep,\nBut I have promises to keep,\nAnd miles to go before I sleep."
+ },
+ {
+  "name": "compiler output",
+  "text": "error: cannot find 'foo' in scope\n  --> main.swift:3:5\nwarning: variable 'x' was never used"
+ },
+ {
+  "name": "http headers",
+  "text": "HTTP/1.1 200 OK\nContent-Type: text/html; charset=utf-8\nContent-Length: 1024\nCache-Control: no-cache"
+ },
+ {
+  "name": "asterisk bullets",
+  "text": "* buy groceries\n* call mom\n* finish the report"
+ },
+ {
+  "name": "phone list",
+  "text": "Mom 555-0101\nDad 555-0102\nOffice 555-0199"
+ },
+ {
+  "name": "book notes",
+  "text": "Chapter 3 notes:\n\"The only way out is through.\"\nMain idea: habits compound over time.\nQuestion: how does this apply to learning languages?"
+ },
+ {
+  "name": "prose with class/function/return",
+  "text": "In today's class we discussed the function of the kidneys. Students should return their worksheets by Friday, and anyone who missed the lecture can find the slides on the course page."
+ },
+ {
+  "name": "unit conversions",
+  "text": "1 inch = 2.54 cm\n1 mile = 1.609 km\n1 pound = 0.4536 kg"
+ },
+ {
+  "name": "ja trip checklist",
+  "text": "来週の出張の準備：\n- 新幹線のチケットを予約\n- ホテル（2泊）\n- 資料を印刷"
+ },
+ {
+  "name": "semicolon sentences",
+  "text": "I came; I saw; I conquered.\nShe said no; he left anyway; nobody was surprised."
+ },
+ {
+  "name": "timetable",
+  "text": "Mon  08:00-09:30  Math\nTue  10:00-11:30  Physics\nWed  13:00-14:30  Chemistry"
+ },
+ {
+  "name": "survey results",
+  "text": "Q1: How satisfied are you?  4.2 / 5\nQ2: Would you recommend us?  87% yes\nQ3: Response time rating:    3.9 / 5"
+ },
+ {
+  "name": "zh weekly report",
+  "text": "本周工作：\n1. 完成登录模块重构\n2. 修复 3 个线上问题\n下周计划：\n1. 支付模块联调"
+ },
+ {
+  "name": "file paths",
+  "text": "/Users/me/Documents/report.pdf\n/Users/me/Downloads/photo.jpg\n/Users/me/Desktop/notes.txt"
+ },
+ {
+  "name": "email signature",
+  "text": "--\nKind regards,\nMaria Lopez\nProduct Manager"
+ },
+ {
+  "name": "search query",
+  "text": "(apple OR banana) AND NOT cherry\ntitle:\"annual report\" year:2025"
+ },
+ {
+  "name": "en meeting notes with owners",
+  "text": "Weekly sync - Nov 17\nAttendees: Ana, Raj, Lee\nDecisions:\n- ship 2.3 on Friday\n- Raj owns the release notes\nAction items:\n- Lee: update the onboarding doc"
+ }
+]

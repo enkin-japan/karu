@@ -1,0 +1,342 @@
+[
+ {
+  "name": "py two-sum class",
+  "language": "python",
+  "text": "class Solution:\n    def twoSum(self, nums: List[int], target: int) -> List[int]:\n        seen = {}\n        for i, n in enumerate(nums):\n            if target - n in seen:\n                return [seen[target - n], i]\n            seen[n] = i\n        return []"
+ },
+ {
+  "name": "py body fragment",
+  "language": "python",
+  "text": "    result = []\n    for row in rows:\n        if not row.strip():\n            continue\n        key, _, value = row.partition(\"=\")\n        result.append((key.strip(), value.strip()))\n    return dict(result)"
+ },
+ {
+  "name": "py script requests",
+  "language": "python",
+  "text": "import requests\n\nresp = requests.get(\"https://example.com/api/items\", timeout=10)\nresp.raise_for_status()\nfor item in resp.json()[\"items\"]:\n    print(item[\"id\"], item.get(\"title\", \"-\"))"
+ },
+ {
+  "name": "py dataclass",
+  "language": "python",
+  "text": "@dataclass\nclass Point:\n    x: float\n    y: float\n\n    def dist(self, other):\n        return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2) ** 0.5"
+ },
+ {
+  "name": "py comprehension lines",
+  "language": "python",
+  "text": "names = [u.name for u in users if u.active]\ntotal = sum(o.amount for o in orders)\nwith open(\"out.txt\", \"w\") as f:\n    f.write(\"\\n\".join(names))\nprint(f\"{len(names)} users, {total:.2f} total\")"
+ },
+ {
+  "name": "js fetch async",
+  "language": "javascript",
+  "text": "async function loadUser(id) {\n  const res = await fetch(`/api/users/${id}`);\n  if (!res.ok) throw new Error(\"failed\");\n  return res.json();\n}"
+ },
+ {
+  "name": "js dom handler",
+  "language": "javascript",
+  "text": "document.querySelector(\"#save\").addEventListener(\"click\", () => {\n  const value = document.getElementById(\"name\").value.trim();\n  if (!value) return;\n  localStorage.setItem(\"name\", value);\n});"
+ },
+ {
+  "name": "js commonjs module",
+  "language": "javascript",
+  "text": "const fs = require(\"fs\");\nconst path = require(\"path\");\n\nmodule.exports = function readConfig(dir) {\n  const file = path.join(dir, \"config.json\");\n  return JSON.parse(fs.readFileSync(file, \"utf8\"));\n};"
+ },
+ {
+  "name": "js class body",
+  "language": "javascript",
+  "text": "class Counter {\n  constructor() {\n    this.count = 0;\n  }\n  increment() {\n    this.count += 1;\n    return this;\n  }\n}"
+ },
+ {
+  "name": "ts generic fn",
+  "language": "typescript",
+  "text": "export function groupBy<T, K extends string>(items: T[], key: (item: T) => K): Record<K, T[]> {\n  const out = {} as Record<K, T[]>;\n  for (const item of items) {\n    (out[key(item)] ||= []).push(item);\n  }\n  return out;\n}"
+ },
+ {
+  "name": "ts type alias union",
+  "language": "typescript",
+  "text": "type Result<T> =\n  | { ok: true; value: T }\n  | { ok: false; error: string };\n\nconst parse = (input: string): Result<number> => {\n  const n = Number(input);\n  return Number.isNaN(n) ? { ok: false, error: \"nan\" } : { ok: true, value: n };\n};"
+ },
+ {
+  "name": "ts class members",
+  "language": "typescript",
+  "text": "export class Cache<V> {\n  private readonly store = new Map<string, V>();\n\n  get(key: string): V | undefined {\n    return this.store.get(key);\n  }\n\n  set(key: string, value: V): void {\n    this.store.set(key, value);\n  }\n}"
+ },
+ {
+  "name": "tsx component",
+  "language": "typescriptreact",
+  "text": "interface Props {\n  title: string;\n  onClose: () => void;\n}\n\nexport function Dialog({ title, onClose }: Props) {\n  return (\n    <div className=\"dialog\">\n      <h2>{title}</h2>\n      <button onClick={onClose}>Close</button>\n    </div>\n  );\n}"
+ },
+ {
+  "name": "java two-sum",
+  "language": "java",
+  "text": "class Solution {\n    public int[] twoSum(int[] nums, int target) {\n        Map<Integer, Integer> seen = new HashMap<>();\n        for (int i = 0; i < nums.length; i++) {\n            if (seen.containsKey(target - nums[i])) {\n                return new int[] { seen.get(target - nums[i]), i };\n            }\n            seen.put(nums[i], i);\n        }\n        return new int[0];\n    }\n}"
+ },
+ {
+  "name": "java record + stream",
+  "language": "java",
+  "text": "public record Order(String id, BigDecimal amount) {}\n\nList<Order> big = orders.stream()\n        .filter(o -> o.amount().compareTo(BigDecimal.TEN) > 0)\n        .collect(Collectors.toList());\nSystem.out.println(big.size());"
+ },
+ {
+  "name": "java annotated method",
+  "language": "java",
+  "text": "    @Override\n    public boolean equals(Object obj) {\n        if (this == obj) return true;\n        if (!(obj instanceof Point)) return false;\n        Point other = (Point) obj;\n        return x == other.x && y == other.y;\n    }"
+ },
+ {
+  "name": "cs linq",
+  "language": "csharp",
+  "text": "var adults = people\n    .Where(p => p.Age >= 18)\n    .OrderBy(p => p.Name)\n    .Select(p => new { p.Name, p.Age })\n    .ToList();\n\nforeach (var a in adults)\n{\n    Console.WriteLine($\"{a.Name} ({a.Age})\");\n}"
+ },
+ {
+  "name": "cs class props",
+  "language": "csharp",
+  "text": "public class Customer\n{\n    public int Id { get; set; }\n    public string Name { get; set; } = \"\";\n    public List<Order> Orders { get; } = new();\n\n    public decimal Total => Orders.Sum(o => o.Amount);\n}"
+ },
+ {
+  "name": "cs async method",
+  "language": "csharp",
+  "text": "    public async Task<string> FetchAsync(string url, CancellationToken token)\n    {\n        using var client = new HttpClient();\n        var response = await client.GetAsync(url, token);\n        response.EnsureSuccessStatusCode();\n        return await response.Content.ReadAsStringAsync();\n    }"
+ },
+ {
+  "name": "c struct + fn",
+  "language": "c",
+  "text": "struct node {\n    int value;\n    struct node *next;\n};\n\nstatic struct node *push(struct node *head, int value) {\n    struct node *n = malloc(sizeof(*n));\n    n->value = value;\n    n->next = head;\n    return n;\n}"
+ },
+ {
+  "name": "c main with include",
+  "language": "c",
+  "text": "#include <stdio.h>\n#include <string.h>\n\nint main(int argc, char **argv) {\n    for (int i = 1; i < argc; i++) {\n        printf(\"%zu %s\\n\", strlen(argv[i]), argv[i]);\n    }\n    return 0;\n}"
+ },
+ {
+  "name": "cpp vector algo",
+  "language": "cpp",
+  "text": "#include <vector>\n#include <algorithm>\n\nint maxProfit(std::vector<int>& prices) {\n    int best = 0, low = prices.empty() ? 0 : prices[0];\n    for (int p : prices) {\n        low = std::min(low, p);\n        best = std::max(best, p - low);\n    }\n    return best;\n}"
+ },
+ {
+  "name": "cpp class template",
+  "language": "cpp",
+  "text": "template <typename T>\nclass Stack {\npublic:\n    void push(const T& value) { items_.push_back(value); }\n    T pop() {\n        T top = items_.back();\n        items_.pop_back();\n        return top;\n    }\nprivate:\n    std::vector<T> items_;\n};"
+ },
+ {
+  "name": "cpp leetcode two-sum",
+  "language": "cpp",
+  "text": "class Solution {\npublic:\n    vector<int> twoSum(vector<int>& nums, int target) {\n        unordered_map<int, int> seen;\n        for (int i = 0; i < nums.size(); ++i) {\n            auto it = seen.find(target - nums[i]);\n            if (it != seen.end()) return {it->second, i};\n            seen[nums[i]] = i;\n        }\n        return {};\n    }\n};"
+ },
+ {
+  "name": "go handler",
+  "language": "go",
+  "text": "func handler(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"name\")\n\tif name == \"\" {\n\t\thttp.Error(w, \"missing name\", http.StatusBadRequest)\n\t\treturn\n\t}\n\tfmt.Fprintf(w, \"hello %s\", name)\n}"
+ },
+ {
+  "name": "go struct + method",
+  "language": "go",
+  "text": "type Stack struct {\n\titems []int\n}\n\nfunc (s *Stack) Push(v int) {\n\ts.items = append(s.items, v)\n}\n\nfunc (s *Stack) Len() int { return len(s.items) }"
+ },
+ {
+  "name": "go error handling fragment",
+  "language": "go",
+  "text": "\tdata, err := os.ReadFile(path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read %s: %w\", path, err)\n\t}\n\tvar cfg Config\n\tif err := json.Unmarshal(data, &cfg); err != nil {\n\t\treturn nil, err\n\t}"
+ },
+ {
+  "name": "rust struct impl",
+  "language": "rust",
+  "text": "struct Counter {\n    count: u32,\n}\n\nimpl Counter {\n    fn new() -> Self {\n        Counter { count: 0 }\n    }\n\n    fn bump(&mut self) -> u32 {\n        self.count += 1;\n        self.count\n    }\n}"
+ },
+ {
+  "name": "rust match result",
+  "language": "rust",
+  "text": "    let contents = match std::fs::read_to_string(&path) {\n        Ok(text) => text,\n        Err(e) => {\n            eprintln!(\"cannot read {}: {}\", path.display(), e);\n            return Err(e.into());\n        }\n    };\n    let lines: Vec<&str> = contents.lines().collect();"
+ },
+ {
+  "name": "rust iterator fn",
+  "language": "rust",
+  "text": "pub fn evens(xs: &[i32]) -> Vec<i32> {\n    xs.iter().copied().filter(|x| x % 2 == 0).collect()\n}"
+ },
+ {
+  "name": "swift struct codable",
+  "language": "swift",
+  "text": "struct User: Codable {\n    let id: Int\n    var name: String\n    var email: String?\n}\n\nlet user = try JSONDecoder().decode(User.self, from: data)\nprint(user.name)"
+ },
+ {
+  "name": "swift two-sum",
+  "language": "swift",
+  "text": "class Solution {\n    func twoSum(_ nums: [Int], _ target: Int) -> [Int] {\n        var seen: [Int: Int] = [:]\n        for (i, n) in nums.enumerated() {\n            if let j = seen[target - n] {\n                return [j, i]\n            }\n            seen[n] = i\n        }\n        return []\n    }\n}"
+ },
+ {
+  "name": "swift fragment guard",
+  "language": "swift",
+  "text": "        guard let url = URL(string: text) else { return nil }\n        let request = URLRequest(url: url)\n        let (data, _) = try await URLSession.shared.data(for: request)\n        return String(decoding: data, as: UTF8.self)"
+ },
+ {
+  "name": "sh loop no shebang",
+  "language": "bash",
+  "text": "for dir in */; do\n  if [ -d \"$dir/.git\" ]; then\n    echo \"== $dir\"\n    git -C \"$dir\" status --short\n  fi\ndone"
+ },
+ {
+  "name": "sh function",
+  "language": "bash",
+  "text": "log() {\n  printf '%s %s\\n' \"$(date +%H:%M:%S)\" \"$*\" >&2\n}\n\nbackup=\"$HOME/backup-$(date +%F).tar.gz\"\ntar -czf \"$backup\" \"$HOME/Documents\" && log \"wrote $backup\""
+ },
+ {
+  "name": "sh commands list",
+  "language": "bash",
+  "text": "export PATH=\"$HOME/bin:$PATH\"\nmkdir -p build && cd build\ncmake .. -DCMAKE_BUILD_TYPE=Release\nmake -j\"$(nproc)\""
+ },
+ {
+  "name": "sql join group",
+  "language": "sql",
+  "text": "SELECT c.name, COUNT(o.id) AS orders, SUM(o.amount) AS total\nFROM customers c\nLEFT JOIN orders o ON o.customer_id = c.id\nGROUP BY c.name\nHAVING SUM(o.amount) > 100\nORDER BY total DESC;"
+ },
+ {
+  "name": "sql ddl",
+  "language": "sql",
+  "text": "CREATE TABLE users (\n    id INTEGER PRIMARY KEY,\n    email TEXT NOT NULL UNIQUE,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\nINSERT INTO users (email) VALUES ('a@example.com');"
+ },
+ {
+  "name": "sql lowercase update",
+  "language": "sql",
+  "text": "update accounts\nset balance = balance - 50\nwhere id = 7 and balance >= 50;"
+ },
+ {
+  "name": "css rules",
+  "language": "css",
+  "text": ".card {\n  display: flex;\n  gap: 12px;\n  padding: 16px;\n  border-radius: 8px;\n  background: #fff;\n}\n\n.card > h2 {\n  font-size: 1.25rem;\n  margin: 0;\n}"
+ },
+ {
+  "name": "css media + vars",
+  "language": "css",
+  "text": ":root {\n  --accent: #0a84ff;\n}\n\n@media (max-width: 600px) {\n  nav ul { display: none; }\n  .menu-button { color: var(--accent); }\n}"
+ },
+ {
+  "name": "html form fragment",
+  "language": "html",
+  "text": "<form action=\"/login\" method=\"post\">\n  <label for=\"user\">User</label>\n  <input id=\"user\" name=\"user\" type=\"text\" required>\n  <label for=\"pw\">Password</label>\n  <input id=\"pw\" name=\"pw\" type=\"password\">\n  <button type=\"submit\">Sign in</button>\n</form>"
+ },
+ {
+  "name": "html list fragment",
+  "language": "html",
+  "text": "<ul class=\"nav\">\n  <li><a href=\"/\">Home</a></li>\n  <li><a href=\"/docs\">Docs</a></li>\n  <li><a href=\"/about\">About</a></li>\n</ul>"
+ },
+ {
+  "name": "xml config fragment",
+  "language": "xml",
+  "text": "<configuration>\n  <appSettings>\n    <add key=\"Timeout\" value=\"30\" />\n    <add key=\"Retries\" value=\"3\" />\n  </appSettings>\n</configuration>"
+ },
+ {
+  "name": "xml plist body",
+  "language": "xml",
+  "text": "<dict>\n\t<key>CFBundleName</key>\n\t<string>Demo</string>\n\t<key>LSMinimumSystemVersion</key>\n\t<string>13.0</string>\n</dict>"
+ },
+ {
+  "name": "json object",
+  "language": "json",
+  "text": "{\n  \"name\": \"demo\",\n  \"version\": \"1.2.0\",\n  \"scripts\": { \"build\": \"tsc\", \"test\": \"vitest\" },\n  \"private\": true\n}"
+ },
+ {
+  "name": "jsonl lines",
+  "language": "jsonl",
+  "text": "{\"ts\": 1, \"event\": \"start\"}\n{\"ts\": 2, \"event\": \"tick\", \"n\": 1}\n{\"ts\": 3, \"event\": \"stop\"}"
+ },
+ {
+  "name": "yaml compose",
+  "language": "yaml",
+  "text": "services:\n  web:\n    image: nginx:1.27\n    ports:\n      - \"8080:80\"\n    depends_on:\n      - api\n  api:\n    build: ./api\n    environment:\n      LOG_LEVEL: info"
+ },
+ {
+  "name": "yaml k8s",
+  "language": "yaml",
+  "text": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: demo\nspec:\n  replicas: 2\n  selector:\n    matchLabels:\n      app: demo"
+ },
+ {
+  "name": "toml cargo",
+  "language": "toml",
+  "text": "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }"
+ },
+ {
+  "name": "toml pyproject",
+  "language": "toml",
+  "text": "[tool.ruff]\nline-length = 100\ntarget-version = \"py312\"\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\"]"
+ },
+ {
+  "name": "md readme",
+  "language": "markdown",
+  "text": "# Demo\n\nA small tool for renaming files.\n\n## Install\n\n```\nbrew install demo\n```\n\n## Usage\n\nRun `demo --help` to see the options."
+ },
+ {
+  "name": "md notes with links",
+  "language": "markdown",
+  "text": "## Reading list\n\n- [Crafting Interpreters](https://craftinginterpreters.com) — **in progress**\n- [SICP](https://sarabander.github.io/sicp/) — _later_\n\n> Finish chapter 3 before Friday."
+ },
+ {
+  "name": "zh diary",
+  "language": null,
+  "text": "今天下午去了一趟图书馆，借了两本书。\n回来的路上下雨了，没带伞，淋了一身。\n晚上打算早点睡，明天还要早起。"
+ },
+ {
+  "name": "ja memo",
+  "language": null,
+  "text": "明日の予定\n・10時 歯医者\n・午後 買い物（牛乳、卵、パン）\n・夜 レポートの続きを書く"
+ },
+ {
+  "name": "en shopping list",
+  "language": null,
+  "text": "Shopping list\n- milk\n- eggs (a dozen)\n- bread\n- coffee beans\n- dish soap"
+ },
+ {
+  "name": "en email",
+  "language": null,
+  "text": "Hi Sam,\n\nThanks for sending the draft over. I read it last night and I think the second section needs a clearer example.\nCan we talk on Thursday?\n\nBest,\nLee"
+ },
+ {
+  "name": "key value notes",
+  "language": null,
+  "text": "Name: Alex Chen\nPhone: 555-0134\nCity: Osaka\nNotes: prefers email, call after 6pm"
+ },
+ {
+  "name": "log lines",
+  "language": null,
+  "text": "2026-11-17 10:02:11 INFO server started on port 8080\n2026-11-17 10:02:15 WARN cache miss for key user:42\n2026-11-17 10:03:01 ERROR upstream timed out after 30s"
+ },
+ {
+  "name": "csv rows",
+  "language": null,
+  "text": "id,name,amount,date\n1,Alice,30.50,2026-01-02\n2,Bob,12.00,2026-01-03\n3,Carol,99.99,2026-01-05"
+ },
+ {
+  "name": "prose with code words",
+  "language": null,
+  "text": "To update the list, select an option from the menu, then import the file from the folder you created.\nIf the function of the button is unclear, return to the first page and read the class notes again."
+ },
+ {
+  "name": "numbered steps",
+  "language": null,
+  "text": "1. Preheat the oven to 200 degrees.\n2. Mix the flour, sugar and butter.\n3. Bake for 25 minutes.\n4. Let it cool before serving."
+ },
+ {
+  "name": "urls",
+  "language": null,
+  "text": "https://example.com/a\nhttps://example.org/docs/start\nhttps://example.net/download?id=3"
+ },
+ {
+  "name": "times table",
+  "language": null,
+  "text": "09:00 standup\n09:30 design review\n11:00 1:1 with Kim\n14:00 release checklist\n16:30 gym"
+ },
+ {
+  "name": "zh todo colon",
+  "language": null,
+  "text": "待办：\n买菜：西红柿、鸡蛋、葱\n缴费：电费、网费\n周末：带孩子去动物园"
+ },
+ {
+  "name": "single hash line",
+  "language": null,
+  "text": "# of attendees: 14\nRoom B was too small again, we should book the large one next time.\nBudget is unchanged from last quarter."
+ },
+ {
+  "name": "math lines",
+  "language": null,
+  "text": "x = 3\ny = 4\nx + y = 7\narea = x * y = 12"
+ },
+ {
+  "name": "stack trace",
+  "language": null,
+  "text": "Exception in thread \"main\" java.lang.NullPointerException\n\tat com.example.App.run(App.java:42)\n\tat com.example.App.main(App.java:12)"
+ }
+]
