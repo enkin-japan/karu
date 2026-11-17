@@ -146,6 +146,11 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case prefScratchpadFontSizeLabel
     // Banner above the editor after a focus-loss auto-save failed (T12.14; a status-bar note before).
     case saveFailedBanner, saveFailedRetry
+    // Language suggestions: the band above the editor and the header of the
+    // language menus' suggestion section (detection has candidates but no
+    // confident answer).
+    case languageSuggestionLabel, languageSuggestionOther, languageSuggestionDismiss
+    case languageSuggestionAccessibility
     // Transient status-bar notes for crash-draft recovery (T14.11).
     case draftRestored, draftDiscardedDiskNewer, draftRestoredAsUntitled
     // Feature-module display names.

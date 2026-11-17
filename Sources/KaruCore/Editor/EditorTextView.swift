@@ -885,6 +885,9 @@ public final class EditorTextView: NSTextView {
 
     // MARK: Plain-text paste & drop
 
+    /// True only while `paste(_:)` posts its text-did-change notification.
+    private(set) var isPasting = false
+
     /// Always coerce pasted content to plain text, discarding rich attributes.
     public override func paste(_ sender: Any?) {
         // Explicit plain-text paste. Delegating to `pasteAsPlainText` broke on
@@ -903,7 +906,11 @@ public final class EditorTextView: NSTextView {
         guard shouldChangeText(in: target, replacementString: plain) else { return }
         textStorage?.replaceCharacters(
             in: target, with: NSAttributedString(string: plain, attributes: typingAttributes))
+        // Lets the window's change handler tell a paste from typing (a paste
+        // is ranked for a language at once, typing after a pause).
+        isPasting = true
         didChangeText()
+        isPasting = false
         setSelectedRange(NSRange(location: target.location + (plain as NSString).length, length: 0))
     }
 

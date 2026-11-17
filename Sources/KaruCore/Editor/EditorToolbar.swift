@@ -90,6 +90,9 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         // `LanguageMenuSettings`; populated here once so the popup has its
         // natural size before the toolbar item is created.
         let langMenu = NSMenu()
+        // Items are enabled as built: the suggestion header must stay disabled,
+        // everything else is always choosable.
+        langMenu.autoenablesItems = false
         LanguageMenuSettings(center: moduleCenter).menuLayout(current: nil)
             .populate(langMenu, autoTitle: L10n.t(.languageAuto), autoAction: nil,
                       autoTag: Self.autoLanguageTag, languageAction: nil)
@@ -157,6 +160,9 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
         if let auto = languagePopup.menu?.items.first(where: { $0.tag == Self.autoLanguageTag }) {
             auto.title = L10n.t(.languageAuto)
         }
+        // A suggestion section's header is localized; its signature carries
+        // the title, so this rebuilds it when present.
+        refreshLanguageSelection()
         formatButton.title = L10n.t(.formatAction)
         formatButton.toolTip = L10n.t(.menuFormatDocument)
         compactContainers[Self.format]?.controlDidChange()
@@ -260,14 +266,22 @@ final class EditorToolbarController: NSObject, NSToolbarDelegate, NSMenuDelegate
     /// manually chosen language that must stay selectable) changed. The hidden
     /// current language is appended after a separator so the popup never shows
     /// a wrong or blank title; it disappears again once the window moves on.
+    /// While detection has suggestions for an undecided Auto document, they
+    /// head the list in their own section (`LanguageMenuLayout.suggestions`).
     private func rebuildLanguageItemsIfNeeded(for wc: EditorWindowController) {
         guard let menu = languagePopup.menu else { return }
         let current: String? = wc.isLanguageAuto ? nil : wc.currentLanguageIdentifierValue
-        let layout = LanguageMenuSettings(center: moduleCenter).menuLayout(current: current)
-        guard LanguageMenuLayout.signature(of: menu) != layout.signature else { return }
+        let layout = LanguageMenuSettings(center: moduleCenter)
+            .menuLayout(current: current, suggestions: wc.languageMenuSuggestions)
+        let header = L10n.t(.languageSuggestionLabel)
+        guard LanguageMenuLayout.signature(of: menu) != layout.signature(suggestionHeader: header) else { return }
         layout.populate(menu, autoTitle: L10n.t(.languageAuto), autoAction: nil,
-                        autoTag: Self.autoLanguageTag, languageAction: nil)
+                        autoTag: Self.autoLanguageTag, languageAction: nil,
+                        suggestionHeader: header)
     }
+
+    /// The language popup's menu (test support).
+    var languagePopupMenu: NSMenu? { languagePopup.menu }
 
     func refreshFormatEnabled() {
         guard let wc = windowController else { return }

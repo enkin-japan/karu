@@ -74,9 +74,26 @@ public struct LanguageMenuSettings {
     }
 
     /// The menu layout for a window whose manually chosen language is `current`
-    /// (`nil` while Auto is in charge).
-    public func menuLayout(current: String?) -> LanguageMenuLayout {
-        Self.layout(hidden: hiddenIdentifiers, current: current)
+    /// (`nil` while Auto is in charge). `suggestions` are the language
+    /// identifiers detection offers for a window it could not classify on its
+    /// own (best first); they head the menu in their own section.
+    public func menuLayout(current: String?, suggestions: [String] = []) -> LanguageMenuLayout {
+        var layout = Self.layout(hidden: hiddenIdentifiers, current: current)
+        layout.suggestions = Self.suggestionEntries(suggestions)
+        return layout
+    }
+
+    /// Menu entries for suggested identifiers, in order: unknown identifiers,
+    /// Plain Text and duplicates are dropped. Hidden languages are kept — the
+    /// visibility setting trims the list, not what detection may offer.
+    public static func suggestionEntries(_ identifiers: [String]) -> [LanguageMenuEntry] {
+        var seen = Set<String>()
+        return identifiers.compactMap { raw in
+            let id = raw.lowercased()
+            guard !id.isEmpty, seen.insert(id).inserted,
+                  let match = SupportedLanguage.all.first(where: { $0.identifier == id }) else { return nil }
+            return LanguageMenuEntry(title: match.title, identifier: match.identifier)
+        }
     }
 
     /// Pure item-list builder shared by the toolbar popup and the main menu.
@@ -102,10 +119,20 @@ public struct LanguageMenuEntry: Equatable, Sendable {
 }
 
 /// Auto, separator, the visible languages, then — only when needed — a
-/// separator and the hidden language the window is currently using.
+/// separator and the hidden language the window is currently using. While
+/// detection has suggestions for the window, a header ("Might be"), the
+/// suggested languages and a separator sit between Auto's separator and the
+/// visible languages (which still list the suggested ones too).
 public struct LanguageMenuLayout: Equatable, Sendable {
     public let languages: [LanguageMenuEntry]
     public let extra: LanguageMenuEntry?
+    /// Suggested languages, best first; empty for no suggestion section.
+    public var suggestions: [LanguageMenuEntry] = []
+
+    /// Tags marking the suggestion section's header and items, so a populated
+    /// menu's signature tells them apart from the ordinary language items.
+    static let suggestionHeaderTag = -1001
+    static let suggestionItemTag = -1002
 
     /// Every supported language, no extra entry (the shortcut catalog uses this
     /// so bindings stay independent of the visibility setting).
@@ -115,30 +142,57 @@ public struct LanguageMenuLayout: Equatable, Sendable {
 
     /// Compact description of the item sequence: `*` Auto, `-` separator,
     /// `=id` a language. Used to skip rebuilding a menu that already matches.
-    var signature: [String] {
-        var tokens = ["*", "-"] + languages.map { "=" + $0.identifier }
+    /// `^title` the suggestion header, `?id` a suggested language. The header
+    /// carries its (localized) title so a UI-language switch rebuilds it.
+    func signature(suggestionHeader: String = "") -> [String] {
+        var tokens = ["*", "-"]
+        if !suggestions.isEmpty {
+            tokens += ["^" + suggestionHeader] + suggestions.map { "?" + $0.identifier } + ["-"]
+        }
+        tokens += languages.map { "=" + $0.identifier }
         if let extra { tokens += ["-", "=" + extra.identifier] }
         return tokens
     }
 
+    var signature: [String] { signature() }
+
     static func signature(of menu: NSMenu) -> [String] {
         menu.items.map { item in
             if item.isSeparatorItem { return "-" }
+            if item.tag == suggestionHeaderTag { return "^" + item.title }
+            if item.tag == suggestionItemTag, let id = item.representedObject as? String { return "?" + id }
             if let id = item.representedObject as? String { return "=" + id }
             return "*"
         }
     }
 
     /// Replaces `menu`'s items with Auto + languages (+ the hidden extra).
-    /// Language items carry their identifier on `representedObject`.
+    /// Language items carry their identifier on `representedObject`. With
+    /// suggestions, a disabled `suggestionHeader` item and one item per
+    /// suggestion (identifier on `representedObject`, `suggestionAction`)
+    /// follow Auto's separator, closed by a separator of their own.
     @MainActor
     func populate(_ menu: NSMenu, autoTitle: String, autoAction: Selector?, autoTag: Int = 0,
-                  languageAction: Selector?) {
+                  languageAction: Selector?, suggestionHeader: String = "",
+                  suggestionAction: Selector? = nil) {
         menu.removeAllItems()
         let auto = NSMenuItem(title: autoTitle, action: autoAction, keyEquivalent: "")
         auto.tag = autoTag
         menu.addItem(auto)
         menu.addItem(.separator())
+        if !suggestions.isEmpty {
+            let header = NSMenuItem(title: suggestionHeader, action: nil, keyEquivalent: "")
+            header.tag = Self.suggestionHeaderTag
+            header.isEnabled = false
+            menu.addItem(header)
+            for entry in suggestions {
+                let item = NSMenuItem(title: entry.title, action: suggestionAction, keyEquivalent: "")
+                item.representedObject = entry.identifier
+                item.tag = Self.suggestionItemTag
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
         func add(_ entry: LanguageMenuEntry) {
             let item = NSMenuItem(title: entry.title, action: languageAction, keyEquivalent: "")
             item.representedObject = entry.identifier

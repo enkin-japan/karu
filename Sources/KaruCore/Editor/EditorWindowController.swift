@@ -21,6 +21,49 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// title's unsaved marker it follows the dirty flag, so undoing back to the
     /// saved text does not dismiss it. Internal for tests.
     let saveFailureBanner = SaveFailureBanner()
+    /// Offers the languages detection found plausible when it could not decide
+    /// on its own (see `presentLanguageRanking`). Internal for tests.
+    let languageSuggestionBanner = LanguageSuggestionBanner()
+
+    /// Content ranking used for automatic language detection. Tests inject
+    /// rankings here; the default is `LanguageSniffer.rank` (or the
+    /// `KARU_DEBUG_LANGUAGE_CANDIDATES` diagnostic override).
+    var languageRanker: (String) -> LanguageRanking = EditorWindowController.defaultLanguageRanker
+    /// The most recent ranking for this document while it is undecided; feeds
+    /// the band and the language menus' suggestion section. Cleared when
+    /// another document is loaded.
+    private(set) var latestLanguageRanking: LanguageRanking?
+    /// The user closed the suggestion band for this document: it does not come
+    /// back on later edits. Cleared by loading another document and by
+    /// choosing Auto.
+    private(set) var languageSuggestionDismissed = false
+    /// Pending debounced ranking after ordinary typing; cancelled by the next
+    /// edit, by an immediate ranking, by a load and at teardown.
+    private var languageRankingWork: DispatchWorkItem?
+    /// Quiet time after the last keystroke before the buffer is ranked.
+    static let defaultLanguageRankingDebounce: TimeInterval = 0.6
+    var languageRankingDebounce: TimeInterval = EditorWindowController.defaultLanguageRankingDebounce
+    /// A single edit inserting at least this many characters (or any paste)
+    /// is ranked at once instead of after the debounce.
+    static let immediateRankingInsertion = 40
+    /// Largest number of characters inserted by one storage edit since the
+    /// last `textDidChange` (fed by `insertionMeter`).
+    private var pendingInsertionLength = 0
+    private var insertionMeter: InsertionMeter?
+
+    /// `LanguageSniffer.rank`, unless the diagnostic variable
+    /// `KARU_DEBUG_LANGUAGE_CANDIDATES=python,swift,go` is set at launch: then
+    /// every ranking offers those candidates without a confident answer, so a
+    /// snapshot can show the suggestion band before the real detector produces
+    /// such rankings. Zero cost when the variable is unset.
+    static let defaultLanguageRanker: (String) -> LanguageRanking = {
+        if let raw = ProcessInfo.processInfo.environment["KARU_DEBUG_LANGUAGE_CANDIDATES"], !raw.isEmpty {
+            let ids = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            let guesses = ids.enumerated().map { LanguageGuess(identifier: $1, score: Double(ids.count - $0)) }
+            return { _ in LanguageRanking(confident: nil, candidates: guesses) }
+        }
+        return LanguageSniffer.rank
+    }()
 
     /// Multiplexes the single `textStorage.delegate` slot to the gutter (line
     /// index) and the highlight engine. Retained here because the storage holds
@@ -221,6 +264,15 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         observerHub.add(analysis)
         self.documentAnalysis = analysis
 
+        // Measures each edit's inserted length, so a large insertion is ranked
+        // for a language at once instead of after the typing debounce.
+        let meter = InsertionMeter { [weak self] length in
+            guard let self else { return }
+            self.pendingInsertionLength = max(self.pendingInsertionLength, length)
+        }
+        observerHub.add(meter)
+        insertionMeter = meter
+
         // Attach the line-number gutter as the scroll view's vertical ruler.
         let gutter = GutterView(scrollView: scrollView,
                                 textView: textView,
@@ -339,9 +391,14 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         // The save-failure banner is hidden until needed; a stack view drops
         // hidden views from layout, so it takes no room until then.
-        let stack = NSStackView(views: [saveFailureBanner, findBar.barView, scrollView, statusBar])
+        let stack = NSStackView(views: [saveFailureBanner, languageSuggestionBanner,
+                                        findBar.barView, scrollView, statusBar])
         saveFailureBanner.onRetry = { [weak self] in self?.saveDocument(nil) }
         saveFailureBanner.onSaveAs = { [weak self] in self?.saveDocumentAs(nil) }
+        languageSuggestionBanner.onChoose = { [weak self] identifier in
+            self?.chooseSuggestedLanguage(identifier: identifier)
+        }
+        languageSuggestionBanner.onDismiss = { [weak self] in self?.dismissLanguageSuggestions() }
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
@@ -366,6 +423,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             saveFailureBanner.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            languageSuggestionBanner.widthAnchor.constraint(equalTo: stack.widthAnchor),
             findBar.barView.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusBar.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -433,6 +491,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         toolbarController?.reloadStrings()
         findBar.reloadStrings()
         saveFailureBanner.reloadStrings()
+        languageSuggestionBanner.reloadStrings()
     }
 
     /// Re-applies the shared editor font size after a change broadcast.
@@ -584,22 +643,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             // Detect the file's line-ending style for the status bar.
             currentLineEnding = LineEnding.detect(in: text)
 
-            // Loading a file resets any prior manual override / detection.
+            // Loading a file resets any prior manual override / detection, and
+            // the previous document's language suggestions with it.
             userOverrodeLanguage = false
             didAutoDetectLanguage = false
+            resetLanguageSuggestions()
 
-            // Detect the language by file extension; if the extension resolves
-            // nothing (unknown / no extension), fall back to sniffing the file's
-            // content. One `setDocumentLanguage` call points the analysis (and
-            // through it the highlighter and completion) at it, records it on
-            // the text view and re-infers the indent unit from the content.
-            let ext = url.pathExtension
-            var identifier = LanguageRegistry.identifier(forExtension: ext)
-            if identifier == nil, let sniffed = LanguageSniffer.sniff(text) {
-                identifier = LanguageRegistry.canonicalIdentifier(sniffed)
-                didAutoDetectLanguage = true
-            }
-            setDocumentLanguage(identifier, editorIdentifier: identifier ?? ext.lowercased())
+            detectFileLanguage(url: url, text: text)
 
             // Index the freshly loaded document's words (its declarations come
             // from the snapshot the language change just produced).
@@ -746,9 +796,10 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         completionController.indexDocument()
         redetectIndentUnit()
         // A recovered untitled buffer has no extension to classify it, so let
-        // the sniffer have the same look it would get from typing.
+        // the sniffer have the same look it would get from typing — at once.
+        pendingInsertionLength = 0
         if documentController.fileURL == nil {
-            maybeAutoDetectLanguage()
+            rankLanguageNow()
         }
         updateWindowState()
         toolbarController?.refreshAll()
@@ -773,7 +824,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             // button's dot).
             updateWindowState()
         }
-        maybeAutoDetectLanguage()
+        scheduleLanguageRanking()
         refreshStatusBar()
         scheduleDraftFlush()
         // An edit that leaves the caret in place (forward delete of the
@@ -838,25 +889,148 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
     }
 
-    /// Sniffs the buffer for a language once it has accumulated enough content,
-    /// so an untitled / pasted document highlights itself without the user
-    /// picking a language. Runs only while no language is set and the user has
-    /// not chosen one manually; stops after a successful classification.
-    private func maybeAutoDetectLanguage() {
+    // MARK: - Automatic language detection and suggestions
+
+    /// Whether the buffer is still waiting for automatic detection: Auto mode,
+    /// no language found yet, and no language (nor an unregistered extension's
+    /// name) on the text view.
+    private var awaitsLanguageRanking: Bool {
         guard !userOverrodeLanguage, !didAutoDetectLanguage,
-              let editorView = textView as? EditorTextView,
-              editorView.languageIdentifier.isEmpty else { return }
+              let editorView = textView as? EditorTextView else { return false }
+        return editorView.languageIdentifier.isEmpty
+    }
+
+    /// Called on every edit: a paste or a single edit inserting
+    /// `immediateRankingInsertion`+ characters ranks at once; ordinary typing
+    /// ranks once the user pauses for `languageRankingDebounce`.
+    private func scheduleLanguageRanking() {
+        let inserted = pendingInsertionLength
+        pendingInsertionLength = 0
+        guard awaitsLanguageRanking else {
+            cancelLanguageRanking()
+            return
+        }
+        let pasted = (textView as? EditorTextView)?.isPasting ?? false
+        if pasted || inserted >= Self.immediateRankingInsertion {
+            rankLanguageNow()
+            return
+        }
+        languageRankingWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.languageRankingWork = nil
+                self?.rankLanguageNow()
+            }
+        }
+        languageRankingWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + languageRankingDebounce, execute: work)
+    }
+
+    private func cancelLanguageRanking() {
+        languageRankingWork?.cancel()
+        languageRankingWork = nil
+    }
+
+    /// Ranks the buffer for a language once it has accumulated enough content,
+    /// so an untitled / pasted document highlights itself without the user
+    /// picking a language, or — when detection is unsure — offers candidates.
+    /// Runs only while no language is set and the user has not chosen one
+    /// manually; stops after a confident classification.
+    private func rankLanguageNow() {
+        cancelLanguageRanking()
+        guard awaitsLanguageRanking else { return }
 
         let text = textView.string
         let charCount = (text as NSString).length
         let newlineCount = text.reduce(0) { $1 == "\n" ? $0 + 1 : $0 }
-        // Wait for ≥120 characters or ≥3 lines before guessing.
-        guard charCount >= 120 || newlineCount >= 2 else { return }
+        // Wait for ≥120 characters or ≥3 lines before guessing. Below that the
+        // buffer is too short to judge, so earlier suggestions are withdrawn.
+        guard charCount >= 120 || newlineCount >= 2 else {
+            presentLanguageRanking(.none)
+            return
+        }
 
-        guard let identifier = LanguageSniffer.sniff(text) else { return }
-        applyLanguage(identifier: identifier)
-        didAutoDetectLanguage = true
+        let ranking = languageRanker(text)
+        if let identifier = ranking.confident {
+            applyLanguage(identifier: identifier)
+            didAutoDetectLanguage = true
+        }
+        presentLanguageRanking(ranking)
     }
+
+    /// Detects a file's language: by extension, else by ranking its content
+    /// (no minimum-content gate: the file is complete). A confident ranking is
+    /// applied; candidates are offered.
+    private func detectFileLanguage(url: URL, text: String) {
+        let ext = url.pathExtension
+        var identifier = LanguageRegistry.identifier(forExtension: ext)
+        var ranking = LanguageRanking.none
+        if identifier == nil {
+            ranking = languageRanker(text)
+            if let confident = ranking.confident {
+                identifier = LanguageRegistry.canonicalIdentifier(confident)
+                didAutoDetectLanguage = true
+            }
+        }
+        // One `setDocumentLanguage` call points the analysis (and through it
+        // the highlighter and completion) at the language, records it on the
+        // text view and re-infers the indent unit from the content.
+        setDocumentLanguage(identifier, editorIdentifier: identifier ?? ext.lowercased())
+        presentLanguageRanking(ranking)
+    }
+
+    /// Records `ranking` and brings the band and the toolbar menu in line:
+    /// candidates without a confident answer show the band (unless dismissed
+    /// for this document); anything else hides it.
+    private func presentLanguageRanking(_ ranking: LanguageRanking) {
+        latestLanguageRanking = ranking
+        let entries = LanguageMenuSettings.suggestionEntries(languageMenuSuggestions)
+        if !languageSuggestionDismissed, !entries.isEmpty {
+            languageSuggestionBanner.show(candidates: entries)
+        } else {
+            languageSuggestionBanner.hide()
+        }
+        toolbarController?.refreshLanguageSelection()
+    }
+
+    /// The suggested language identifiers the language menus list in their own
+    /// section: the latest ranking's candidates while Auto is on, no language
+    /// is applied and detection had no confident answer. Kept after the band
+    /// is dismissed.
+    var languageMenuSuggestions: [String] {
+        guard isLanguageAuto, documentAnalysis.languageIdentifier.isEmpty,
+              let ranking = latestLanguageRanking, ranking.confident == nil else { return [] }
+        return ranking.candidates.map(\.identifier)
+    }
+
+    /// Forgets the previous document's ranking, pending ranking and dismissal.
+    private func resetLanguageSuggestions() {
+        cancelLanguageRanking()
+        pendingInsertionLength = 0
+        latestLanguageRanking = nil
+        languageSuggestionDismissed = false
+        languageSuggestionBanner.hide()
+    }
+
+    /// A candidate (or an "Other…" language) picked in the band: the manual
+    /// choice path, then keyboard focus back in the text.
+    private func chooseSuggestedLanguage(identifier: String) {
+        chooseLanguage(identifier: identifier)
+        window?.makeFirstResponder(textView)
+    }
+
+    /// The band's close button: hide it for the rest of this document.
+    private func dismissLanguageSuggestions() {
+        languageSuggestionDismissed = true
+        languageSuggestionBanner.hide()
+        window?.makeFirstResponder(textView)
+    }
+
+    /// Whether a debounced ranking is waiting for the typing pause (tests).
+    var hasPendingLanguageRanking: Bool { languageRankingWork != nil }
+
+    /// The toolbar language popup's menu (tests).
+    var toolbarLanguageMenu: NSMenu? { toolbarController?.languagePopupMenu }
 
     /// Language change from the menu / toolbar / sniffer / run sniffing.
     private func applyLanguage(identifier: String) {
@@ -875,6 +1049,12 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         updateWordHighlighterIdentifierRules()
         let shown = editorIdentifier ?? identifier ?? ""
         setEditorLanguage(identifier: shown)
+        // A language decided by any route (menu, toolbar, Save As, run-time
+        // sniffing, detection) needs no suggestions.
+        if !documentAnalysis.languageIdentifier.isEmpty {
+            cancelLanguageRanking()
+            languageSuggestionBanner.hide()
+        }
         redetectIndentUnit()
         toolbarController?.refreshAll()
         statusBar.updateLanguage(shown)
@@ -1388,28 +1568,40 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     func chooseLanguage(identifier: String) {
         userOverrodeLanguage = true
         didAutoDetectLanguage = true
+        // A manual choice (Plain Text included) ends the suggestions.
+        cancelLanguageRanking()
+        languageSuggestionBanner.hide()
         applyLanguage(identifier: identifier)
     }
 
+    /// Menu-bar Language menu: one of the suggested languages listed above the
+    /// full list (a separate action so a shortcut bound to that language does
+    /// not show on both items).
+    @objc public func selectSuggestedLanguage(_ sender: Any?) {
+        selectLanguage(sender)
+    }
+
     /// Clears any manual override and re-detects: by extension for a saved file,
-    /// otherwise by sniffing the buffer's content.
+    /// otherwise by sniffing the buffer's content. Picking Auto also lets a
+    /// dismissed suggestion band come back.
     func chooseAutoLanguage() {
+        languageSuggestionDismissed = false
+        redetectLanguageAutomatically()
+    }
+
+    /// `chooseAutoLanguage` without clearing the band's dismissal: also used
+    /// when Save As / rename changes the extension.
+    private func redetectLanguageAutomatically() {
         userOverrodeLanguage = false
         didAutoDetectLanguage = false
 
         if let url = documentController.fileURL {
-            let ext = url.pathExtension
-            var identifier = LanguageRegistry.identifier(forExtension: ext)
-            if identifier == nil, let sniffed = LanguageSniffer.sniff(textView.string) {
-                identifier = LanguageRegistry.canonicalIdentifier(sniffed)
-                didAutoDetectLanguage = true
-            }
-            setDocumentLanguage(identifier, editorIdentifier: identifier ?? ext.lowercased())
+            detectFileLanguage(url: url, text: textView.string)
         } else {
             // Untitled: reset to plain, then let the sniffer re-classify if the
             // buffer already holds enough content.
             setDocumentLanguage(nil, editorIdentifier: "")
-            maybeAutoDetectLanguage()
+            rankLanguageNow()
         }
     }
 
@@ -1550,7 +1742,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// the stem) changes nothing, so a manual language choice survives it.
     private func redetectLanguageIfExtensionChanged(from previousExtension: String?) {
         guard documentController.fileURL?.pathExtension.lowercased() != previousExtension else { return }
-        chooseAutoLanguage()
+        redetectLanguageAutomatically()
     }
 
     private func showSaveError(_ error: Error) {
@@ -1602,8 +1794,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         documentAnalysis?.cancelPendingWork()
         // Nor does a pending same-word scan, nor its viewport observers.
         wordHighlighter?.cancel()
-        // Nor a pending bracket-pair refresh.
+        // Nor a pending bracket-pair refresh, nor a pending language ranking.
         bracketHighlighter?.cancel()
+        cancelLanguageRanking()
         // A run never outlives its window (T16.3b).
         tearDownRunSession()
         // Session bookkeeping (T14.8). Closing a window *by hand* is the user
@@ -1642,7 +1835,7 @@ extension EditorWindowController: RunSessionHost {
     }
 
     /// A language found by "run" sniffing an Auto + Plain Text buffer: applied
-    /// exactly like `maybeAutoDetectLanguage` does, so Auto mode stays on.
+    /// exactly like `rankLanguageNow` does, so Auto mode stays on.
     func applyAutoDetectedLanguage(identifier: String) {
         applyLanguage(identifier: identifier)
         didAutoDetectLanguage = true
@@ -1661,4 +1854,31 @@ extension EditorWindowController: RunSessionHost {
         if !isRunModuleEnabled { tearDownRunSession() }
         runSessionStateDidChange()
     }
+}
+
+// MARK: - Edit size for language ranking
+
+/// Reports how many characters each storage edit inserted (its exact extent,
+/// read before attribute fixing widens the range to whole paragraphs). Lets
+/// the window rank a paste-sized insertion for a language at once.
+@MainActor
+private final class InsertionMeter: TextStorageObserving {
+    private let report: (Int) -> Void
+
+    init(report: @escaping (Int) -> Void) {
+        self.report = report
+    }
+
+    func textStorageWillProcessEditing(editedMask: NSTextStorageEditActions,
+                                       editedRange: NSRange,
+                                       changeInLength delta: Int,
+                                       textStorage: NSTextStorage) {
+        guard editedMask.contains(.editedCharacters) else { return }
+        report(editedRange.length)
+    }
+
+    func textStorageDidProcessEditing(editedMask: NSTextStorageEditActions,
+                                      editedRange: NSRange,
+                                      changeInLength delta: Int,
+                                      textStorage: NSTextStorage) {}
 }

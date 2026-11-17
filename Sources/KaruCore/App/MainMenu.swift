@@ -319,24 +319,30 @@ final class LanguageMenuController: NSObject, NSMenuDelegate {
     static let shared = LanguageMenuController()
 
     /// Visible languages plus, when the key (or main) editor window uses a
-    /// hidden language by manual choice, that language so its checkmark shows.
+    /// hidden language by manual choice, that language so its checkmark shows;
+    /// and that window's language suggestions, if detection has any for it.
     static func currentLayout(settings: LanguageMenuSettings = LanguageMenuSettings()) -> LanguageMenuLayout {
         let editor = [NSApp?.keyWindow, NSApp?.mainWindow].lazy
             .compactMap { $0?.windowController as? EditorWindowController }.first
         let current = editor.flatMap { $0.isLanguageAuto ? nil : $0.currentLanguageIdentifierValue }
-        return settings.menuLayout(current: current)
+        return settings.menuLayout(current: current, suggestions: editor?.languageMenuSuggestions ?? [])
     }
 
+    /// Suggested languages use their own action, so a shortcut bound to a
+    /// language (keyed on `selectLanguage:` + identifier) is not shown twice.
     static func populate(_ menu: NSMenu, layout: LanguageMenuLayout) {
         layout.populate(menu, autoTitle: L10n.t(.languageAuto),
                         autoAction: #selector(EditorWindowController.selectAutoLanguage(_:)),
-                        languageAction: #selector(EditorWindowController.selectLanguage(_:)))
+                        languageAction: #selector(EditorWindowController.selectLanguage(_:)),
+                        suggestionHeader: L10n.t(.languageSuggestionLabel),
+                        suggestionAction: #selector(EditorWindowController.selectSuggestedLanguage(_:)))
         menu.items.first?.state = .on
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         let layout = Self.currentLayout()
-        guard LanguageMenuLayout.signature(of: menu) != layout.signature else { return }
+        let header = L10n.t(.languageSuggestionLabel)
+        guard LanguageMenuLayout.signature(of: menu) != layout.signature(suggestionHeader: header) else { return }
         Self.populate(menu, layout: layout)
         ShortcutSettings.shared.apply(to: menu)
     }

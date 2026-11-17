@@ -322,6 +322,11 @@ extension L10n {
         .saveFailedBanner: "Auto-save failed. Your changes are still in this window.",
         .saveFailedRetry: "Retry",
 
+        .languageSuggestionLabel: "Might be",
+        .languageSuggestionOther: "Other…",
+        .languageSuggestionDismiss: "Dismiss",
+        .languageSuggestionAccessibility: "Language suggestions",
+
         .draftRestored: "Unsaved changes recovered",
         .draftDiscardedDiskNewer: "File on disk is newer — draft discarded",
         .draftRestoredAsUntitled: "Original file is gone — recovered as untitled",
@@ -652,6 +657,11 @@ extension L10n {
         .saveFailedBanner: "自动保存失败，修改仍保留在此窗口中。",
         .saveFailedRetry: "重试",
 
+        .languageSuggestionLabel: "可能是",
+        .languageSuggestionOther: "其他…",
+        .languageSuggestionDismiss: "关闭",
+        .languageSuggestionAccessibility: "语言建议",
+
         .draftRestored: "已恢复未保存的更改",
         .draftDiscardedDiskNewer: "磁盘版本较新，已放弃未保存草稿",
         .draftRestoredAsUntitled: "原文件已不存在，内容已恢复为未命名文档",
@@ -981,6 +991,11 @@ extension L10n {
 
         .saveFailedBanner: "自動保存に失敗しました。変更内容はこのウインドウに残っています。",
         .saveFailedRetry: "再試行",
+
+        .languageSuggestionLabel: "もしかして",
+        .languageSuggestionOther: "その他…",
+        .languageSuggestionDismiss: "閉じる",
+        .languageSuggestionAccessibility: "言語の候補",
 
         .draftRestored: "未保存の変更を復元しました",
         .draftDiscardedDiskNewer: "ディスク上のファイルが新しいため下書きを破棄しました",
