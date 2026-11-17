@@ -7,6 +7,72 @@
 > 状态：⬜ 未开始 / 🔄 进行中 / ✅ 完成 / ❌ 失败。区分自动化通过、待用户实测与已发布；
 > 历史失败次数升级链不用于当前 Codex 流程，失败应报告证据，由主会话决定下一步。
 
+## 维护审查：变量着色与光标同词高亮（2026-11-17）
+
+- 范围：`HighlightEngine` 的标识符角色、声明发布与颜色失效，`WordOccurrenceHighlighter` 的词边界、
+  视口刷新及与搜索背景的共存。审查基线 `a40ea9a`，开工时工作区干净。
+- 状态：✅ 审查、复现、main 复核均完成；**下列问题均未修复**，修复方案见本节末尾，等用户确认后开工。
+  只改了台账，未改业务源码和已有测试，未安装、未发布。
+- 上午的审查（另一会话）：macOS 27.2.1、Swift 6.4.2，`swift test --filter 'wordRange|occurrences|wordHighlight|SyntaxPositionRole'`
+  16 tests / 2 suites 全通过。探针链接当次构建的 `KaruCore.o`，用独立的 AppKit 视图和隔离的模块偏好，
+  源码与输出在 `/private/tmp/karu-highlight-review/`（临时证据，不保证长期保留）。
+- 下午的复核（本会话 main）：逐条读代码核对定位；另写临时测试，经真实的 `EditorWindowController` 接线
+  （载入临时文件、`insertText`、真实的选区通知、`showFindBar`）重跑六条并补充用例，结果见下表。
+  上述 16 个测试重跑仍全通过。临时测试文件已删除，未入库。
+  **未做**：全量测试、视觉冒烟、内存基准、在已安装的 App 里用鼠标键盘操作。测试进程里的窗口不等于真机验收。
+- 复核结论：上午记录的六条现象全部能复现，定位也对，没有不实的条目。有五处写得不准或不全，已在表里改正：
+  - VH1 原文只用人工发送的视口通知触发，没说明用户怎样碰到。实际的触发路径是粘贴多行代码。
+  - VH3 漏了括号匹配，它与搜索背景有同样的冲突。
+  - VH4 漏了 Go 的 `const ( … )` 块，这比 JS 的两种写法更常见。
+  - VH5 原文按 P2 缺陷记，实际是 T17.7 定下的设计（声明位置的角色优先，其次查全文符号表），有测试锁定；
+    影响面也比原文的 C 例子大。已改记为设计限制，是否改由用户决定。
+  - 原文六条全记 P2。按用户能否看到、多常见重新分了级。
+
+| ID | 级别 | 现象（复核结果） | 定位 |
+|---|---|---|---|
+| VH1 | P2 | 新写入的声明在快照发布后仍不上色，要等下一次编辑或滚出色带才恢复。复现路径：① 在长文档里粘贴多行代码（文本视图变高），粘贴的 `def g(tally):` 中 `g`、`tally` 都无色；② 改名后 70 ms 内滚动；③ 快速输入声明后立刻回车（键间隔小于 70 ms，正常打字碰不到）。C 里粘贴一个函数后，下文对它的引用同样不上色。不改变视图尺寸的编辑不受影响 | `HighlightEngine.documentAnalysisDidChange`：编辑与快照发布之间如果跑过一次视口重画，`paintedRange` 已被旧快照的结果占住；`.declarations` 到达时只有首次得到符号表才失效色带，其余情况走快速路径跳过 |
+| VH2 | P3 | 光标不动、只滚动时，新进入视口的同词没有背景；旧视口的背景留在原处，直到下一次选区变化 | `WordOccurrenceHighlighter` 只在选区变化和编辑时扫描，不监听滚动和尺寸变化 |
+| VH3 | P2 | 查找栏开着时，光标进入被查找的词，同词背景覆盖搜索背景；光标移到别的词后，视口内该词的搜索背景被清空，查找栏仍开着。括号匹配同理：匹配项里的括号被配对高亮过之后，搜索背景也被清掉 | 同词高亮、括号匹配、查找栏三者都写 `.backgroundColor` 临时属性，同一个键不会叠加，清除时互相抹掉。`WordOccurrenceHighlighter` 头部注释「overlap simply stacks」和 `EditorWindowController.updateBracketMatchHighlight` 的注释「never the find bar's own background attributes」都不成立。查找栏只在重算匹配时重画，选区变化后不会补画 |
+| VH4 | P3 | `const` 名字应为常量色，以下情况成了变量色：JS/TS `const a = 1, b = 2;` 的 `b`（换行写、带类型标注、前一个是解构时同样）；`const /* note */ value = 1;`；Go `const ( Alpha = 1 … )` 块内的全部名字，包括第一个。单行 `const a = 1;`、Go `const a, b = 1, 2` 正常 | `HighlightEngine.isConstDeclaration` 从名字往回扫文本，遇到初始化式、注释或 `(` 就放弃。声明走查器明明认得 `const` 关键字，却没有把这一信息带进声明种类 |
+| VH5 | 设计限制（T17.7） | 表里是函数的名字，在任何位置的引用都按函数色画，不看作用域。C、C++、Java、C#、Swift、Go 受影响；JS/TS、Rust（引用按变量色）和 Python（引用不着色）不受影响。除了原文的 C 参数遮蔽，更常见的是：Java 字段 `size` 与方法 `size()` 同名时，`return size;`、`size = size + 1` 全是函数色；Swift 同名属性的声明本身、C 同名局部变量的声明本身也是函数色 | `identifierTokens` 对没有角色的标识符查全文名字集合，函数优先。`SyntaxPositionRoleTests.parameterNamedLikeAFunctionGetsTheParameterColourAtItsDeclaration` 的第三处断言锁定了这一行为 |
+| VH6 | P3 | 词边界只认 ASCII 字母数字、`_` 和 BMP 内的字母：`$value` 取成 `value` 并与裸的 `value` 互相命中；`cafe`+U+0301 被截成 `cafe`；非 BMP 字母（如 `𠮷野家`）被截成 `野家` 后误匹配 | `WordOccurrenceHighlighter.isWordUnit` 按 UTF-16 单元判断，代理对和组合标记一律算非词字符，也不看语言。注意 `$` 只在 JS/TS 里是标识符的一部分，在 shell 里 `$value` 与 `value` 是同一个变量，不能一刀切 |
+
+- 既定限制（不是新回归）：同词匹配不区分作用域、注释或字符串；单字符词被排除；非空选区不触发。
+  所以这个背景不能当成「同一变量的引用高亮」。
+- 测试缺口：词匹配的 11 个纯函数测试没有覆盖上述字符边界，也没有与查找栏、括号匹配共存的测试；
+  旧回归测试只覆盖文末删除不崩溃；`rolesFollowEditsBeforeTheRescan` 只检查发布前的映射，没有检查新快照发布后的重画。
+
+### 修复方案（待用户确认，未开工）
+
+- 第一批，VH1（`Highlight/HighlightEngine.swift`，改动小，main 直接做）：
+  - 重画时记下所用声明快照的版本；用过期快照画的记为空。
+  - `.declarations` 到达时，如果已画色带所用的版本与新快照不同，就让色带失效再重画。
+    首次得到符号表的情况保留现有的 `namesChangeColours` 判断，避免空闲窗口多占一块约 7 MB 的后备图层。
+  - 测试：引擎级（编辑 → 立即重画 → 等发布 → 断言新声明的颜色）；窗口级（长文档粘贴多行 Python、C 粘贴函数后看引用）。
+- 第二批，VH3、VH2、VH6（`Editor/WordOccurrenceHighlighter.swift`、`Search/FindBarController.swift`、
+  `Editor/EditorWindowController.swift`，多文件，交 implementer，main 审查 diff）：
+  - VH3：搜索背景优先。查找栏提供「把与给定范围相交的匹配重新涂上」的方法（匹配数组有序，二分查找）；
+    同词高亮和括号匹配在涂色、清除之后各调用一次。查找栏整篇清除背景（关闭或重算）后回调编辑器，
+    让括号匹配和同词高亮按当前光标重画。改正两处不成立的注释。不引入自定义布局管理器。
+  - VH2：监听剪裁视图的 bounds 变化和文本视图的 frame 变化，只在光标处于词内时去抖重扫当前视口。
+    扫描改读存储自带的字符串，不再每次复制全文。光标所在的那一处滚出视口后，视口内出现一处同词也涂色。
+  - VH6：词边界按完整字符判断：代理对解码后再判断是否字母，组合标记跟随前一个字符；
+    `$` 只在 JS/TS 里算词字符（由编辑器传入当前语言）。
+  - 测试：窗口级覆盖 VH3（含括号）和 VH2；纯函数测试补字符边界用例。
+- 第三批，VH4（`Analysis/DeclarationScan.swift`、JS/TS 与 Go 的声明走查器、各语言的 `IdentifierPolicy`，交 implementer）：
+  - 声明种类新增「常量」（符号类别仍归变量），由走查器在 `const` 声明里产出；着色角色表把它映到常量色。
+  - 删除 `isConstDeclaration` 的回扫和 `constDeclarationsAreConstants` 开关。
+  - 所有按声明种类分支的地方把常量当变量处理，补全、导航、作用域查询的结果不得变化。
+  - 验收：表中各写法全为常量色；补全基线和与 VS Code 的一致率不下降；10 MB 快照大小不增加。
+- VH5 需要用户先定方向，再排期。两种做法：
+  - 甲：只对「既是函数或类型、又被声明为变量或参数」的名字查作用域（发布快照时算出这组名字，通常为空），
+    最内层绑定是变量或参数时按变量处理。能解决遮蔽和 C 局部变量，解决不了 Java 字段与方法同名（两者在同一作用域）。
+  - 乙：Java、C#、Swift 改成与 JS 相同的规则，只有调用形式 `name(` 才是函数色，其余引用不查函数表。
+    更接近 VS Code，但会改变现有着色，要用一致率夹具衡量。
+  - 无论哪种都要改上述被锁定的断言。
+- 每批的收尾：针对性测试、`swift test --no-parallel` 全量、`scripts/visual-smoke.sh`、高亮与内存基准，
+  然后装本机等用户实测。不动版本号，不发布。
+
 ## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
 
 - 状态：⬜ 未开始。负责：待定。与产品代码的行为无关，只影响 `swift test` 并行全量运行的稳定性。
