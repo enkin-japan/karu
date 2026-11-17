@@ -28,7 +28,9 @@ struct DeclarationBuilder: Sendable {
     /// Per name: 1 listed function / method, 2 listed class / type,
     /// 4 listed other, 8 declared at all (scope-only included), 16 called
     /// (a table-only reference, T17.4b), 32 referenced as a type (table-only);
-    /// while finishing, 64 entered into the table.
+    /// while finishing, 64 entered into the table; 128 declared (listed or
+    /// not) as a variable, parameter or property (VH5: a function of that
+    /// name may be shadowed, `DeclarationScan.shadowableFunctionNames`).
     private var masks: [UInt8] = []
     private(set) var encoded: [UInt8] = []
     private var lastLocation = 0
@@ -57,6 +59,8 @@ struct DeclarationBuilder: Sendable {
     private var previousStart = 0
     private var classifyCursor = 0
     private var functions = Set<String>()
+    /// Functions whose name is also declared as a binding (mask bit 128).
+    private var shadowableFunctions = Set<String>()
     private var types = Set<String>()
     private var variableCandidates: [Int] = []
     private var variableCursor = 0
@@ -161,6 +165,10 @@ struct DeclarationBuilder: Sendable {
             case .type: bit |= 2
             case .variable: bit |= 4
             }
+        }
+        switch kind {
+        case .variable, .functionScopedVariable, .parameter, .property: bit |= 128
+        default: break
         }
         masks[Int(index)] |= bit
         if declarationCount > 0, declarationCount % DeclarationScan.seekStride == 0 {
@@ -292,6 +300,8 @@ struct DeclarationBuilder: Sendable {
                     || mask & 16 != 0 && mask & (2 | 32) == 0 && !WordIndex.cLikeNonSymbols.contains(names[i]) {
                     functions.insert(names[i])
                     masks[i] |= 64
+                    // Few names: no reservation (VH5).
+                    if mask & 128 != 0 { shadowableFunctions.insert(names[i]) }
                 }
                 if mask & (2 | 32) != 0 {
                     types.insert(names[i])
@@ -362,7 +372,8 @@ struct DeclarationBuilder: Sendable {
                                scopeCount: order.count, documentLength: documentLength,
                                declarationSeeks: seeks.withUnsafeBufferPointer { Array($0) },
                                hasEmbeddedRegions: scopeOnly,
-                               constantBits: constantBits.withUnsafeBufferPointer { Array($0) })
+                               constantBits: constantBits.withUnsafeBufferPointer { Array($0) },
+                               shadowableFunctionNames: shadowableFunctions)
     }
 }
 

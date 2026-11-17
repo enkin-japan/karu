@@ -44,9 +44,14 @@ public enum SwiftLanguage {
 
     /// Swift's identifiers (T17.7): functions and types from the table,
     /// variables only at nothing — VS Code colours neither `let` / `var`
-    /// declarations nor references; parameters at their declarations.
+    /// declarations nor references; parameters at their declarations. A
+    /// bare function name yields to a parameter, local (closure parameters
+    /// included) or property of the same name (VH5,
+    /// `functionNamesYieldToLocalBindings`); `#selector(name)` and
+    /// trailing-closure calls of an unshadowed function keep the colour.
     static let identifierPolicy = IdentifierPolicy(tableVariables: false,
-                                                   roles: IdentifierPolicy.declarationRoles)
+                                                   roles: IdentifierPolicy.declarationRoles,
+                                                   functionNamesYieldToLocalBindings: true)
 
     /// An argument label in a call or parameter list (`f(of: 1)`,
     /// `func f(_ a: Int, at b: Int)`): VS Code colours it as a function.

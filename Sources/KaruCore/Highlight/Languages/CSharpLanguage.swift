@@ -73,12 +73,16 @@ public enum CSharpLanguage {
         pattern: #"(?<=[ \t.])(?<=^[ \t]{0,32}(?:global[ \t]{1,8})?(?:using|namespace)[ \t]{1,8}(?:[\w.]{0,120}))[A-Za-z_]\w*"#,
         kind: .type)
 
-    /// C#'s identifiers (T17.7): the whole table, every other name a variable.
+    /// C#'s identifiers (T17.7): the whole table, every other name a
+    /// variable. A bare method name (a method group) yields to a parameter,
+    /// local, field or property of the same name (VH5,
+    /// `functionNamesYieldToLocalBindings`).
     static let identifierPolicy: IdentifierPolicy = {
         var roles = IdentifierPolicy.declarationRoles
         roles[.variable] = .symbolVariable
         roles[.property] = .symbolVariable
-        return IdentifierPolicy(otherIdentifiers: .symbolVariable, roles: roles)
+        return IdentifierPolicy(otherIdentifiers: .symbolVariable, roles: roles,
+                                functionNamesYieldToLocalBindings: true)
     }()
 
     /// `\xH…`, `\uHHHH`, `\UHHHHHHHH`.

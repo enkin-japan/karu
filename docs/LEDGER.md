@@ -131,12 +131,13 @@
     `Tests/Fixtures/M17/baseline/vscode-dark_modern/`，不需要装 VS Code）：`KARU_M17_BASELINE=1 KARU_M17_OUT=<目录> swift test --filter M17Baseline`
     导出后用 `compare-colors.py` 比对，VH4 之前（`c078bf5`）和之后都是 **97.3%**（44033 单元），各语言逐项相同。
   - 未做：在已安装的 App 里看实际颜色（留给用户实测）。
-- VH5 搁置（用户决定）。三批均未升版本、未发布、未推送。
+- VH5 当时搁置（用户决定），后来按甲方案完成，见下一节的「第三批进度：VH5 甲」。三批均未升版本、未发布、未推送。
 
 ## 三项待处理问题的深度测试与修复方案（2026-11-17）
 
 - 用户要求：并行全量测试超时、括号底色被擦掉、VH5 三项，先深度测试再给修复方案。
-- 状态：✅ 测试完成，方案已写，**用户 2026-11-17 已确认（VH5 用甲），尚未开工**：用户答复「按建议，但是先方案落盘，等我 /compact 之后再开工」。
+- 状态：✅ 三批都已完成（2026-11-17），见本节末尾三段「进度」；第二、三批已装本机待用户实机测。以下是当时的测试记录和方案。
+  用户 2026-11-17 确认过方案（VH5 用甲）：用户答复「按建议，但是先方案落盘，等我 /compact 之后再开工」。
   开工顺序和实现提示见本节末尾「开工安排」。只改了台账；所有探针测试文件和临时改动已删除、还原，工作区干净。
   探针的原始输出在会话临时目录，不保证保留，关键数字都抄在下面。环境：macOS 27.2.1，12 核，Swift 6.4.2。
 
@@ -294,6 +295,53 @@
 - 验证：`scripts/test.sh` 1720 个用例 / 200 个套件通过（45 s）；视觉冒烟 `VISUAL OK`、`FOLD GEOMETRY OK`；
   内存基准全部通过（空文档 19.2 MB，1 MB JSON 22.6，10 MB Python 57.5，1000 行 py 21.9、ts 22.1）。
 - 未单独覆盖：兜底的异步重算只在程序化编辑不发 `textDidChange` 时才起作用，夹具里的编辑都会发，所以没有单独的用例。
+
+### 第三批进度：VH5 甲（2026-11-17）
+
+- 状态：✅ 自动化通过，已提交并装本机，待用户实机测。未升版本。
+- 规则（C、C++、Java、C#、Swift、Go）：函数表里的名字不在调用形式（后面不是 `(`）时，
+  若它在「最外层所在函数或闭包」里被声明为局部变量或参数，或在包住该函数的类型体里被声明为属性，就不按函数色画，
+  接着照常走类型、变量两类，再不中就是该语言的普通标识符颜色。Java 另加：不在调用形式、前面也不是 `::` 的名字一律不是函数。
+  回调、函数指针、`&total`、`#selector(名字)`、未被遮蔽的尾随闭包调用仍是函数色。
+- 实现（main 定设计，implementer 实施，main 审查 diff）：
+  - 扫描层：`DeclarationBuilder` 的名字掩码用上空闲的第 128 位，记「被声明为变量 / 参数 / 属性」；收尾时函数表里带这一位的名字进入
+    `DeclarationScan.shadowableFunctionNames`（多数文档为空）。新增 `shadowScopes(at:)`、`shadowingBindings(inFunction:)`、
+    `shadowingProperties(inType:index:)`。`hasSameTables` 把新集合算进去。
+  - 策略：`IdentifierPolicy` 加 `functionNamesYieldToLocalBindings`（六种语言开）和 `bareFunctionNamesAreNotFunctions`（只有 Java 开）。
+  - 着色：`identifierTokens` 多一个可选的遮蔽判断参数；`HighlightEngine` 按快照版本缓存每个函数、每个类型的遮蔽名字集合，
+    并记住上一个函数的范围（同一函数内直接复用）。候选集合为空、快照是别的语言或编辑日志无法映射时不装这个判断，行为与以前相同。
+    位置经编辑日志映射到快照。缓存超过 256 项清空，随符号表一起释放，并计入 `isRuntimeStateReleased`。
+- 与原方案不同的三处（都有实测依据）：
+  1. 只靠 `scopeChain(at:)` 太慢：它每次从头解码作用域大纲，10 MB 的 Swift 文件上 debug 构建一次 5.1 ms，
+     附近重绘的中位数从 5.5 ms 变成 52 ms。改为每个快照版本在第一次查询时建一个 `ShadowScopeIndex`
+     （一次解码，只存最外层函数 / 闭包和函数外的类型，每项 28 字节，二分查找），随缓存释放。它不是 `DeclarationQueryIndex`。
+     有测试核对它与 `shadowScopes(at:)` 逐个位置一致；在 181 个 Swift 源文件上 0 处不一致。
+  2. 「所在类型」取的是包住最外层函数的那个类型；函数里面声明的局部类、匿名类不算。这样同一函数内的答案相同，缓存才准确。
+  3. 前面紧跟 `::` 的名字不做遮蔽判断（否则 Java 的 `this::size` 在有同名字段时会丢掉函数色）。
+- 被锁定的断言 `parameterNamedLikeAFunctionGetsTheParameterColourAtItsDeclaration` 第三条已改：函数体内对同名参数的引用与普通参数引用同色，不是函数色。
+- 新增测试：`SyntaxCategoryTests` 六种语言各一条，加一条「编辑后、重扫前仍按遮蔽着色，日志无法映射时不崩」；
+  `DeclarationScopeStaticTests` 新套件 `DeclarationShadowing` 6 条。关掉规则后，8 条新增或改动的着色测试失败（24 处断言）。
+- 数字：
+  - Karu 自己的 181 个 Swift 源文件上，非调用位置被函数表染成函数色的标识符：关掉判断 2056 处，打开后 266 处（方案要求低于 450）。
+    2056 比方案里记的 1685 多，原因没有追查（文件有增减，统计口径也可能不完全相同）。
+    抽查剩下的 15 处：`#selector` 5 处、作为值传递的函数 6 处、参数标签 2 处、尾随闭包调用 1 处，
+    另有 1 处是错的（`for (position, scope) in …` 的元组模式，扫描器没有把其中的名字记成声明）。
+  - 计时（`HighlightPassBenchmark`，10 MB JS / Python，规则对这两种语言不生效）：前后各两次，首跳 108–111 / 127–129 ms，
+    附近重绘中位数 1.41–1.47 / 4.55–4.66 ms，差别在噪声内。
+  - 10 MB Swift（临时探针，规则生效）：打开判断时首跳 96 ms、附近重绘中位数 5.4 ms、p95 6.1 ms；关掉判断时 97 ms、5.5 ms、6.1–6.2 ms。
+  - 候选集合大小：10 MB Swift 上 2157 个函数名里有 399 个；JS 基准 27 个里 2 个；Python 0 个。
+- 验证：`scripts/test.sh` 1733 个用例 / 201 个套件通过（46 s）；不限宽 `swift test` 两轮通过；视觉冒烟 `VISUAL OK`、`FOLD GEOMETRY OK`；
+  内存基准全部通过（空文档 19.3 MB，1 MB JSON 22.8，10 MB Python 57.9，1000 行 py 21.9、ts 22.4）。
+- 没有验证或没有覆盖的：
+  - 只在 Swift 真实代码上统计过；C、C++、Java、C#、Go 只有人工用例，没有真实工程语料。
+  - 成员访问（如 Go 的 `b.Len`，`Len` 同时是别处的方法名）仍是函数色：判断只看所在函数和所在类型体。
+  - 属性声明在另一个 extension 里时不算遮蔽。
+  - 内存基准不含这六种语言的大文件，`ShadowScopeIndex` 的常驻内存没有实测（按每项 28 字节估算，10 MB 源码约几百 KB 到 1–2 MB）。
+- **顺带发现的扫描器缺陷（未修，待用户决定）**：Swift 类型体里，紧跟在类型以 `?` 或 `>` 结尾的属性之后的 `let` / `var`
+  被记成 `.variable` 而不是 `.property`（例如 `let a: Int?` 之后的 `let b: Int`，`let a: ClosedRange<Int>` 之后同样）。
+  本批在 `shadowingProperties` 里绕过了它（类型体里直接声明的 `.variable` 也算属性），所以着色不受影响；
+  但扫描器本身的错误还会影响导航栏、补全和 M17 夹具，改它要连带核对那些地方，所以没有在本批里动。
+  测试 `memberVariablesCountAsProperties` 里有一条断言记录了现在的读法，修扫描器时要一并改。
 
 ## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
 

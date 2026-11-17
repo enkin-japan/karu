@@ -95,6 +95,7 @@ public struct DeclarationQueryIndex: Sendable {
             && scan.names == other.scan.names && scan.encodedLocations == other.scan.encodedLocations
             && scan.outline == other.scan.outline && scan.documentLength == other.scan.documentLength
             && scan.constantBits == other.scan.constantBits
+            && scan.shadowableFunctionNames == other.scan.shadowableFunctionNames
     }
 
     // MARK: - Build

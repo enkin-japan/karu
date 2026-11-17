@@ -78,12 +78,15 @@ public enum CppLanguage {
     )
 
     /// C++'s identifiers (T17.7): the whole table, every other name a
-    /// variable; functions, types and parameters at their declarations.
+    /// variable; functions, types and parameters at their declarations. A
+    /// bare function name yields to a parameter, local or member of the same
+    /// name (VH5, `functionNamesYieldToLocalBindings`).
     static let identifierPolicy: IdentifierPolicy = {
         var roles = IdentifierPolicy.declarationRoles
         roles[.variable] = .symbolVariable
         roles[.property] = .symbolVariable
-        return IdentifierPolicy(otherIdentifiers: .symbolVariable, roles: roles)
+        return IdentifierPolicy(otherIdentifiers: .symbolVariable, roles: roles,
+                                functionNamesYieldToLocalBindings: true)
     }()
 
     public static func make() -> LanguageDefinition {

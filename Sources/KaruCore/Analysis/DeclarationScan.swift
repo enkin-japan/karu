@@ -148,6 +148,11 @@ public struct DeclarationScan: Sendable, Equatable {
     public let languageIdentifier: String
     public let table: WordIndex.SymbolTable
     public let completionSymbols: Set<String>
+    /// Names in `table.functions` that some declaration in the document also
+    /// declares as a variable, parameter or property (VH5, the highlighter's
+    /// shadowing check, `shadowScopes(at:)`); empty for most documents and
+    /// for the regex path.
+    public let shadowableFunctionNames: Set<String>
     /// The scan of an embedding host (HTML, Markdown; T17.8c): its
     /// declarations all lie in `.embedded` regions and are scope-only —
     /// never in `table`, `completionSymbols` or `locations`.
@@ -183,10 +188,12 @@ public struct DeclarationScan: Sendable, Equatable {
 
     init(languageIdentifier: String, table: WordIndex.SymbolTable, completionSymbols: Set<String>,
          names: [String], encodedLocations: [UInt8], outline: [UInt8], scopeCount: Int, documentLength: Int,
-         declarationSeeks: [Int32] = [], hasEmbeddedRegions: Bool = false, constantBits: [UInt8] = []) {
+         declarationSeeks: [Int32] = [], hasEmbeddedRegions: Bool = false, constantBits: [UInt8] = [],
+         shadowableFunctionNames: Set<String> = []) {
         self.languageIdentifier = languageIdentifier
         self.table = table
         self.completionSymbols = completionSymbols
+        self.shadowableFunctionNames = shadowableFunctionNames
         self.hasEmbeddedRegions = hasEmbeddedRegions
         self.names = names
         self.encodedLocations = encodedLocations
@@ -515,6 +522,171 @@ public struct DeclarationScan: Sendable, Equatable {
             out.append(Scope(index: record.index, parent: position > 0 ? chain[position - 1].index : nil,
                              kind: record.kind, name: record.name >= 0 ? names[record.name] : nil,
                              start: record.start, end: record.end))
+        }
+        return out
+    }
+
+    // MARK: - Function shadowing (VH5)
+
+    /// The scopes the highlighter's shadowing check reads at `offset` (VH5):
+    /// `function`, the **outermost** enclosing `.function` / `.lambda` scope
+    /// (so a closure's parameters and the locals of every nested closure
+    /// count for the whole enclosing function), and `type`, the innermost
+    /// enclosing `.class` scope that also encloses `function` — a type
+    /// declared inside that function (a local or anonymous class) is not
+    /// taken, so every offset of one function answers the same type (the
+    /// highlighter caches both per function). Without an enclosing function,
+    /// `type` is the innermost enclosing `.class` scope.
+    ///
+    /// Built on `scopeChain(at:)` (one linear decode of the outline);
+    /// offsets refer to this scan's text version.
+    public func shadowScopes(at offset: Int) -> (function: Scope?, type: Scope?) {
+        guard scopeCount > 0 else { return (nil, nil) }
+        let chain = scopeChain(at: offset)   // innermost first
+        var functionPosition: Int?
+        for (position, scope) in chain.enumerated() where scope.kind == .function || scope.kind == .lambda {
+            functionPosition = position
+        }
+        let typeSearchStart = functionPosition.map { $0 + 1 } ?? 0
+        let type = chain[min(typeSearchStart, chain.count)...].first { $0.kind == .class }
+        return (functionPosition.map { chain[$0] }, type)
+    }
+
+    /// `shadowScopes(at:)` for many offsets of one version (VH5, the
+    /// highlighter): built in one decode of the outline, it holds the
+    /// outermost functions / lambdas (disjoint, ascending: a binary search
+    /// finds the one containing an offset) and the `.class` scopes outside
+    /// every function (pre-order, each linked to its enclosing one), so a
+    /// lookup costs O(log scopes + nesting) instead of `scopeChain`'s
+    /// decode of the outline up to the offset (≈ 5 ms in a debug build for
+    /// a 10 MB Swift file). Answers equal `shadowScopes(at:)`.
+    public struct ShadowScopeIndex: Sendable {
+        struct Entry: Sendable {
+            var start: Int32
+            var end: Int32
+            var index: Int32
+            var parent: Int32
+            var name: Int32
+            var kind: ScopeKind
+            /// Slot in `types` of the innermost enclosing type, or -1.
+            var type: Int32
+        }
+
+        let functions: [Entry]
+        let types: [Entry]
+        let names: [String]
+        let documentLength: Int
+
+        private func contains(_ entry: Entry, _ offset: Int) -> Bool {
+            Int(entry.start) <= offset && (offset < Int(entry.end) || Int(entry.end) >= documentLength)
+        }
+
+        private func scope(_ entry: Entry) -> Scope {
+            Scope(index: Int(entry.index), parent: entry.parent >= 0 ? Int(entry.parent) : nil, kind: entry.kind,
+                  name: entry.name >= 0 ? names[Int(entry.name)] : nil, start: Int(entry.start), end: Int(entry.end))
+        }
+
+        /// The last entry of `list` starting at or before `offset`.
+        private static func last(in list: [Entry], atOrBefore offset: Int) -> Int? {
+            var low = 0, high = list.count
+            while low < high {
+                let mid = (low + high) / 2
+                if Int(list[mid].start) <= offset { low = mid + 1 } else { high = mid }
+            }
+            return low > 0 ? low - 1 : nil
+        }
+
+        /// `DeclarationScan.shadowScopes(at:)`.
+        public func scopes(at offset: Int) -> (function: Scope?, type: Scope?) {
+            if let slot = Self.last(in: functions, atOrBefore: offset), contains(functions[slot], offset) {
+                let function = functions[slot]
+                return (scope(function), function.type >= 0 ? scope(types[Int(function.type)]) : nil)
+            }
+            var slot = Self.last(in: types, atOrBefore: offset).map(Int32.init) ?? -1
+            while slot >= 0, !contains(types[Int(slot)], offset) { slot = types[Int(slot)].type }
+            return (nil, slot >= 0 ? scope(types[Int(slot)]) : nil)
+        }
+    }
+
+    /// Builds the `ShadowScopeIndex` of this scan (one outline decode).
+    public func shadowScopeIndex() -> ShadowScopeIndex {
+        var functions: [ShadowScopeIndex.Entry] = []
+        var types: [ShadowScopeIndex.Entry] = []
+        // Open scopes (outermost first) with the type slot in force inside
+        // each, and how many of them are functions / lambdas.
+        var stack: [(record: ScopeRecord, type: Int32)] = []
+        var functionDepth = 0
+        forEachScope { record in
+            while let top = stack.last,
+                  (record.start >= top.record.end && top.record.end < documentLength) || record.end > top.record.end {
+                if top.record.kind == .function || top.record.kind == .lambda { functionDepth -= 1 }
+                stack.removeLast()
+            }
+            let enclosingType = stack.last?.type ?? -1
+            var type = enclosingType
+            let entry = ShadowScopeIndex.Entry(start: Int32(clamping: record.start), end: Int32(clamping: record.end),
+                                               index: Int32(clamping: record.index),
+                                               parent: stack.last.map { Int32(clamping: $0.record.index) } ?? -1,
+                                               name: Int32(clamping: record.name), kind: record.kind,
+                                               type: enclosingType)
+            if functionDepth == 0 {
+                switch record.kind {
+                case .function, .lambda: functions.append(entry)
+                case .class:
+                    types.append(entry)
+                    type = Int32(types.count - 1)
+                default: break
+                }
+            }
+            if record.kind == .function || record.kind == .lambda { functionDepth += 1 }
+            stack.append((record, type))
+            return true
+        }
+        return ShadowScopeIndex(functions: functions, types: types, names: names, documentLength: documentLength)
+    }
+
+    /// The names of `shadowableFunctionNames` that `scope` (a function or
+    /// lambda, `shadowScopes(at:)`) binds as a local or parameter: a
+    /// `.variable`, `.functionScopedVariable` or `.parameter` declaration
+    /// located in `[scope.start, scope.end)`. A function's own parameters lie
+    /// inside its scope in every brace language (the scope starts at the
+    /// parameter list; Go at the receiver). Empty without candidates.
+    public func shadowingBindings(inFunction scope: Scope) -> Set<String> {
+        shadowingNames(in: scope) { kind in
+            kind == .variable || kind == .functionScopedVariable || kind == .parameter
+        }
+    }
+
+    /// The names of `shadowableFunctionNames` that `scope` (a type body,
+    /// `shadowScopes(at:)`) declares as a member: a `.property` in
+    /// `[scope.start, scope.end)`, or a `.variable` directly in the body
+    /// (its shadow scopes are no function and `scope` itself — the Swift
+    /// walker records some stored properties as `.variable`, e.g. the one
+    /// after `let a: Int?`). `index` (built when needed and not given)
+    /// answers that placement. Empty without candidates.
+    public func shadowingProperties(inType scope: Scope, index: ShadowScopeIndex? = nil) -> Set<String> {
+        guard !shadowableFunctionNames.isEmpty else { return [] }
+        var index = index
+        var out = Set<String>()
+        forEachDeclaration(from: scope.start, to: scope.end) { location, name, kind in
+            guard kind == .property || kind == .variable, !out.contains(name),
+                  shadowableFunctionNames.contains(name) else { return }
+            if kind == .variable {
+                let resolved = index ?? shadowScopeIndex()
+                index = resolved
+                let at = resolved.scopes(at: location)
+                guard at.function == nil, at.type?.index == scope.index else { return }
+            }
+            out.insert(name)
+        }
+        return out
+    }
+
+    private func shadowingNames(in scope: Scope, where accepts: (DeclarationKind) -> Bool) -> Set<String> {
+        guard !shadowableFunctionNames.isEmpty else { return [] }
+        var out = Set<String>()
+        forEachDeclaration(from: scope.start, to: scope.end) { _, name, kind in
+            if accepts(kind), shadowableFunctionNames.contains(name) { out.insert(name) }
         }
         return out
     }

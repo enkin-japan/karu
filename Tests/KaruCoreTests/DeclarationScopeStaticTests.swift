@@ -993,3 +993,175 @@ struct DeclarationScopeStaticSlicingTests {
         }
     }
 }
+
+// MARK: - Function shadowing (VH5)
+
+/// The highlighter's shadowing inputs (LEDGER VH5): the function names also
+/// declared as a binding, and the scopes `shadowScopes(at:)` picks.
+@Suite("DeclarationShadowing")
+struct DeclarationShadowingTests {
+    /// Per language: a function named like a parameter / local / property
+    /// enters `shadowableFunctionNames`; a function without such a binding,
+    /// and a binding without such a function, do not.
+    static let samples: [(language: String, source: String, expected: Set<String>)] = [
+        ("c", "int total(int a) { return a; }\nint size(void) { return 0; }\nint keep(void) { return 1; }\n"
+            + "int f(int total) { int size = 1; return total + size; }\nint g(int other) { return other; }\n",
+         ["total", "size"]),
+        ("cpp", "int total(int a) { return a; }\nstruct Box { int size; int size_of() const { return size; } };\n"
+            + "int size() { return 0; }\nint f(int total) { auto keep = 1; return total + keep; }\n",
+         ["total", "size"]),
+        ("java", "class Cases {\n    private int size;\n    int size() { return size; }\n    int count() { return 0; }\n"
+            + "    int keep() { return 1; }\n    void m(int count) { int other = count; }\n}\n",
+         ["size", "count"]),
+        ("csharp", "class Cases {\n    private int size;\n    int Size() { return size; }\n    int Count { get; set; }\n"
+            + "    void Grow() { }\n    int Shadow(int Size) { var Grow = Size; return Grow; }\n}\n",
+         ["Size", "Grow"]),
+        ("swift", "struct Cases {\n    var count: Int\n    func count(of x: Int) -> Int { count + x }\n}\n"
+            + "func code() {}\nfunc keep() {}\nfunc f(code: Int) { let other = code }\n"
+            + "func g() { [1].map { keep in keep } }\n",
+         ["count", "code", "keep"]),
+        ("go", "package cases\n\nfunc handler(w int) {}\nfunc size() int { return 1 }\nfunc keep() {}\n"
+            + "func shadow(handler int) int { size := handler; return size }\n",
+         ["handler", "size"]),
+    ]
+
+    @Test(arguments: 0..<6)
+    func shadowableNamesPerLanguage(_ index: Int) {
+        let sample = Self.samples[index]
+        let result = scan(sample.source, sample.language)
+        #expect(result.shadowableFunctionNames == sample.expected, "\(sample.language)")
+        #expect(result.shadowableFunctionNames.isSubset(of: result.table.functions), "\(sample.language)")
+    }
+
+    @Test(arguments: ["c", "cpp", "java", "csharp", "swift", "go"])
+    func emptyWhenNoNameIsBoth(_ language: String) {
+        let source: String
+        switch language {
+        case "go": source = "package p\n\nfunc total(a int) int { b := a; return b }\n"
+        case "swift": source = "func total(a: Int) -> Int { let b = a; return b }\n"
+        case "java", "csharp": source = "class C {\n    int f;\n    int Total(int a) { int b = a; return b; }\n}\n"
+        default: source = "int total(int a) { int b = a; return b; }\n"
+        }
+        let result = scan(source, language)
+        #expect(!result.table.functions.isEmpty, "\(language)")
+        #expect(result.shadowableFunctionNames.isEmpty, "\(language)")
+        // The regex path never fills it.
+        let legacy = DeclarationScan.regexScan(Caret(source).text as NSString, languageIdentifier: language)
+        #expect(legacy.shadowableFunctionNames.isEmpty, "\(language)")
+    }
+
+    /// A function's own parameters lie inside its scope (so
+    /// `shadowingBindings(inFunction:)` of the scope found in the body holds
+    /// them) in every language with the check.
+    @Test(arguments: [
+        ("c", "int total(int a) { return a; }\nint f(int total) { return ⟨1⟩total; }\n"),
+        ("cpp", "int total(int a) { return a; }\nint f(int total) { return ⟨1⟩total; }\n"),
+        ("java", "class C {\n    int total() { return 0; }\n    int f(int total) { return ⟨1⟩total; }\n}\n"),
+        ("csharp", "class C {\n    int Total() { return 0; }\n    int F(int Total) { return ⟨1⟩Total; }\n}\n"),
+        ("swift", "func total() {}\nfunc f(total: Int) -> Int { return ⟨1⟩total }\n"),
+        ("go", "package p\n\nfunc total() {}\nfunc (r R) f(total int) int { return ⟨1⟩total }\n"),
+    ])
+    func parametersLieInsideTheirFunctionScope(_ language: String, _ source: String) throws {
+        let caret = Caret(source)
+        let result = DeclarationScan.scan(text: caret.text, languageIdentifier: language)
+        let function = try #require(result.shadowScopes(at: caret.offsets[1]!).function, "\(language)")
+        let name = language == "csharp" ? "Total" : "total"
+        let parameter = try #require(result.declarations.first { $0.kind == .parameter && $0.name == name },
+                                     "\(language)")
+        #expect(function.start <= parameter.location && parameter.location < function.end, "\(language)")
+        #expect(result.shadowingBindings(inFunction: function) == [name], "\(language)")
+    }
+
+    /// The highlighter's `ShadowScopeIndex` answers what `shadowScopes(at:)`
+    /// answers, at every offset (nested types, closures, local classes).
+    @Test(arguments: 0..<6)
+    func shadowScopeIndexAgreesWithShadowScopes(_ index: Int) {
+        let sample = Self.samples[index]
+        let extra: String
+        switch sample.language {
+        case "swift": extra = "struct A { struct B { func m() { let f = { (x: Int) in x }; class L { var y = 1 } } } var z = 2 }\n"
+        case "java", "csharp": extra = "class A { class B { void M() { Runnable r = () -> { int k = 0; }; } } int z; }\n"
+        case "go": extra = "func (a A) m() { f := func(x int) { _ = x }; _ = f }\n"
+        default: extra = "struct A { int z; };\nint m(void) { { int k = 0; } return 0; }\n"
+        }
+        let text = sample.source + extra
+        let result = scan(text, sample.language)
+        let shadowIndex = result.shadowScopeIndex()
+        for offset in 0...(text as NSString).length {
+            let expected = result.shadowScopes(at: offset)
+            let actual = shadowIndex.scopes(at: offset)
+            #expect(actual.function == expected.function && actual.type == expected.type,
+                    "\(sample.language) at \(offset)")
+        }
+    }
+
+    /// A stored property the Swift walker records as `.variable` (the one
+    /// after `let a: Int?`) still counts as a member of its type; a local
+    /// of a method in that type does not.
+    @Test func memberVariablesCountAsProperties() throws {
+        let caret = Caret("""
+            struct S {
+                let a: Int?
+                let code: Int
+                func run() { let render = 1; _ = render; ⟨1⟩ }
+            }
+            func code() {}
+            func render() {}
+            """)
+        let s = DeclarationScan.scan(text: caret.text, languageIdentifier: "swift")
+        #expect(s.declarations.first { $0.name == "code" }?.kind == .variable)   // the walker's reading today
+        let type = try #require(s.shadowScopes(at: caret.offsets[1]!).type)
+        #expect(s.shadowingProperties(inType: type) == ["code"])
+        #expect(s.shadowingProperties(inType: type, index: s.shadowScopeIndex()) == ["code"])
+    }
+
+    /// The outermost function / lambda (a closure's parameters count for the
+    /// enclosing function), and the innermost type around that function.
+    @Test func shadowScopesPicksTheOutermostFunctionAndTheInnermostType() throws {
+        let swift = Caret("""
+            struct Outer {
+                struct Inner {
+                    var code: Int
+                    func run() { let f = { (code: Int) in ⟨1⟩code }; _ = f }
+                }
+                func code() {}
+            }
+            let top = { (x: Int) in ⟨2⟩x }
+            ⟨3⟩
+            """)
+        let s = DeclarationScan.scan(text: swift.text, languageIdentifier: "swift")
+        let inClosure = s.shadowScopes(at: swift.offsets[1]!)
+        let function = try #require(inClosure.function)
+        #expect(function.kind == .function)
+        #expect(s.scopeChain(at: swift.offsets[1]!).first?.kind == .lambda)
+        #expect(inClosure.type?.name == "Inner")
+        #expect(s.shadowingBindings(inFunction: function) == ["code"])     // the closure's parameter
+        #expect(s.shadowingProperties(inType: try #require(inClosure.type)) == ["code"])
+        // A file-level closure is its own outermost function; no type.
+        let top = s.shadowScopes(at: swift.offsets[2]!)
+        #expect(top.function?.kind == .lambda)
+        #expect(top.type == nil)
+        #expect(s.shadowScopes(at: swift.offsets[3]!).function == nil)
+
+        // Java: a lambda inside a method belongs to the method; a local class
+        // inside the method is not the type (the enclosing one is).
+        let java = Caret("""
+            class Outer {
+                int size;
+                int size() { return 0; }
+                void m() {
+                    Runnable r = () -> { int k = ⟨1⟩size; };
+                    class Local { int size; void n() { ⟨2⟩size = 1; } }
+                }
+            }
+            """)
+        let j = DeclarationScan.scan(text: java.text, languageIdentifier: "java")
+        let lambda = j.shadowScopes(at: java.offsets[1]!)
+        #expect(lambda.function?.kind == .function)
+        #expect(lambda.type?.name == "Outer")
+        let local = j.shadowScopes(at: java.offsets[2]!)
+        #expect(local.function == lambda.function)
+        #expect(local.type?.name == "Outer")
+        #expect(j.shadowingProperties(inType: try #require(local.type)) == ["size"])
+    }
+}

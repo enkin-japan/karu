@@ -62,12 +62,16 @@ public enum JavaLanguage {
         pattern: #"(?<=[ \t])(?<=\b(?:import|package)[ \t]{1,8}(?:static[ \t]{1,8})?)[\w.*]+"#, kind: .plain)
 
     /// Java's identifiers (T17.7): functions and types from the table;
-    /// variables only at their declarations.
+    /// variables only at their declarations. A method is no value (VH5): a
+    /// table function is one only when called or in a method reference
+    /// (`Type::name`, `this::name`; `bareFunctionNamesAreNotFunctions`), so
+    /// a field named like a method is never function-coloured.
     static let identifierPolicy: IdentifierPolicy = {
         var roles = IdentifierPolicy.declarationRoles
         roles[.variable] = .symbolVariable
         roles[.property] = .symbolVariable
-        return IdentifierPolicy(tableVariables: false, roles: roles)
+        return IdentifierPolicy(tableVariables: false, roles: roles,
+                                functionNamesYieldToLocalBindings: true, bareFunctionNamesAreNotFunctions: true)
     }()
 
     /// Comments, text blocks, strings and character literals.

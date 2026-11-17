@@ -554,19 +554,228 @@ struct SyntaxPositionRoleTests {
             }
             return colour(at: hit.location)
         }
+
+        /// The colour of the `occurrence`-th (1-based) `word` inside the
+        /// first occurrence of `context`.
+        func colour(of word: String, in context: String, occurrence: Int = 1) -> NSColor? {
+            let outer = ns.range(of: context, options: .literal)
+            guard outer.location != NSNotFound else { return nil }
+            var from = outer.location
+            var hit = NSRange(location: NSNotFound, length: 0)
+            for _ in 0..<occurrence {
+                hit = ns.range(of: word, options: .literal,
+                               range: NSRange(location: from, length: NSMaxRange(outer) - from))
+                guard hit.location != NSNotFound else { return nil }
+                from = NSMaxRange(hit)
+            }
+            return colour(at: hit.location)
+        }
     }
 
     private let theme = HighlightTheme()
 
     /// A parameter named like a file-level function takes the parameter
-    /// colour at its declaration, while the table still colours the other
-    /// occurrences as the function (C: the table's functions are used).
+    /// colour at its declaration, and its references in that function the
+    /// colour of any other parameter reference — the function's name does
+    /// not reach them (C: the table's functions are used; LEDGER VH5).
     @Test func parameterNamedLikeAFunctionGetsTheParameterColourAtItsDeclaration() {
         let p = Painter("int total(int a) { return a; }\nint f(int total) { return total; }\n", language: "c")
         #expect(p.colour(of: "total", occurrence: 1) === theme.color(for: .symbolFunction))   // declaration
         #expect(p.colour(of: "total", occurrence: 2) === theme.color(for: .parameter))        // parameter
         #expect(theme.color(for: .parameter) !== theme.color(for: .symbolFunction))
-        #expect(p.colour(of: "total", occurrence: 3) === theme.color(for: .symbolFunction))   // table
+        let plainReference = p.colour(of: "a;")                                               // `return a;`
+        #expect(p.colour(of: "total", occurrence: 3) === plainReference)                      // shadowed
+        #expect(p.colour(of: "total", occurrence: 3) !== theme.color(for: .symbolFunction))
+    }
+
+    // MARK: Function names yield to local bindings (LEDGER VH5)
+
+    /// C: a parameter or local named like a function has the plain
+    /// reference colour in its function; elsewhere the bare function name
+    /// (a function pointer, a callback, `&total`) and every call keep the
+    /// function colour.
+    @Test func cFunctionNamesYieldToLocalBindings() {
+        let p = Painter("""
+            int total(int a) { return a; }
+            int f(int total) { return total + total(1); }
+            int g(void) { int total = 4; return total; }
+            int (*handler)(int) = total;
+            void k(void) { register_cb(total); fp = &total; }
+
+            """, language: "c")
+        let function = theme.color(for: .symbolFunction)
+        let plain = p.colour(of: "a", in: "return a;")
+        #expect(plain !== function)
+        #expect(p.colour(of: "total", in: "return total +") === plain)                  // parameter
+        #expect(p.colour(of: "total", in: "total(1)") === function)                     // call
+        #expect(p.colour(of: "total", in: "int total = 4; return total;", occurrence: 2) === plain)   // local
+        #expect(p.colour(of: "total", in: "= total;") === function)                     // function pointer
+        #expect(p.colour(of: "total", in: "register_cb(total)") === function)           // callback
+        #expect(p.colour(of: "total", in: "&total") === function)
+    }
+
+    /// C++: the same, and a member named like a free function in its own
+    /// type's methods.
+    @Test func cppFunctionNamesYieldToLocalBindings() {
+        let p = Painter("""
+            int total(int a) { return a; }
+            int size() { return 0; }
+            struct Box { int size; int get() const { return size; } };
+            int f(int total) { return total + total(1); }
+            int g() { int total = 4; return total; }
+            void k() { auto fp = &total; run(total); auto sp = size; }
+
+            """, language: "cpp")
+        let function = theme.color(for: .symbolFunction)
+        let plain = p.colour(of: "a", in: "return a;")
+        #expect(plain !== function)
+        #expect(p.colour(of: "total", in: "return total +") === plain)
+        #expect(p.colour(of: "total", in: "total(1)") === function)
+        #expect(p.colour(of: "total", in: "int total = 4; return total;", occurrence: 2) === plain)
+        #expect(p.colour(of: "size", in: "return size; }") === plain)                   // member
+        #expect(p.colour(of: "total", in: "&total") === function)
+        #expect(p.colour(of: "total", in: "run(total)") === function)
+        #expect(p.colour(of: "size", in: "sp = size") === function)
+    }
+
+    /// Java: a method is no value — a bare name is never a function (a
+    /// field, a parameter, a local named like a method), a method
+    /// reference (`this::size`, `Cases::size`) and a call always are.
+    @Test func javaBareMethodNamesAreNotFunctions() {
+        let p = Painter("""
+            class Cases {
+                private int size;
+                int size() { return size; }
+                void grow() { size = size + 1; int other = 1; other++; }
+                int shadow(int count) { int total = count; return total; }
+                int count() { return 1; }
+                int total() { return 2; }
+                void use() { run(this::size); run(Cases::size); int n = size(); }
+                void run(java.util.function.IntSupplier s) { }
+            }
+
+            """, language: "java")
+        let function = theme.color(for: .symbolFunction)
+        let plain = p.colour(of: "other", in: "other++")
+        #expect(plain !== function)
+        #expect(p.colour(of: "size", in: "return size;") === plain)                     // field
+        #expect(p.colour(of: "size", in: "size = size", occurrence: 1) === plain)
+        #expect(p.colour(of: "size", in: "size = size", occurrence: 2) === plain)
+        #expect(p.colour(of: "count", in: "= count;") === plain)                        // parameter
+        #expect(p.colour(of: "total", in: "return total; }") === plain)                 // local
+        #expect(p.colour(of: "size", in: "this::size") === function)                    // method references
+        #expect(p.colour(of: "size", in: "Cases::size") === function)
+        #expect(p.colour(of: "size", in: "size()") === function)                        // call
+    }
+
+    /// C#: a method group (`list.ForEach(Print)`, `Func<…> f = Total`)
+    /// keeps the function colour where no binding hides it.
+    @Test func csharpFunctionNamesYieldToLocalBindings() {
+        let p = Painter("""
+            class Cases {
+                int Total(int a) { return a; }
+                int Shadow(int Total) { return Total + 1; }
+                int Local() { var Total = 2; return Total; }
+                void Use(System.Collections.Generic.List<int> list) { list.ForEach(Print); System.Func<int, int> f = Total; }
+                void Print(int s) { }
+                int Calls(int Total) { return this.Total(Total); }
+            }
+
+            """, language: "csharp")
+        let function = theme.color(for: .symbolFunction)
+        let plain = p.colour(of: "a", in: "return a;")
+        #expect(plain !== function)
+        #expect(p.colour(of: "Total", in: "return Total + 1") === plain)                // parameter
+        #expect(p.colour(of: "Total", in: "return Total; }") === plain)                 // local
+        #expect(p.colour(of: "Print", in: "ForEach(Print)") === function)               // method group
+        #expect(p.colour(of: "Total", in: "f = Total") === function)
+        #expect(p.colour(of: "Total", in: "this.Total(Total)", occurrence: 1) === function)   // call
+        #expect(p.colour(of: "Total", in: "this.Total(Total)", occurrence: 2) === plain)
+    }
+
+    /// Swift: parameters, locals, closure parameters and properties hide a
+    /// function's name; calls (also through a property of function type),
+    /// `#selector(name)`, trailing-closure calls and unshadowed function
+    /// values keep the function colour.
+    @Test func swiftFunctionNamesYieldToLocalBindings() {
+        let p = Painter("""
+            struct Box {
+                var callback: () -> Void = {}
+                func run() { callback(); let other = 1; _ = other; let c = callback; _ = c }
+            }
+            func callback() {}
+            func code(_ x: Int) -> Int { x }
+            func format(code: Int) -> Int { return code + 1 }
+            func local() -> Int { let code = 2; return code }
+            func pass() { apply(code); each { } }
+            func closure() { _ = [1].map { code in code + 1 } }
+            func calls(code: Int) -> Int { return code(code) }
+            @objc func tap() {}
+            func wire() { button.action = #selector(tap) }
+            func each(_ body: () -> Void) {}
+
+            """, language: "swift")
+        let function = theme.color(for: .symbolFunction)
+        let plain = p.colour(of: "other", in: "_ = other")
+        #expect(plain !== function)
+        #expect(p.colour(of: "callback", in: "callback();") === function)               // call through the property
+        #expect(p.colour(of: "callback", in: "c = callback") === plain)                 // the property
+        #expect(p.colour(of: "code", in: "return code + 1") === plain)                  // parameter
+        #expect(p.colour(of: "code", in: "return code }") === plain)                    // local
+        #expect(p.colour(of: "code", in: "code in code + 1", occurrence: 2) === plain)  // closure parameter
+        #expect(p.colour(of: "code", in: "apply(code)") === function)                   // function value
+        #expect(p.colour(of: "each", in: "each { }") === function)                      // trailing closure
+        #expect(p.colour(of: "tap", in: "#selector(tap)") === function)
+        #expect(p.colour(of: "code", in: "code(code)", occurrence: 1) === function)     // call
+        #expect(p.colour(of: "code", in: "code(code)", occurrence: 2) === plain)
+    }
+
+    /// Go: a parameter or local (`:=`) hides the function; `f := handler`
+    /// and `register(handler)` elsewhere keep the function colour.
+    @Test func goFunctionNamesYieldToLocalBindings() {
+        let p = Painter("""
+            package cases
+
+            func handler(w int) {}
+            func shadow(handler int) int { other := 1; return handler + other }
+            func local() int { handler := 2; return handler }
+            func value() func(int) { f := handler; register(handler); return f }
+            func register(fn func(int)) {}
+            func calls() { handler(1) }
+
+            """, language: "go")
+        let function = theme.color(for: .symbolFunction)
+        let plain = p.colour(of: "other", in: "+ other")
+        #expect(plain !== function)
+        #expect(p.colour(of: "handler", in: "return handler +") === plain)              // parameter
+        #expect(p.colour(of: "handler", in: "return handler }") === plain)              // local
+        #expect(p.colour(of: "handler", in: "f := handler") === function)
+        #expect(p.colour(of: "handler", in: "register(handler)") === function)
+        #expect(p.colour(of: "handler", in: "handler(1)") === function)                 // call
+    }
+
+    /// Before the rescan, the shadowing check reads the published snapshot
+    /// through the edit journal; an unmappable journal falls back to the
+    /// function colour without failing.
+    @Test func shadowingFollowsEditsBeforeTheRescan() {
+        let p = Painter("int total(int a) { return a; }\nint f(int total) { return total; }\n"
+                        + "int g(void) { return total; }\n", language: "c")
+        let function = theme.color(for: .symbolFunction)
+        #expect(p.colour(of: "total", in: "{ return total; }\nint g") !== function)
+        p.textView.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: "/* x */\n")
+        #expect(p.engine.analysis.declarations == nil)
+        #expect(p.engine.analysis.publishedDeclarations?.journal.isEmpty == false)
+        p.engine.appearanceDidChange()
+        #expect(p.colour(of: "total", in: "{ return total; }\nint g") !== function)    // shadowed, mapped
+        #expect(p.colour(of: "total", in: "int g(void) { return total;") === function)  // not shadowed
+        // Past the journal's capacity: no mapping, the function colour stays.
+        for _ in 0...EditJournal.capacity {
+            p.textView.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: " ")
+        }
+        #expect(p.engine.analysis.publishedDeclarations?.journal.isUnmappable == true)
+        p.engine.appearanceDidChange()
+        #expect(p.colour(of: "total", in: "{ return total; }\nint g") === function)
+        #expect(p.colour(of: "total", in: "int g(void) { return total;") === function)
     }
 
     /// Python colours declarations only (VS Code): `def` names, class names

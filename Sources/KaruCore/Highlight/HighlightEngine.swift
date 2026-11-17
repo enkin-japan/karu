@@ -238,9 +238,10 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     // MARK: - Queryable state (for tests / diagnostics)
 
     /// True when no runtime highlight state is held — neither a compiled
-    /// language nor a scanned symbol table. When the module is disabled this is
+    /// language, a scanned symbol table nor the shadowing cache (VH5). When
+    /// the module is disabled this is
     /// guaranteed true (the acceptance-criteria "released" state).
-    public var isRuntimeStateReleased: Bool { language == nil && symbolTable == nil }
+    public var isRuntimeStateReleased: Bool { language == nil && symbolTable == nil && shadowCache == nil }
 
     /// Whether the `highlight` module is enabled.
     public var isModuleEnabled: Bool { moduleEnabled }
@@ -353,6 +354,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         guard moduleEnabled else {
             language = nil
             symbolTable = nil
+            shadowCache = nil
             analysis.highlightCheckpointAdvancer = nil
             return
         }
@@ -361,6 +363,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         // A large document's declarations arrive in slices (T17.15d-A): the
         // first paint goes without names, `.declarations` repaints.
         symbolTable = language == nil ? nil : analysis.declarationsUnlessPending()?.scan.table
+        shadowCache = nil
         // The tokenizer whose states `analysis.checkpoints` hold, for the
         // analysis's sliced catch-up (T17.15d-A).
         analysis.highlightCheckpointAdvancer = language.flatMap { definition in
@@ -423,7 +426,8 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         var named = tokens.tokens
         let roles = roleTokens(in: range, ns: ns, language: language, embedded: tokens.embedded)
         let names = Self.identifierTokens(in: ns, range: range, tokens: &named, roles: roles, table: symbolTable,
-                                          language: language, embedded: tokens.embedded)
+                                          language: language, embedded: tokens.embedded,
+                                          shadowed: functionShadowCheck(language: language))
         func same(_ a: [(range: NSRange, kind: TokenKind)], _ b: [(range: NSRange, kind: TokenKind)]) -> Bool {
             a.count == b.count && zip(a, b).allSatisfy { NSEqualRanges($0.range, $1.range) && $0.kind == $1.kind }
         }
@@ -477,6 +481,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         analysis.highlightCheckpointAdvancer = nil
         language = nil
         symbolTable = nil
+        shadowCache = nil
         removeAllForegroundColour()
     }
 
@@ -756,7 +761,8 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         let roles = roleTokens(in: paintChars, ns: ns, language: language, embedded: band.embedded)
         let identifiers = Self.identifierTokens(in: ns, range: paintChars, tokens: &tokens, roles: roles,
                                                 table: symbolTable, language: language,
-                                                embedded: band.embedded)
+                                                embedded: band.embedded,
+                                                shadowed: functionShadowCheck(language: language))
         for list in [tokens, identifiers] {
             for token in list {
                 guard let color = theme.color(for: token.kind) else { continue }
@@ -1150,23 +1156,26 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// child definition's policy with the `roles` that lie in the range
     /// (T17.8c: the declaration roles of the region's child walker) and no
     /// symbol table (the snapshot's table is the host's). `tokens` as in
-    /// the single-language pass; ascending output.
+    /// the single-language pass; ascending output. `shadowed` (VH5) serves
+    /// the host's pass only, like the table.
     nonisolated static func identifierTokens(in ns: NSString, range: NSRange,
                                              tokens: inout [(range: NSRange, kind: TokenKind)],
                                              roles: [(range: NSRange, kind: TokenKind)],
                                              table: WordIndex.SymbolTable?, language: LanguageDefinition,
-                                             embedded: [(range: NSRange, language: Int)])
+                                             embedded: [(range: NSRange, language: Int)],
+                                             shadowed: FunctionShadowCheck? = nil)
         -> [(range: NSRange, kind: TokenKind)] {
         guard !embedded.isEmpty else {
             return identifierTokens(in: ns, range: range, tokens: &tokens, roles: roles, table: table,
-                                    policy: language.identifierPolicy)
+                                    policy: language.identifierPolicy, shadowed: shadowed)
         }
         var out: [(range: NSRange, kind: TokenKind)] = []
         var tokenIndex = 0
         var roleIndex = 0
         /// The pass over `piece`, on the tokens inside it (each token lies in
         /// one segment, so in one piece).
-        func pass(_ piece: NSRange, roles pieceRoles: Bool, table: WordIndex.SymbolTable?, policy: IdentifierPolicy) {
+        func pass(_ piece: NSRange, roles pieceRoles: Bool, table: WordIndex.SymbolTable?, policy: IdentifierPolicy,
+                  shadowed: FunctionShadowCheck? = nil) {
             guard piece.length > 0 else { return }
             let first = tokenIndex
             while tokenIndex < tokens.count, tokens[tokenIndex].range.location < NSMaxRange(piece) { tokenIndex += 1 }
@@ -1177,7 +1186,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
                 roleIndex += 1
             }
             out += identifierTokens(in: ns, range: piece, tokens: &slice, roles: sliceRoles, table: table,
-                                    policy: policy)
+                                    policy: policy, shadowed: shadowed)
             tokens.replaceSubrange(first..<tokenIndex, with: slice)
         }
         var pos = range.location
@@ -1185,13 +1194,13 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             let piece = NSIntersectionRange(span.range, range)
             guard piece.length > 0 else { continue }
             pass(NSRange(location: pos, length: max(0, piece.location - pos)), roles: true, table: table,
-                 policy: language.identifierPolicy)
+                 policy: language.identifierPolicy, shadowed: shadowed)
             let child = language.embeddedDefinition(span.language)
             pass(piece, roles: true, table: nil, policy: child?.identifierPolicy ?? IdentifierPolicy())
             pos = NSMaxRange(piece)
         }
         pass(NSRange(location: pos, length: max(0, NSMaxRange(range) - pos)), roles: true, table: table,
-             policy: language.identifierPolicy)
+             policy: language.identifierPolicy, shadowed: shadowed)
         return out
     }
 
@@ -1200,11 +1209,20 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// (in place), then classifies every identifier in the gaps the tokens
     /// leave — a role at its exact range, else the symbol table (the
     /// categories `policy` enables), else `policy.otherIdentifiers`.
+    ///
+    /// VH5: a table function not in call form (`name(`, blanks allowed) is
+    /// no function when `policy.bareFunctionNamesAreNotFunctions` and no
+    /// `::` precedes it, or when `policy.functionNamesYieldToLocalBindings`
+    /// and `shadowed(name, offset)` says a local binding hides it there (a
+    /// `::`-qualified name is never a local). It then falls through to the
+    /// type / variable categories and `otherIdentifiers`.
     nonisolated static func identifierTokens(in ns: NSString, range: NSRange,
                                              tokens: inout [(range: NSRange, kind: TokenKind)],
                                              roles: [(range: NSRange, kind: TokenKind)],
                                              table: WordIndex.SymbolTable?,
-                                             policy: IdentifierPolicy) -> [(range: NSRange, kind: TokenKind)] {
+                                             policy: IdentifierPolicy,
+                                             shadowed: FunctionShadowCheck? = nil)
+        -> [(range: NSRange, kind: TokenKind)] {
         var out: [(range: NSRange, kind: TokenKind)] = []
         guard range.length > 0 else { return out }
         // Roles over rule tokens of exactly the same range.
@@ -1227,6 +1245,8 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         let base = range.location
         let regex = policy.dollarIdentifiers ? dollarIdentifierRegex : identifierRegex
         var nextRole = 0
+        let shadowed = policy.functionNamesYieldToLocalBindings ? shadowed : nil
+        let bareCheck = policy.bareFunctionNamesAreNotFunctions || shadowed != nil
 
         func scanGap(_ gap: NSRange) {
             guard gap.length > 0 else { return }
@@ -1241,7 +1261,16 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
                 var kind = policy.otherIdentifiers
                 if let table {
                     let word = bandNS.substring(with: r)
-                    if policy.tableFunctions, table.functions.contains(word) {
+                    var isFunction = policy.tableFunctions && table.functions.contains(word)
+                    if isFunction, bareCheck, !isCalled(ns, after: NSMaxRange(absolute)) {
+                        let qualified = isQualified(ns, before: absolute.location)
+                        if policy.bareFunctionNamesAreNotFunctions, !qualified {
+                            isFunction = false
+                        } else if !qualified, let shadowed, shadowed(word, absolute.location) {
+                            isFunction = false
+                        }
+                    }
+                    if isFunction {
                         kind = .symbolFunction
                     } else if policy.tableTypes, table.types.contains(word) {
                         kind = .type
@@ -1266,5 +1295,118 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             scanGap(NSRange(location: pos, length: range.length - pos))
         }
         return out
+    }
+
+    /// Whether the next character after `end`, past blanks and line breaks
+    /// (at most `adjacentLimit` units), is `(` (VH5: call form).
+    nonisolated static func isCalled(_ ns: NSString, after end: Int) -> Bool {
+        var i = end
+        let limit = min(ns.length, end + adjacentLimit)
+        while i < limit {
+            switch ns.character(at: i) {
+            case 32, 9, 10, 13: i += 1
+            case 40: return true
+            default: return false
+            }
+        }
+        return false
+    }
+
+    /// Whether `::` ends right before `start`, blanks allowed in between
+    /// (VH5: a method reference or qualified name).
+    nonisolated static func isQualified(_ ns: NSString, before start: Int) -> Bool {
+        var i = start - 1
+        let limit = max(0, start - adjacentLimit)
+        while i >= limit, ns.character(at: i) == 32 || ns.character(at: i) == 9 { i -= 1 }
+        return i >= 1 && ns.character(at: i) == 58 && ns.character(at: i - 1) == 58
+    }
+
+    /// Units `isCalled` / `isQualified` look past an identifier.
+    private nonisolated static let adjacentLimit = 64
+
+    // MARK: - Function shadowing (VH5)
+
+    /// Whether a local binding hides the table function `name` at live
+    /// offset `offset` (`IdentifierPolicy.functionNamesYieldToLocalBindings`).
+    typealias FunctionShadowCheck = (_ name: String, _ offset: Int) -> Bool
+
+    /// Per-snapshot answers of the shadowing check: the snapshot's
+    /// `ShadowScopeIndex` (built on the first lookup of the version), the
+    /// hidden names of each outermost function (its parameters and locals)
+    /// and of each type (its properties), by scope index, and the last
+    /// function's base range with its hidden names (offsets inside it have
+    /// the same outermost function and type, so the lookup is skipped).
+    private struct ShadowCache {
+        let version: UInt64
+        var index: DeclarationScan.ShadowScopeIndex?
+        var functions: [Int: Set<String>] = [:]
+        var types: [Int: Set<String>] = [:]
+        var last: (start: Int, end: Int, hidden: Set<String>)?
+    }
+
+    /// Entries (functions plus types) above which the cache starts over.
+    private static let shadowCacheLimit = 256
+
+    /// Releasable runtime state (VH5): see `ShadowCache`. Dropped with
+    /// `symbolTable`.
+    private var shadowCache: ShadowCache?
+
+    /// The shadowing check for a pass of `language`, or nil when it cannot
+    /// change a colour: the policy does not ask for it, no snapshot of this
+    /// language is published, none of its function names is also declared
+    /// as a binding, or the journal is unmappable (the function colour is
+    /// kept, as before VH5). Live offsets map to the snapshot's base
+    /// through the edit journal, as for `roleTokens`.
+    private func functionShadowCheck(language: LanguageDefinition) -> FunctionShadowCheck? {
+        guard language.identifierPolicy.functionNamesYieldToLocalBindings,
+              let (snapshot, journal) = analysis.publishedDeclarations,
+              snapshot.scan.languageIdentifier == language.identifier,
+              !snapshot.scan.shadowableFunctionNames.isEmpty,
+              !journal.isUnmappable else { return nil }
+        if shadowCache?.version != snapshot.version { shadowCache = ShadowCache(version: snapshot.version) }
+        let scan = snapshot.scan
+        let exact = journal.isEmpty
+        return { [self] name, offset in
+            guard scan.shadowableFunctionNames.contains(name),
+                  let base = exact ? offset : journal.mapToBase(offset) else { return false }
+            return hiddenNames(at: base, in: scan).contains(name)
+        }
+    }
+
+    /// The names hidden at base offset `base` of `scan`: the bindings of
+    /// the outermost enclosing function and the properties of the type
+    /// enclosing it (`DeclarationScan.shadowScopes(at:)`, served by the
+    /// version's `ShadowScopeIndex`), cached.
+    private func hiddenNames(at base: Int, in scan: DeclarationScan) -> Set<String> {
+        guard var cache = shadowCache else { return [] }
+        if let last = cache.last, last.start <= base, base < last.end { return last.hidden }
+        let index = cache.index ?? scan.shadowScopeIndex()
+        cache.index = index
+        let scopes = index.scopes(at: base)
+        var hidden = Set<String>()
+        if let function = scopes.function {
+            if let known = cache.functions[function.index] {
+                hidden = known
+            } else {
+                hidden = scan.shadowingBindings(inFunction: function)
+                cache.functions[function.index] = hidden
+            }
+        }
+        if let type = scopes.type {
+            if let known = cache.types[type.index] {
+                hidden.formUnion(known)
+            } else {
+                let properties = scan.shadowingProperties(inType: type, index: index)
+                cache.types[type.index] = properties
+                hidden.formUnion(properties)
+            }
+        }
+        if let function = scopes.function { cache.last = (function.start, function.end, hidden) }
+        if cache.functions.count + cache.types.count > Self.shadowCacheLimit {
+            cache.functions.removeAll()
+            cache.types.removeAll()
+        }
+        shadowCache = cache
+        return hidden
     }
 }

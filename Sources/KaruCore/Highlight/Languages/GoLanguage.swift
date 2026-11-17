@@ -54,13 +54,15 @@ public enum GoLanguage {
     public static let builtins: [String] = builtinFunctions + ["nil", "iota", "true", "false"]
 
     /// Go's identifiers (T17.7): every name a variable, `const` names
-    /// constants; functions, types and parameters at their declarations.
+    /// constants; functions, types and parameters at their declarations. A
+    /// bare function name yields to a parameter or local of the same name
+    /// (VH5, `functionNamesYieldToLocalBindings`).
     static let identifierPolicy: IdentifierPolicy = {
         var roles = IdentifierPolicy.declarationRoles
         roles[.variable] = .symbolVariable
         roles[.property] = .symbolVariable
         return IdentifierPolicy(otherIdentifiers: .symbolVariable, roles: roles,
-                                constDeclarationsAreConstants: true)
+                                constDeclarationsAreConstants: true, functionNamesYieldToLocalBindings: true)
     }()
 
     /// Builds a `\b(word1|word2|…)\b` rule producing `kind`.

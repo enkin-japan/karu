@@ -76,7 +76,11 @@ public enum TokenKind: Hashable, Sendable, CaseIterable {
 ///    (`HighlightEngine.overridableByRoles`: a parameter named like a
 ///    built-in, Python's `self` parameter).
 /// 2. **Symbol table**: a file-wide declared function / type / variable
-///    name, each category only when enabled here.
+///    name, each category only when enabled here. A table function is a
+///    function in call form (`name(`); otherwise (VH5) it is not one when
+///    `bareFunctionNamesAreNotFunctions` holds (unless after `::`), or when
+///    `functionNamesYieldToLocalBindings` holds and the name is shadowed
+///    there — the type and variable categories then still apply.
 /// 3. `otherIdentifiers` (JS / TS, C++, C#, Go, Rust: VS Code colours every
 ///    reference as a variable).
 ///
@@ -84,6 +88,19 @@ public enum TokenKind: Hashable, Sendable, CaseIterable {
 /// table, no roles).
 public struct IdentifierPolicy: Sendable {
     public var tableFunctions: Bool
+    /// VH5: a bare (not called) table-function name is not a function where
+    /// a local binding hides it — a parameter or local of the outermost
+    /// enclosing function (closures included), or a property of the
+    /// enclosing type (`DeclarationScan.shadowScopes(at:)`). Read from the
+    /// published snapshot through the edit journal; no snapshot, another
+    /// language or an unmappable journal keep the function colour. The
+    /// brace languages whose table colours functions (C, C++, Java, C#,
+    /// Swift, Go).
+    public var functionNamesYieldToLocalBindings: Bool
+    /// VH5: a bare table-function name is never a function unless preceded
+    /// by `::` (Java: a method is no value, only a method reference
+    /// `Type::name` / `this::name` names one).
+    public var bareFunctionNamesAreNotFunctions: Bool
     public var tableTypes: Bool
     public var tableVariables: Bool
     public var otherIdentifiers: TokenKind?
@@ -101,8 +118,11 @@ public struct IdentifierPolicy: Sendable {
     public init(tableFunctions: Bool = true, tableTypes: Bool = true, tableVariables: Bool = true,
                 otherIdentifiers: TokenKind? = nil,
                 roles: [DeclarationScan.DeclarationKind: TokenKind] = [:],
-                constDeclarationsAreConstants: Bool = false, dollarIdentifiers: Bool = false) {
+                constDeclarationsAreConstants: Bool = false, dollarIdentifiers: Bool = false,
+                functionNamesYieldToLocalBindings: Bool = false, bareFunctionNamesAreNotFunctions: Bool = false) {
         self.tableFunctions = tableFunctions
+        self.functionNamesYieldToLocalBindings = functionNamesYieldToLocalBindings
+        self.bareFunctionNamesAreNotFunctions = bareFunctionNamesAreNotFunctions
         self.tableTypes = tableTypes
         self.tableVariables = tableVariables
         self.otherIdentifiers = otherIdentifiers

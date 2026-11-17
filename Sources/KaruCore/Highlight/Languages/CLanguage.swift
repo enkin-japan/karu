@@ -106,10 +106,12 @@ public enum CLanguage {
 
     /// C's identifiers (T17.7): functions from the table (declarations and
     /// `name(` calls) and function / parameter roles; no variable or type
-    /// colours for references.
+    /// colours for references. A bare function name yields to a parameter
+    /// or local of the same name (VH5, `functionNamesYieldToLocalBindings`).
     static let identifierPolicy = IdentifierPolicy(tableTypes: false, tableVariables: false,
                                                    roles: [.function: .symbolFunction, .method: .symbolFunction,
-                                                           .parameter: .parameter])
+                                                           .parameter: .parameter],
+                                                   functionNamesYieldToLocalBindings: true)
 
     /// Preprocessor / include / number rules shared with C++ (comments,
     /// strings and character literals are the profile's).
