@@ -13,7 +13,46 @@ import Foundation
 /// shebang, `#include <iostream>`, `public static void main(String`, …).
 /// Patterns are compiled once and matched over the whole sample with
 /// `^`/`$` anchored at line boundaries.
+/// One language the sniffer considers plausible for a text.
+public struct LanguageGuess: Equatable, Sendable {
+    /// A `LanguageDefinition.identifier` (e.g. `"python"`).
+    public let identifier: String
+    /// Evidence score; only the order within one ranking is meaningful.
+    public let score: Double
+
+    public init(identifier: String, score: Double) {
+        self.identifier = identifier
+        self.score = score
+    }
+}
+
+/// What the sniffer makes of a text: the language it would set on its own, and
+/// the languages worth offering when it would not.
+public struct LanguageRanking: Equatable, Sendable {
+    /// The language clear enough to apply without asking, or `nil`.
+    public let confident: String?
+    /// Up to three plausible languages, best first. Empty when the text shows
+    /// no code evidence. When `confident` is set it is the first entry.
+    public let candidates: [LanguageGuess]
+
+    public init(confident: String?, candidates: [LanguageGuess]) {
+        self.confident = confident
+        self.candidates = candidates
+    }
+
+    public static let none = LanguageRanking(confident: nil, candidates: [])
+}
+
 public enum LanguageSniffer {
+    /// Ranks the languages `text` could be. Callers that only want a language
+    /// to apply automatically use `sniff`; callers that can ask the user offer
+    /// `candidates` when `confident` is `nil`.
+    public static func rank(_ text: String) -> LanguageRanking {
+        guard let identifier = sniff(text) else { return .none }
+        return LanguageRanking(confident: identifier,
+                               candidates: [LanguageGuess(identifier: identifier, score: 1)])
+    }
+
     /// Maximum number of leading bytes inspected.
     private static let sampleByteLimit = 8 * 1024
 
