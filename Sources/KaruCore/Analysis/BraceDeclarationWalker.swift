@@ -825,7 +825,20 @@ struct BraceDeclarationWalker: Sendable {
                 }
             }
         }
-        prevEnd = isOperandEnd(t)
+        if lang == .swift, prevEnd, t.start == prevTokenEnd,
+           t.kind == .question || t.kind == .bang || t.kind == .greater
+            || t.kind == .op && t.length == 2 && unit(text, t.start) == 63 && unit(text, t.start + 1) == 63 {
+            // Swift: a postfix `?` / `!` (also `??`, a double optional) or a
+            // closing `>` written right after an operand (`Int?`, `value!`,
+            // `Set<Int>`) ends an operand too, so a line break after it ends
+            // the statement. A binary or ternary operator has a blank before
+            // it. Without this the next line's declaration was read as a
+            // continuation: a property became a local, a type or method
+            // after it went missing.
+            prevEnd = true
+        } else {
+            prevEnd = isOperandEnd(t)
+        }
         prevKind = t.kind
         prevBackslash = t.kind == .op && unit(text, t.start) == 92
         prevTokenEnd = t.end

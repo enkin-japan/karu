@@ -658,28 +658,10 @@ public struct DeclarationScan: Sendable, Equatable {
     }
 
     /// The names of `shadowableFunctionNames` that `scope` (a type body,
-    /// `shadowScopes(at:)`) declares as a member: a `.property` in
-    /// `[scope.start, scope.end)`, or a `.variable` directly in the body
-    /// (its shadow scopes are no function and `scope` itself — the Swift
-    /// walker records some stored properties as `.variable`, e.g. the one
-    /// after `let a: Int?`). `index` (built when needed and not given)
-    /// answers that placement. Empty without candidates.
-    public func shadowingProperties(inType scope: Scope, index: ShadowScopeIndex? = nil) -> Set<String> {
-        guard !shadowableFunctionNames.isEmpty else { return [] }
-        var index = index
-        var out = Set<String>()
-        forEachDeclaration(from: scope.start, to: scope.end) { location, name, kind in
-            guard kind == .property || kind == .variable, !out.contains(name),
-                  shadowableFunctionNames.contains(name) else { return }
-            if kind == .variable {
-                let resolved = index ?? shadowScopeIndex()
-                index = resolved
-                let at = resolved.scopes(at: location)
-                guard at.function == nil, at.type?.index == scope.index else { return }
-            }
-            out.insert(name)
-        }
-        return out
+    /// `shadowScopes(at:)`) declares as a member: a `.property` declaration
+    /// located in `[scope.start, scope.end)`. Empty without candidates.
+    public func shadowingProperties(inType scope: Scope) -> Set<String> {
+        shadowingNames(in: scope) { $0 == .property }
     }
 
     private func shadowingNames(in scope: Scope, where accepts: (DeclarationKind) -> Bool) -> Set<String> {

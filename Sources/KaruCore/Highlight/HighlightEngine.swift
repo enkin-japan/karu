@@ -1396,7 +1396,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             if let known = cache.types[type.index] {
                 hidden.formUnion(known)
             } else {
-                let properties = scan.shadowingProperties(inType: type, index: index)
+                let properties = scan.shadowingProperties(inType: type)
                 cache.types[type.index] = properties
                 hidden.formUnion(properties)
             }

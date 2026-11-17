@@ -256,6 +256,76 @@ struct DeclarationScopeSwiftTests {
         #expect(result.table.functions == ["m"] && result.table.types == ["S"])
         #expect(result.declarations.contains { $0.name == "local" && !$0.isListed })
     }
+
+    /// A line break after a postfix `?` / `!` / `??` or a closing `>` ends
+    /// the statement: the declaration on the next line is its own (a
+    /// property stays a property, a method or a nested type is found).
+    @Test(arguments: ["Int?", "Handler!", "Set<Int>", "[String: Set<Int>]?", "Box<Box<Int>>", "Context??",
+                      "(() -> Void)?"])
+    func declarationAfterAPostfixTypeEndIsItsOwnStatement(_ type: String) {
+        let source = """
+        struct S {
+            var first: \(type)
+            let second: Int
+            var third: \(type)
+            func method(p: Int) { let local = p }
+            var fourth: \(type)
+            struct Row { var cell = 1 }
+            var fifth: \(type)
+            init(q: Int) { second = q }
+        }
+        """
+        let result = scan(source, "swift")
+        let kinds = declared(source, "swift")
+        for name in ["first", "second", "third", "fourth", "fifth", "cell"] {
+            #expect(kinds[name] == .property, "\(name) after \(type)")
+        }
+        #expect(kinds["method"] == .method, "method after \(type)")
+        #expect(kinds["Row"] == .class, "Row after \(type)")
+        #expect(kinds["p"] == .parameter && kinds["q"] == .parameter && kinds["local"] == .variable)
+        #expect(result.table.functions.contains("method") && result.table.types.contains("Row"))
+        let scopes = result.scopes.filter { $0.kind == .function || $0.kind == .class }.map(\.name)
+        #expect(scopes.contains("method") && scopes.contains("Row") && !scopes.contains("first"), "\(scopes)")
+    }
+
+    /// Locals too: `let a: Int?` then `let b = 1` are two statements.
+    @Test func localAfterAnOptionalLocalIsDeclared() {
+        let v = visible("""
+        func f(x: Int?) {
+            let a: Int?
+            let b = 1
+            let c = x!
+            let d = 2
+            ⟨1⟩
+        }
+        """, "swift")
+        #expect(v["a"]?.kind == .variable && v["b"]?.kind == .variable)
+        #expect(v["c"]?.kind == .variable && v["d"]?.kind == .variable)
+    }
+
+    /// Operators that continue onto the next line still do: a ternary or a
+    /// comparison written with blanks, an optional chain broken before `.`.
+    @Test func operatorsAtALineEndStillContinueTheStatement() {
+        let source = """
+        struct S {
+            func f(a: Int, b: Int, s: S?) -> Int {
+                let big = a >
+                    b
+                let pick = big ?
+                    a : b
+                let size = s?
+                    .f(a: 1, b: 2, s: nil)
+                ⟨1⟩
+                return pick
+            }
+        }
+        """
+        let v = visible(source, "swift")
+        #expect(v["big"]?.kind == .variable && v["pick"]?.kind == .variable && v["size"]?.kind == .variable)
+        // No operand of a continued line became a declaration.
+        let names = scan(source, "swift").declarations.map(\.name)
+        #expect(names == ["S", "f", "a", "b", "s", "big", "pick", "size"], "\(names)")
+    }
 }
 
 // MARK: - Go
@@ -1095,10 +1165,9 @@ struct DeclarationShadowingTests {
         }
     }
 
-    /// A stored property the Swift walker records as `.variable` (the one
-    /// after `let a: Int?`) still counts as a member of its type; a local
-    /// of a method in that type does not.
-    @Test func memberVariablesCountAsProperties() throws {
+    /// The properties of the enclosing type hide a function's name; a local
+    /// of a method in that type is not one of them.
+    @Test func typePropertiesAreTheShadowingMembers() throws {
         let caret = Caret("""
             struct S {
                 let a: Int?
@@ -1109,10 +1178,9 @@ struct DeclarationShadowingTests {
             func render() {}
             """)
         let s = DeclarationScan.scan(text: caret.text, languageIdentifier: "swift")
-        #expect(s.declarations.first { $0.name == "code" }?.kind == .variable)   // the walker's reading today
+        #expect(s.declarations.first { $0.name == "code" }?.kind == .property)
         let type = try #require(s.shadowScopes(at: caret.offsets[1]!).type)
         #expect(s.shadowingProperties(inType: type) == ["code"])
-        #expect(s.shadowingProperties(inType: type, index: s.shadowScopeIndex()) == ["code"])
     }
 
     /// The outermost function / lambda (a closure's parameters count for the
