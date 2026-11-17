@@ -11,8 +11,7 @@
 
 - 范围：`HighlightEngine` 的标识符角色、声明发布与颜色失效，`WordOccurrenceHighlighter` 的词边界、
   视口刷新及与搜索背景的共存。审查基线 `a40ea9a`，开工时工作区干净。
-- 状态：✅ 审查、复现、main 复核均完成；**下列问题均未修复**，修复方案见本节末尾，用户已确认，待开工。
-  只改了台账，未改业务源码和已有测试，未安装、未发布。
+- 状态：🔄 审查、复现、main 复核均完成；修复按本节末尾的方案分批进行，进度见「修复进度」。未发布。
 - 上午的审查（另一会话）：macOS 27.2.1、Swift 6.4.2，`swift test --filter 'wordRange|occurrences|wordHighlight|SyntaxPositionRole'`
   16 tests / 2 suites 全通过。探针链接当次构建的 `KaruCore.o`，用独立的 AppKit 视图和隔离的模块偏好，
   源码与输出在 `/private/tmp/karu-highlight-review/`（临时证据，不保证长期保留）。
@@ -42,7 +41,7 @@
 - 测试缺口：词匹配的 11 个纯函数测试没有覆盖上述字符边界，也没有与查找栏、括号匹配共存的测试；
   旧回归测试只覆盖文末删除不崩溃；`rolesFollowEditsBeforeTheRescan` 只检查发布前的映射，没有检查新快照发布后的重画。
 
-### 修复方案（用户 2026-11-17 已确认，尚未开工）
+### 修复方案（用户 2026-11-17 已确认）
 
 - 用户答复「/compact 之后开始修」。按下面三批顺序做：第一批 VH1 → 第二批 VH3、VH2、VH6 → 第三批 VH4。
   VH5 用户尚未定方向，先不动，等前三批完成后再提。进度按批记在本节末尾。
@@ -75,6 +74,21 @@
   - 无论哪种都要改上述被锁定的断言。
 - 每批的收尾：针对性测试、`swift test --no-parallel` 全量、`scripts/visual-smoke.sh`、高亮与内存基准，
   然后装本机等用户实测。不动版本号，不发布。
+
+### 修复进度
+
+- 用户 2026-11-17 答复「VH5 先搁置，其他的按顺序开工」。VH5 不做，等用户再提。
+- ✅ 第一批 VH1（main，2026-11-17）：自动化通过，已装本机，**待用户实测**。
+  - 改动：`HighlightEngine` 新增 `paintedDeclarationsVersion`，每次重画记下所用声明快照的版本
+    （编辑后、重扫前画的记为空）。`.declarations` 到达时版本不同就让色带失效再重画；
+    首次得到符号表仍走 `namesChangeColours` 判断。
+  - 测试：新增 `SyntaxPositionRoleTests.bandPaintedBeforeTheRescanIsRepaintedByIt`（引擎级），
+    新文件 `HighlightMaintenanceTests.swift` 三个窗口级用例（长文档粘贴多行 Python、
+    C 粘贴函数后看非调用形式的引用、15 个字符连打后回车）。四个用例在去掉修复时全部失败，加上后全部通过。
+  - 验收：`swift test --no-parallel` 1694 tests / 200 suites 全通过（121 s，含高亮基准）；
+    `scripts/visual-smoke.sh` VISUAL OK、FOLD GEOMETRY OK；`scripts/mem-benchmark.sh`
+    空文档 19.2 MB、1 MB JSON 22.2 MB、10 MB Python 56.9 MB，全部 PASS。
+  - 未做：在已安装的 App 里用鼠标键盘验证（留给用户实测）。
 
 ## 待办：并行全量测试的计时用例超时（2026-11-16 记录，用户决定稍后处理）
 

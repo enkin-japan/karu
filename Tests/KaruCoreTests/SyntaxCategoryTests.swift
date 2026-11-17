@@ -480,6 +480,24 @@ struct SyntaxPositionRoleTests {
         p.engine.appearanceDidChange()
         #expect(p.colour(at: paramAt) == nil)
     }
+
+    /// A band repainted between an edit and its rescan (a scroll, or the
+    /// view growing) has no colour for the names the edit declared; the
+    /// rescan's snapshot repaints it (LEDGER VH1, 2026-11-17).
+    @Test func bandPaintedBeforeTheRescanIsRepaintedByIt() async {
+        let p = Painter("def f(count):\n    pass\n", language: "python")
+        #expect(p.colour(at: 6) === theme.color(for: .parameter))
+        p.textView.textStorage?.replaceCharacters(in: NSRange(location: 6, length: 5), with: "tally")
+        p.engine.appearanceDidChange()
+        #expect(p.colour(at: 6) == nil)
+        #expect(p.engine.paintedRange != nil)
+        let deadline = Date().addingTimeInterval(10)
+        while p.engine.analysis.declarations == nil, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(p.engine.analysis.declarations != nil)
+        #expect(p.colour(at: 6) === theme.color(for: .parameter))
+    }
 }
 
 // MARK: - Heading emphasis

@@ -213,6 +213,12 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
     /// language change, on a module toggle, and when all colour is cleared.
     /// Internal (not private) so unit tests can assert the invalidation.
     var paintedRange: NSRange?
+    /// The version of the declaration snapshot `paintedRange` was painted
+    /// with, when that snapshot was current; `nil` when the band was painted
+    /// between an edit and its rescan (roles mapped through the edit journal,
+    /// the symbol table of the text before the edit) or without a snapshot.
+    /// A snapshot published later with another version repaints the band.
+    private var paintedDeclarationsVersion: UInt64?
     /// Bands painted (not skipped) so far (tests, T17.15d-A).
     private(set) var paintedPasses = 0
 
@@ -383,8 +389,16 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
             // first display costs the window a second backing surface (about
             // 7 MB of graphics memory on an idle window), which a data file
             // without declarations should not pay for nothing.
-            if firstTable, let painted = paintedRange, namesChangeColours(in: painted, language: language) {
-                paintedRange = nil
+            if let painted = paintedRange {
+                if firstTable {
+                    if namesChangeColours(in: painted, language: language) { paintedRange = nil }
+                } else if paintedDeclarationsVersion != snapshot.version {
+                    // The band was painted after the edit and before this
+                    // rescan (a scroll, or a change of the view's size such
+                    // as a paste or Return adding lines, repaints at once):
+                    // names declared by the edit have no colour in it yet.
+                    paintedRange = nil
+                }
             }
             highlightVisibleRange()
         case .released:
@@ -761,6 +775,7 @@ public final class HighlightEngine: NSObject, TextStorageObserving, DocumentAnal
         // Record the band we actually painted so subsequent scroll ticks that
         // stay within it can short-circuit.
         paintedRange = paintChars
+        paintedDeclarationsVersion = analysis.declarations?.version
         paintedPasses += 1
         if PerfLog.isEnabled {
             PerfLog.record("highlight.pass", since: perfStart,
