@@ -66,6 +66,22 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     // Search state (recomputed on every text / option change).
     private var matches: [NSRange] = []
     private var currentIndex: Int = -1
+    /// Why `matches` is incomplete (time limit or match cap), or `nil`.
+    private var truncation: SearchTruncation?
+
+    /// Budgets for the per-keystroke search and for Replace All. Internal so
+    /// tests can shrink them.
+    var searchLimits = SearchLimits.interactive
+    var replaceLimits = SearchLimits.replaceAll
+
+    // Viewport-only highlighting: only matches inside the visible character
+    // range are painted. While the bar is shown it watches its text view's
+    // clip view (scroll / resize) and paints newly exposed matches on the next
+    // run-loop turn; `hide()` drops the observation.
+    private weak var observedClip: NSClipView?
+    private var pendingViewportPaint: DispatchWorkItem?
+    /// The visible range last painted; a scroll that stays inside it is free.
+    private var paintedViewport: NSRange?
 
     private let matchHighlight = NSColor.systemYellow.withAlphaComponent(0.35)
 
@@ -323,6 +339,7 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         }
         isShown = true
         barView.isHidden = false
+        startObservingViewport()
         recomputeMatches(moveToFirst: true)
         barView.window?.makeFirstResponder(searchField)
         searchField.selectText(nil)
@@ -373,9 +390,11 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
     public func hide() {
         isShown = false
         barView.isHidden = true
+        stopObservingViewport()
         clearHighlights()
         matches = []
         currentIndex = -1
+        truncation = nil
         onHighlightsReset?()
         if let textView { textView.window?.makeFirstResponder(textView) }
         onVisibilityChanged?(false)
@@ -457,15 +476,18 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         let pattern = searchField.stringValue
         let text = textView.string
 
-        switch SearchEngine.matches(in: text, pattern: pattern, options: options) {
+        switch SearchEngine.search(in: text, pattern: pattern, options: options, limits: searchLimits) {
         case .failure(let error):
             matches = []
             currentIndex = -1
+            truncation = nil
             clearHighlights()
             onHighlightsReset?()
             showError(error.description)
-        case .success(let ranges):
+        case .success(let outcome):
+            let ranges = outcome.ranges
             matches = ranges
+            truncation = outcome.truncation
             applyHighlights()
             if ranges.isEmpty {
                 currentIndex = -1
@@ -484,10 +506,14 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
 
     /// First match starting at or after `location`, wrapping to 0 if none.
     private func indexOfFirstMatch(atOrAfter location: Int) -> Int {
-        for (i, range) in matches.enumerated() where range.location >= location {
-            return i
+        // `matches` is ascending: binary search (it can hold 50 000 entries).
+        var low = 0
+        var high = matches.count
+        while low < high {
+            let mid = (low + high) / 2
+            if matches[mid].location < location { low = mid + 1 } else { high = mid }
         }
-        return 0
+        return low < matches.count ? low : 0
     }
 
     private func focusCurrentMatch() {
@@ -498,6 +524,9 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         let range = matches[currentIndex]
         textView.setSelectedRange(range)
         textView.scrollRangeToVisible(range)
+        // The scroll has just laid out the new viewport; paint what it exposed
+        // now rather than waiting for the clip view's notification.
+        paintVisibleMatches()
         textView.showFindIndicator(for: range)
         updateCount()
     }
@@ -539,43 +568,127 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         let template = replaceField.stringValue
         switch SearchEngine.replaceAll(in: textView.string,
                                        pattern: searchField.stringValue,
-                                       options: options, template: template) {
+                                       options: options, template: template,
+                                       limits: replaceLimits) {
+        case .failure(let error) where error.isTimeout:
+            // All or nothing: the document and the undo stack are untouched.
+            setStatus(L10n.t(.findTimedOut), tooltip: L10n.t(.findReplaceTimedOutTooltip),
+                      color: .systemRed)
         case .failure(let error):
             showError(error.description)
-        case .success(let newText):
-            let replacedCount = matches.count
-            let full = NSRange(location: 0, length: (textView.string as NSString).length)
-            // Single whole-document replacement keeps Replace All as one undo step.
-            if textView.shouldChangeText(in: full, replacementString: newText) {
-                textView.textStorage?.replaceCharacters(in: full, with: newText)
-                textView.didChangeText()
+        case .success(let outcome):
+            // The engine's count: `matches` may be capped at the search limit.
+            if outcome.count > 0 {
+                let full = NSRange(location: 0, length: (textView.string as NSString).length)
+                // Single whole-document replacement keeps Replace All as one undo step.
+                if textView.shouldChangeText(in: full, replacementString: outcome.text) {
+                    textView.textStorage?.replaceCharacters(in: full, with: outcome.text)
+                    textView.didChangeText()
+                }
+                recomputeMatches(moveToFirst: false)
             }
-            recomputeMatches(moveToFirst: false)
-            setStatus(L10n.t(.findReplacedCount, replacedCount))
+            setStatus(L10n.t(.findReplacedCount, outcome.count))
         }
     }
 
     // MARK: - Highlighting
 
-    /// Replaces every `.backgroundColor` temporary attribute in the document
-    /// with the match colour on each match. The key is shared with the
-    /// editor's bracket matcher and same-word tint and does not stack, so this
-    /// wipes theirs too; `onHighlightsReset` lets them repaint.
+    /// Wipes every `.backgroundColor` temporary attribute in the document,
+    /// then paints the match colour on the matches in the visible range only
+    /// (newly exposed ones are painted as the view scrolls or resizes). The
+    /// key is shared with the editor's bracket matcher and same-word tint and
+    /// does not stack, so this wipes theirs too; `onHighlightsReset` lets them
+    /// repaint.
     private func applyHighlights() {
-        guard let layoutManager = textView?.layoutManager else { return }
+        guard textView?.layoutManager != nil else { return }
         clearHighlights()
-        for range in matches {
-            layoutManager.addTemporaryAttributes([.backgroundColor: matchHighlight],
-                                                 forCharacterRange: range)
-        }
+        paintVisibleMatches()
         onHighlightsReset?()
     }
 
     private func clearHighlights() {
+        paintedViewport = nil
         guard let textView, let layoutManager = textView.layoutManager else { return }
         let full = NSRange(location: 0, length: textView.textStorage?.length ?? 0)
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
     }
+
+    /// Paints the matches intersecting the current viewport, unless the last
+    /// painted viewport already covers it (a small scroll then costs nothing).
+    private func paintVisibleMatches() {
+        guard isShown, !matches.isEmpty, let visible = visibleCharacterRange() else { return }
+        if let painted = paintedViewport,
+           visible.location >= painted.location, NSMaxRange(visible) <= NSMaxRange(painted) {
+            return
+        }
+        paintMatches(in: visible)
+        paintedViewport = visible
+    }
+
+    /// Paints the match colour on every match intersecting `visible` — the
+    /// viewport painter's core, internal so tests can drive it directly.
+    func paintMatches(in visible: NSRange) {
+        // A zero-length viewport (empty document) still has to reach the
+        // binary search's "intersects" rule, which needs a positive length.
+        reapplyHighlights(intersecting: [NSRange(location: visible.location, length: max(visible.length, 1))])
+    }
+
+    /// The text view's visible character range, from the clip view's bounds
+    /// (the same viewport computation as `HighlightEngine` and the same-word
+    /// highlighter). Queried only outside layout and drawing: from a search,
+    /// a focus scroll, or a deferred viewport notification.
+    private func visibleCharacterRange() -> NSRange? {
+        guard let textView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return nil }
+        // Without a scroll view (headless hosts) the whole view is the viewport.
+        let rect = textView.enclosingScrollView?.contentView.bounds ?? textView.bounds
+        guard !rect.isEmpty else { return nil }
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: container)
+        return layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+    }
+
+    // MARK: - Viewport observation (only while shown)
+
+    private func startObservingViewport() {
+        guard observedClip == nil, let clip = textView?.enclosingScrollView?.contentView else { return }
+        clip.postsBoundsChangedNotifications = true
+        clip.postsFrameChangedNotifications = true
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(viewportChanged),
+                           name: NSView.boundsDidChangeNotification, object: clip)
+        center.addObserver(self, selector: #selector(viewportChanged),
+                           name: NSView.frameDidChangeNotification, object: clip)
+        observedClip = clip
+    }
+
+    private func stopObservingViewport() {
+        pendingViewportPaint?.cancel()
+        pendingViewportPaint = nil
+        guard let clip = observedClip else { return }
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: NSView.boundsDidChangeNotification, object: clip)
+        center.removeObserver(self, name: NSView.frameDidChangeNotification, object: clip)
+        observedClip = nil
+    }
+
+    /// Scroll / resize: paint the newly exposed matches on the next run-loop
+    /// turn, coalesced. Never synchronously — these notifications can arrive
+    /// inside a layout pass, and asking for the visible glyph range there
+    /// forces more layout (see `LinkDetector.scheduleToolTipRefresh`).
+    @objc private func viewportChanged() {
+        guard isShown, !matches.isEmpty, pendingViewportPaint == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingViewportPaint = nil
+            self.paintVisibleMatches()
+        }
+        pendingViewportPaint = item
+        DispatchQueue.main.async(execute: item)
+    }
+
+    /// Test hook: whether the bar currently watches a clip view.
+    var isObservingViewport: Bool { observedClip != nil }
 
     /// Re-adds the match colour on every match intersecting `ranges` (whole
     /// match ranges). Other painters sharing the `.backgroundColor` key call
@@ -615,13 +728,33 @@ public final class FindBarController: NSObject, NSSearchFieldDelegate {
         if searchField.stringValue.isEmpty {
             setStatus("")
         } else if matches.isEmpty {
-            setStatus(L10n.t(.findNoResults))
+            if truncation == .timedOut {
+                setStatus(L10n.t(.findTimedOut), tooltip: L10n.t(.findTimedOutTooltip))
+            } else {
+                setStatus(L10n.t(.findNoResults))
+            }
         } else if matches.indices.contains(currentIndex) {
             let line = lineIndex.lineNumber(forOffset: matches[currentIndex].location)
-            setStatus(L10n.t(.findMatchPosition, currentIndex + 1, matches.count),
-                      tooltip: L10n.t(.findMatchLineTooltip, line))
+            let lineTip = L10n.t(.findMatchLineTooltip, line)
+            if let reason = incompleteReason() {
+                setStatus(L10n.t(.findMatchPositionMore, currentIndex + 1, matches.count),
+                          tooltip: lineTip + "\n" + reason)
+            } else {
+                setStatus(L10n.t(.findMatchPosition, currentIndex + 1, matches.count), tooltip: lineTip)
+            }
+        } else if let reason = incompleteReason() {
+            setStatus(L10n.t(.findFoundCountMore, matches.count), tooltip: reason)
         } else {
             setStatus(L10n.t(.findFoundCount, matches.count))
+        }
+    }
+
+    /// The tooltip sentence explaining why the match list is incomplete.
+    private func incompleteReason() -> String? {
+        switch truncation {
+        case .timedOut: return L10n.t(.findIncompleteTimedOut)
+        case .matchLimit: return L10n.t(.findIncompleteMatchLimit, matches.count)
+        case nil: return nil
         }
     }
 

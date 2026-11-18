@@ -130,6 +130,9 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case findDone, findDoneTooltip
     case findNoResults, findReplacedCount, findFoundCount, findMatchPosition, findMatchLineTooltip
     case findShowReplace, findHideReplace
+    // Search budgets (R03): truncated results and timeouts.
+    case findMatchPositionMore, findFoundCountMore, findIncompleteTimedOut, findIncompleteMatchLimit
+    case findTimedOut, findTimedOutTooltip, findReplaceTimedOutTooltip
     // Alerts / editor chrome.
     case formatFailedTitle, formatErrorLine
     case closeConfirmMessage, closeConfirmInfo
