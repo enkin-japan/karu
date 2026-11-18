@@ -300,6 +300,8 @@ extension L10n {
 
         .formatFailedTitle: "Formatting failed",
         .formatErrorLine: "Line %d: %@",
+        .formatTooDeep: "Line %d: the nesting is deeper than %d levels, so the document was not formatted. Nothing was changed.",
+        .formatTooLarge: "The formatted result would be larger than %@, so the document was not formatted. Nothing was changed.",
         .closeConfirmMessage: "Do you want to save the changes made to %@?",
         .closeConfirmInfo: "Your changes will be lost if you don't save them.",
         .dontSave: "Don't Save",
@@ -659,6 +661,8 @@ extension L10n {
 
         .formatFailedTitle: "格式化失败",
         .formatErrorLine: "第 %d 行：%@",
+        .formatTooDeep: "第 %d 行：嵌套超过 %d 层，未进行格式化，文档没有改动。",
+        .formatTooLarge: "格式化后的结果会超过 %@，未进行格式化，文档没有改动。",
         .closeConfirmMessage: "是否存储对“%@”所做的更改？",
         .closeConfirmInfo: "如果不存储，你的更改将会丢失。",
         .dontSave: "不存储",
@@ -1018,6 +1022,8 @@ extension L10n {
 
         .formatFailedTitle: "フォーマットに失敗しました",
         .formatErrorLine: "%d 行目：%@",
+        .formatTooDeep: "%d 行目：入れ子が %d 階層を超えているため、フォーマットしませんでした。書類は変更されていません。",
+        .formatTooLarge: "フォーマット後のサイズが %@ を超えるため、フォーマットしませんでした。書類は変更されていません。",
         .closeConfirmMessage: "“%@” への変更を保存しますか？",
         .closeConfirmInfo: "保存しない場合、変更内容は失われます。",
         .dontSave: "保存しない",

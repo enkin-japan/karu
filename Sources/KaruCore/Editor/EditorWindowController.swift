@@ -1438,28 +1438,56 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         }
     }
 
+    /// Test seam: receives a formatting failure instead of the alert sheet.
+    var formatErrorObserver: ((FormatDispatchError) -> Void)?
+
     private func handleFormatError(_ error: FormatDispatchError) {
+        guard let message = Self.formatErrorMessage(error) else { NSSound.beep(); return }
+        moveCaretToFormatErrorLine(error)
+        if let formatErrorObserver {
+            formatErrorObserver(error)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = L10n.t(.formatFailedTitle)
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: nil)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    /// The alert text for a formatting failure, or `nil` when there is nothing
+    /// to say (unsupported language: the menu item is disabled, so just beep).
+    /// Every message for a refused document ends by saying it was not changed.
+    static func formatErrorMessage(_ error: FormatDispatchError) -> String? {
         switch error {
         case .unsupportedLanguage:
-            NSSound.beep()
+            return nil
         case .syntax(let line, let message):
-            // Move the caret to the offending line using the window's shared
-            // line index, then scroll it into view.
-            let range = lineIndex.offsetRange(ofLine: line)
-            let caret = NSRange(location: range.lowerBound, length: 0)
-            textView.setSelectedRange(caret)
-            textView.scrollRangeToVisible(caret)
-
-            let alert = NSAlert()
-            alert.messageText = L10n.t(.formatFailedTitle)
-            alert.informativeText = L10n.t(.formatErrorLine, line, message)
-            alert.alertStyle = .warning
-            if let window {
-                alert.beginSheetModal(for: window, completionHandler: nil)
-            } else {
-                alert.runModal()
-            }
+            return L10n.t(.formatErrorLine, line, message)
+        case .nestingTooDeep(let line, let limit):
+            return L10n.t(.formatTooDeep, line, limit)
+        case .outputTooLarge(let limitBytes):
+            let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: limitBytes), countStyle: .file)
+            return L10n.t(.formatTooLarge, size)
         }
+    }
+
+    /// Moves the caret to the line a formatting failure points at (using the
+    /// window's shared line index) and scrolls it into view.
+    private func moveCaretToFormatErrorLine(_ error: FormatDispatchError) {
+        let line: Int
+        switch error {
+        case .syntax(let errorLine, _), .nestingTooDeep(let errorLine, _): line = errorLine
+        case .unsupportedLanguage, .outputTooLarge: return
+        }
+        let range = lineIndex.offsetRange(ofLine: line)
+        let caret = NSRange(location: range.lowerBound, length: 0)
+        textView.setSelectedRange(caret)
+        textView.scrollRangeToVisible(caret)
     }
 
     // MARK: - Comment toggle (first-responder target)

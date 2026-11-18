@@ -135,6 +135,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case findTimedOut, findTimedOutTooltip, findReplaceTimedOutTooltip
     // Alerts / editor chrome.
     case formatFailedTitle, formatErrorLine
+    // Formatting refused at a limit (F7): nesting depth, result size.
+    case formatTooDeep, formatTooLarge
     case closeConfirmMessage, closeConfirmInfo
     case dontSave, cancel, untitled
     // iCloud download (opening a not-yet-synced ubiquitous file).
