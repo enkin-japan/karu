@@ -41,12 +41,22 @@
    更新时只从官方源（python-build-standalone Release、nodejs.org、go.dev、Adoptium、dotnet release
    metadata、ziglang.org）取下载地址、大小与 SHA256/SHA512，写入清单后用真实下载做一次安装与运行验证，
    结果记入台账。不更新则保留原版本，清单随应用版本固定，运行时不拉远程清单。
-3. 完成全量 Swift 测试、视觉冒烟与内存基准；三种内存场景不得把 SKIPPED 当作通过。
-   记录系统环境，预算判断遵循 [ARCHITECTURE.md](ARCHITECTURE.md)。
+3. 在升好版本号的那个提交上运行 `scripts/preflight.sh`：它要求工作区干净（含未跟踪文件），依次跑全量 Swift 测试、
+   视觉冒烟与内存基准，全部通过后写下 `build/preflight/<提交号>.json`，各步输出在同目录的 `.log` 里。
+   内存基准退出码 2（没有通过证据：回退到 RSS、读数未稳定、场景被跳过、文件没有真的打开）与超预算一样算失败。
+   记录系统环境，预算判断遵循 [ARCHITECTURE.md](ARCHITECTURE.md)。检查之后再改任何源码，都要重新提交并重跑。
 4. 发布前用临时副本做小签名检查，尽早发现证书/钥匙串问题；不得改签用户应用来探路。
-5. `bash scripts/release-macos.sh`：release 构建、由内向外签名、公证、装订、
+5. `bash scripts/release-macos.sh`：先过门禁（工作区干净，且有当前提交的 preflight 通过记录，否则拒绝继续），
+   然后 release 构建、由内向外签名、核对 Sparkle 签名工具、公证、装订、
    重打 ZIP、Sparkle EdDSA 签名、生成 appcast.xml、制作 DMG、Gatekeeper 终验。
    私钥留在钥匙串。读取脚本当前输出，核实每一步完成，不能仅凭产物文件存在判断成功。
+   - `scripts/release-macos.sh --check` 只跑门禁和 Sparkle 工具核对，不构建、不签名、不公证，可随时用来确认能否发布。
+   - `sign_update` 取自 SwiftPM 按校验值验证过的 Sparkle 二进制产物（`.build/artifacts/sparkle/Sparkle/bin/`），
+     脚本核对它的版本、修订和校验值与 `Package.resolved` 一致后才使用，并把这些值连同工具的 SHA-256 打印出来。
+     脚本不再自行下载工具；`build/sparkle-tools/` 里的旧缓存已不使用，可以移到废纸篓。
+   - `KARU_RELEASE_SKIP_PREFLIGHT=1` 可跳过门禁，仅用于门禁本身出故障的情况；使用时要在台账里写明原因和替代的验证证据。
+     Sparkle 工具核对不可跳过。
+   - 门禁逻辑的自测：`scripts/tests/release-gate-selftest.sh`（临时目录，不签名、不联网）。改动门禁或发布脚本后先跑它。
 6. 检查 app 的版本/build、签名公证状态及产物密钥排除检查。核对 appcast 的版本、
    build、下载地址、长度与签名匹配本轮 ZIP。
 7. 为对应源码提交建立 `vX.Y.Z` 标签并推送，用现有 GitHub 发布通道上传三个资产：
