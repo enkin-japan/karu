@@ -50,6 +50,13 @@ public final class DocumentController {
         SHA256.hash(data: Data(text.utf8)) == baselineDigest
     }
 
+    /// The baseline digest as a plain 32-byte value, for comparisons made off
+    /// the main thread (R05: the crash-draft job hashes its own snapshot and
+    /// compares it against this). Same bytes `matchesBaseline` compares with.
+    public var baselineSHA256: Data {
+        Data(baselineDigest)
+    }
+
     /// Title suitable for a window: the file name, or "Untitled".
     public var displayName: String {
         fileURL?.lastPathComponent ?? "Untitled"

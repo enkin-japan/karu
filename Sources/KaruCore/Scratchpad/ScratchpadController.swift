@@ -25,8 +25,25 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// Delay between the last keystroke and the text hitting disk. Same reasoning
     /// (and value) as the editor's crash-draft debounce: a burst of typing costs
     /// one write, and a crash costs at most a sentence.
-    static let defaultDebounceInterval: TimeInterval = 1.5
-    var debounceInterval: TimeInterval = ScratchpadController.defaultDebounceInterval
+    static let defaultDebounceInterval: TimeInterval = DraftCheckpointer.defaultDebounce
+    var debounceInterval: TimeInterval {
+        get { flushCheckpointer.debounce }
+        set { flushCheckpointer.debounce = newValue }
+    }
+
+    /// Upper bound on how long an edit waits for its write while the user keeps
+    /// typing with pauses shorter than the debounce (R05).
+    static let defaultMaxFlushInterval: TimeInterval = DraftCheckpointer.defaultMaxInterval
+    var maxFlushInterval: TimeInterval {
+        get { flushCheckpointer.maxInterval }
+        set { flushCheckpointer.maxInterval = newValue }
+    }
+
+    /// Test seam: the clock and timer behind the write schedule.
+    var flushScheduler: any CheckpointScheduling {
+        get { flushCheckpointer.scheduler }
+        set { flushCheckpointer.scheduler = newValue }
+    }
 
     /// Where the text lives between sessions. Injected so tests (and the
     /// diagnostics hook) can point at a directory of their own.
@@ -47,7 +64,14 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// it needs nothing but an `NSTextView` and a `LineIndex`, both of which the
     /// pad already builds. Dies with the panel like everything else here.
     private var findBar: FindBarController?
-    private var flushWork: DispatchWorkItem?
+    /// When the next debounced write fires; schedules nothing while the text
+    /// has no unwritten edit, and is cancelled by `hide()`.
+    private lazy var flushCheckpointer = DraftCheckpointer(
+        debounce: Self.defaultDebounceInterval,
+        maxInterval: Self.defaultMaxFlushInterval
+    ) { [weak self] in
+        self?.flushNow()
+    }
     /// Retains the storage-delegate hub for the line-number gutter: the text
     /// storage only holds its delegate weakly, and the gutter (which the scroll
     /// view retains) reads line numbers through the index this hub updates.
@@ -73,9 +97,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    deinit {
-        flushWork?.cancel()
-    }
+    // No deinit work: the checkpointer cancels its pending item in its own
+    // deinit as this controller (its sole owner) is released.
 
     /// True while the panel is on screen. Also the "is anything built?" test —
     /// hidden means the panel does not exist at all.
@@ -551,20 +574,15 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         scheduleFlush()
     }
 
-    /// Queues a write for a moment after the typing stops; each new edit replaces
-    /// the pending one. Cancelled — never left dangling — by `hide()`.
+    /// Queues a write for a moment after the typing stops — but no later than
+    /// `maxFlushInterval` after the first unwritten edit, so typing that never
+    /// pauses still lands on disk. Cancelled — never left dangling — by `hide()`.
     private func scheduleFlush() {
-        flushWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.flushNow() }
-        }
-        flushWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: work)
+        flushCheckpointer.noteEdit()
     }
 
     private func cancelFlush() {
-        flushWork?.cancel()
-        flushWork = nil
+        flushCheckpointer.cancel()
     }
 
     /// Writes the buffer straight from the main thread: the pad holds notes, not

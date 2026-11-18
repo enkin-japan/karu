@@ -222,24 +222,57 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// of orphaning them.
     private(set) var draftID = UUID()
 
-    /// The pending debounced draft write, if any. Cancelled on every new edit,
-    /// on an explicit flush, and at teardown — so nothing but a sub-second work
-    /// item ever outlives a keystroke (no resident timer, ARCHITECTURE.md §3.4).
-    private var draftFlushWork: DispatchWorkItem?
+    /// When the next draft checkpoint fires (R05): debounced after the last
+    /// keystroke, but at most `draftMaxInterval` after the first unflushed one.
+    /// Holds a scheduled item only while an edit is unflushed — nothing is
+    /// resident between checkpoints (ARCHITECTURE.md §3.4).
+    private lazy var draftCheckpointer = DraftCheckpointer(
+        debounce: Self.defaultDraftDebounce,
+        maxInterval: Self.defaultDraftMaxInterval
+    ) { [weak self] in
+        self?.flushDraftNow()
+    }
 
     /// Delay between the last keystroke and the draft hitting disk. Short enough
     /// that a crash costs at most a sentence, long enough that continuous typing
     /// writes rarely. Stored per window (rather than as a global) so a test can
     /// zero it out without mutating shared state.
-    static let defaultDraftDebounce: TimeInterval = 1.5
-    var draftDebounceInterval: TimeInterval = EditorWindowController.defaultDraftDebounce
+    static let defaultDraftDebounce: TimeInterval = DraftCheckpointer.defaultDebounce
+    var draftDebounceInterval: TimeInterval {
+        get { draftCheckpointer.debounce }
+        set { draftCheckpointer.debounce = newValue }
+    }
 
-    /// Shared serial queue for draft I/O: keeps a multi-megabyte snapshot off
-    /// the main thread, while its seriality guarantees a window's writes and
-    /// removals land in the order they were issued (a "remove" can never be
-    /// overtaken by an earlier "write").
+    /// Upper bound on how long an edit can stay without a checkpoint while the
+    /// user keeps typing (pauses shorter than the debounce never let it fire).
+    static let defaultDraftMaxInterval: TimeInterval = DraftCheckpointer.defaultMaxInterval
+    var draftMaxInterval: TimeInterval {
+        get { draftCheckpointer.maxInterval }
+        set { draftCheckpointer.maxInterval = newValue }
+    }
+
+    /// Test seam: the clock and timer behind the checkpoint schedule.
+    var draftCheckpointScheduler: any CheckpointScheduling {
+        get { draftCheckpointer.scheduler }
+        set { draftCheckpointer.scheduler = newValue }
+    }
+
+    /// Shared serial queue for draft I/O: keeps a multi-megabyte snapshot (and
+    /// its baseline hash) off the main thread.
     private static let draftQueue = DispatchQueue(label: "dev.enkin.karu.drafts",
                                                   qos: .utility)
+
+    /// This window's draft I/O: one job in flight, at most one newer snapshot
+    /// waiting, removals ordered after everything submitted before them.
+    private lazy var draftWriter = DraftWriteQueue(queue: Self.draftQueue) { [weak self] in
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self?.processDraftOutcomes() }
+        }
+    }
+
+    /// `true` from a failed draft write until the next successful one. The
+    /// status-bar note is shown on the transition into this state only.
+    private(set) var draftCheckpointFailing = false
 
     /// Whether the app as a whole is quitting, supplied by `AppDelegate`.
     /// Decides what a window close means for the session list: a *user* close
@@ -535,9 +568,9 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     deinit {
         NotificationCenter.default.removeObserver(self)
         downloadTimer?.invalidate()
-        // A pending draft checkpoint holds only a weak reference, but cancel it
-        // anyway so nothing is left scheduled behind a closed window.
-        draftFlushWork?.cancel()
+        // A pending draft checkpoint holds only a weak reference; the
+        // checkpointer cancels it in its own deinit as this controller (its
+        // sole owner) is released.
         // The word highlighter is cancelled in `windowWillClose`, and cancels
         // its own pending work and observers again in its deinit, which runs
         // as this controller (its sole owner) is released.
@@ -753,60 +786,72 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
 
     // MARK: - Crash drafts (T14.11)
 
-    /// Queues a draft checkpoint for a moment after the typing stops. Each new
-    /// edit replaces the pending one, so a burst of keystrokes costs a single
-    /// write.
+    /// Queues a draft checkpoint for a moment after the typing stops — or, if
+    /// the typing never stops long enough, for the maximum interval after the
+    /// first unflushed edit.
     private func scheduleDraftFlush() {
-        draftFlushWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            // The item is scheduled on the main queue; hopping back onto the
-            // main actor is a formality for Swift 6 isolation checking (same
-            // pattern as the status bar's flash timer).
-            MainActor.assumeIsolated { self?.flushDraftNow() }
-        }
-        draftFlushWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + draftDebounceInterval, execute: work)
+        draftCheckpointer.noteEdit()
     }
 
     /// Brings the on-disk draft in line with the buffer right now, skipping the
     /// debounce. The arbitration rule (T14.11): **a draft exists exactly while
     /// the buffer differs from the saved baseline** — the very test the close
     /// prompt uses, so "there is a draft" and "closing would ask to save" can
-    /// never disagree. Internal so tests can drive the write synchronously.
+    /// never disagree. The main thread only takes the snapshot; the background
+    /// job hashes it, compares with the baseline digest, and then writes or
+    /// removes the draft (R05). Internal so tests can drive it synchronously.
     func flushDraftNow() {
-        guard !documentController.matchesBaseline(textView.string) else {
-            removeDraft()
-            return
-        }
         cancelDraftFlush()
-        // Snapshot on the main thread, write on the utility queue: a 10 MB
-        // buffer must not stall typing while it is encoded and stored.
-        let store = draftStore
-        let id = draftID
-        let content = textView.string
-        let path = documentController.fileURL?.path
-        Self.draftQueue.async { store.write(id: id, content: content, originalPath: path) }
+        draftWriter.submit(.checkpoint(makeDraftSnapshot(), draftStore))
+    }
+
+    /// The values a checkpoint job needs, taken on the main thread. No hashing
+    /// here: the baseline travels as its digest. Internal for tests.
+    func makeDraftSnapshot() -> DraftSnapshot {
+        DraftSnapshot(id: draftID,
+                      content: textView.string,
+                      originalPath: documentController.fileURL?.path,
+                      base: documentController.diskState,
+                      baselineDigest: documentController.baselineSHA256)
     }
 
     /// Drops this window's draft — the content is back in sync with disk
     /// (saved, undone, reopened) or the user closed the window for good.
+    /// Replaces any snapshot still waiting, and runs after the one in flight,
+    /// so no older write can bring the draft back.
     private func removeDraft() {
         cancelDraftFlush()
-        let store = draftStore
-        let id = draftID
-        Self.draftQueue.async { store.remove(id: id) }
+        draftWriter.submit(.remove(draftID, draftStore))
     }
 
     /// Forgets any queued checkpoint without touching what is already on disk.
     private func cancelDraftFlush() {
-        draftFlushWork?.cancel()
-        draftFlushWork = nil
+        draftCheckpointer.cancel()
     }
 
-    /// Blocks until this window's queued draft I/O has landed. Test support
-    /// only: production code never needs to wait for a best-effort backup.
+    /// Applies what the background job reported: one status note when draft
+    /// writes start failing, re-armed by the next successful write.
+    private func processDraftOutcomes() {
+        for outcome in draftWriter.takeOutcomes() {
+            switch outcome {
+            case .written:
+                draftCheckpointFailing = false
+            case .removed:
+                break
+            case .failed:
+                guard !draftCheckpointFailing else { continue }
+                draftCheckpointFailing = true
+                flashStatus(L10n.t(.draftCheckpointFailed))
+            }
+        }
+    }
+
+    /// Blocks until this window's queued draft I/O has landed, then applies
+    /// its outcomes. Test support only: production code never needs to wait
+    /// for a best-effort backup.
     func waitForDraftWrites() {
-        Self.draftQueue.sync {}
+        draftWriter.waitUntilIdle()
+        processDraftOutcomes()
     }
 
     /// Pours recovered draft content into this window and adopts the draft's

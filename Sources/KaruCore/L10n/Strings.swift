@@ -334,6 +334,7 @@ extension L10n {
 
         .saveFailedBanner: "Auto-save failed. Your changes are still in this window.",
         .saveFailedRetry: "Retry",
+        .draftCheckpointFailed: "Couldn't back up unsaved changes for crash recovery.",
 
         .saveConflictMessage: "“%@” was changed by another program.",
         .saveConflictInfo: "Overwrite replaces that version with the text in this window. Save As… keeps it and saves your text to a new file.",
@@ -692,6 +693,7 @@ extension L10n {
 
         .saveFailedBanner: "自动保存失败，修改仍保留在此窗口中。",
         .saveFailedRetry: "重试",
+        .draftCheckpointFailed: "无法备份未保存的修改，崩溃后可能无法恢复。",
 
         .saveConflictMessage: "“%@”已被其他程序修改。",
         .saveConflictInfo: "“覆盖”会用此窗口中的文本替换那个版本；“存储为…”会保留它，并把你的文本存到新文件。",
@@ -1050,6 +1052,7 @@ extension L10n {
 
         .saveFailedBanner: "自動保存に失敗しました。変更内容はこのウインドウに残っています。",
         .saveFailedRetry: "再試行",
+        .draftCheckpointFailed: "未保存の変更をバックアップできませんでした。クラッシュ時に復元できない場合があります。",
 
         .saveConflictMessage: "“%@” は別のアプリケーションで変更されました。",
         .saveConflictInfo: "「上書き」はその内容をこのウインドウのテキストで置き換えます。「別名で保存…」はその内容を残し、テキストを新しいファイルに保存します。",

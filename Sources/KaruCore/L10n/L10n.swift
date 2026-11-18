@@ -153,6 +153,9 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case prefScratchpadFontSizeLabel
     // Banner above the editor after a focus-loss auto-save failed (T12.14; a status-bar note before).
     case saveFailedBanner, saveFailedRetry
+    // A crash-draft checkpoint could not be written (R05): one status-bar
+    // note per run of consecutive failures.
+    case draftCheckpointFailed
     // The file changed on disk since it was opened or saved (R01 / F1b): the
     // manual-save question, the auto-save band's conflict mode, and the status
     // notes from the check made when the window becomes key.

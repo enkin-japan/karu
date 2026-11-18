@@ -279,6 +279,135 @@ private static func untitledWindow(holding content: String) -> EditorWindowContr
     controller.window?.close()
 }
 
+// MARK: - 2b. Checkpoint timing, baseline off the main thread, failures (R05)
+
+@Test func continuousTypingStillWritesADraftWithinTheMaximumInterval() throws {
+    let (drafts, _, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    defer { dropDrafts(); dropSession() }
+
+    let controller = Self.makeController(drafts: drafts, session: session)
+    let clock = ManualCheckpointScheduler()
+    controller.draftCheckpointScheduler = clock
+    #expect(controller.draftDebounceInterval == EditorWindowController.defaultDraftDebounce)
+    #expect(controller.draftMaxInterval == EditorWindowController.defaultDraftMaxInterval)
+    let editor = try #require(Self.editor(of: controller))
+
+    // A keystroke every 0.5 s: the debounce alone would never fire.
+    var t: TimeInterval = 0
+    while t < 10 {
+        clock.advance(to: t)
+        editor.insertText("x", replacementRange: NSRange(location: 0, length: 0))
+        t += 0.5
+    }
+    controller.waitForDraftWrites()
+    #expect(drafts.drafts().isEmpty)
+
+    clock.advance(to: 10)
+    controller.waitForDraftWrites()
+    #expect(drafts.drafts().map(\.content) == [String(repeating: "x", count: 20)])
+
+    controller.window?.close()
+}
+
+@Test func theSnapshotCarriesTheBaselineDigestInsteadOfAMainThreadVerdict() throws {
+    let (drafts, _, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+    let url = try Self.writeFile(dir, "digest.txt", "baseline\n")
+
+    let controller = Self.makeController(drafts: drafts, session: session)
+    controller.load(url: url)
+    let editor = try #require(Self.editor(of: controller))
+    editor.insertText("x", replacementRange: NSRange(location: 0, length: 0))
+    editor.undoManager?.undo()
+
+    // The main thread hands over text + digest; deciding "back at baseline"
+    // is the background job's business.
+    let snapshot = controller.makeDraftSnapshot()
+    #expect(snapshot.content == "baseline\n")
+    #expect(snapshot.baselineDigest == controller.documentController.baselineSHA256)
+    #expect(snapshot.id == controller.draftID)
+    #expect(snapshot.originalPath == url.path)
+    #expect(snapshot.matchesBaseline())
+
+    controller.flushDraftNow()
+    controller.waitForDraftWrites()
+    #expect(drafts.drafts().isEmpty)
+
+    controller.window?.close()
+}
+
+@Test func aDraftOfALoadedFileRecordsItsDiskBase() throws {
+    let (drafts, _, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+    let url = try Self.writeFile(dir, "based.txt", "on disk\n")
+
+    let controller = Self.makeController(drafts: drafts, session: session)
+    controller.load(url: url)
+    let diskState = try #require(controller.documentController.diskState)
+    Self.editor(of: controller)?.insertText("edit ", replacementRange: NSRange(location: 0, length: 0))
+    controller.flushDraftNow()
+    controller.waitForDraftWrites()
+
+    let saved = try #require(drafts.drafts().first)
+    #expect(saved.base == diskState)
+    #expect(saved.base == controller.documentController.diskState)
+
+    controller.window?.close()
+}
+
+@Test func aFailingDraftWriteFlashesOnceUntilAWriteSucceeds() throws {
+    let dir = try Self.makeTempDir()
+    let (session, dropSession) = Self.makeSessionStore()
+    defer { dropSession(); try? FileManager.default.removeItem(at: dir) }
+    // A regular file where the drafts directory should be: every write fails.
+    let draftsDir = dir.appendingPathComponent("Drafts")
+    let block = { try Data("in the way".utf8).write(to: draftsDir) }
+    try block()
+    let drafts = DraftStore(directory: draftsDir)
+
+    let controller = Self.makeController(drafts: drafts, session: session)
+    var flashes: [String] = []
+    controller.statusFlashObserver = { flashes.append($0) }
+    let editor = try #require(Self.editor(of: controller))
+
+    editor.insertText("a", replacementRange: NSRange(location: 0, length: 0))
+    controller.flushDraftNow()
+    controller.waitForDraftWrites()
+    #expect(controller.draftCheckpointFailing)
+    #expect(flashes == [L10n.t(.draftCheckpointFailed)])
+
+    editor.insertText("b", replacementRange: NSRange(location: 0, length: 0))
+    controller.flushDraftNow()
+    controller.waitForDraftWrites()
+    #expect(controller.draftCheckpointFailing)
+    #expect(flashes.count == 1)                 // consecutive failure: quiet
+
+    // The obstacle goes away: the next write lands and re-arms the note.
+    try FileManager.default.removeItem(at: draftsDir)
+    editor.insertText("c", replacementRange: NSRange(location: 0, length: 0))
+    controller.flushDraftNow()
+    controller.waitForDraftWrites()
+    #expect(!controller.draftCheckpointFailing)
+    #expect(drafts.drafts().map(\.content) == ["cba"])
+    #expect(flashes.count == 1)
+
+    // A fresh failure after that success is reported again.
+    try FileManager.default.removeItem(at: draftsDir)
+    try block()
+    editor.insertText("d", replacementRange: NSRange(location: 0, length: 0))
+    controller.flushDraftNow()
+    controller.waitForDraftWrites()
+    #expect(controller.draftCheckpointFailing)
+    #expect(flashes == [L10n.t(.draftCheckpointFailed), L10n.t(.draftCheckpointFailed)])
+
+    controller.window?.close()
+}
+
 // MARK: - 3. Close vs. quit
 
 @Test func closingAWindowByHandRemovesItsDraft() {

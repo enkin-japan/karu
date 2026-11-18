@@ -405,3 +405,61 @@ private func makeFindBar(compact: Bool) -> FindBarController {
     #expect(buttons.allSatisfy { $0.toolTip != "stale" })
 }
 
+// MARK: - Write schedule (R05)
+//
+// The pad's debounced write gets the editor's maximum interval: typing that
+// never pauses for the debounce still lands on disk. Driven by an injected
+// clock, so no real waiting.
+
+@MainActor
+@Test func padWritesWithinTheMaximumIntervalWhileTypingNeverPauses() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("KaruPadSchedule-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = ScratchpadStore(directory: dir)
+    let controller = ScratchpadController(store: store)
+    let clock = ManualCheckpointScheduler()
+    controller.flushScheduler = clock
+    #expect(controller.debounceInterval == ScratchpadController.defaultDebounceInterval)
+    #expect(controller.maxFlushInterval == ScratchpadController.defaultMaxFlushInterval)
+    controller.show()
+    defer { controller.hide() }
+    let textView = try #require(controller.diagnosticTextView)
+
+    var t: TimeInterval = 0
+    while t < 10 {
+        clock.advance(to: t)
+        textView.insertText("x", replacementRange: NSRange(location: 0, length: 0))
+        t += 0.5
+    }
+    #expect(store.load().loadedText == nil)
+    clock.advance(to: 10)
+    #expect(store.load().loadedText == String(repeating: "x", count: 20))
+}
+
+@MainActor
+@Test func padSingleEditWritesAfterTheDebounceAndHideLeavesNothingScheduled() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("KaruPadSchedule-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = ScratchpadStore(directory: dir)
+    let controller = ScratchpadController(store: store)
+    let clock = ManualCheckpointScheduler()
+    controller.flushScheduler = clock
+    controller.show()
+    let textView = try #require(controller.diagnosticTextView)
+
+    textView.insertText("note", replacementRange: NSRange(location: 0, length: 0))
+    clock.advance(to: 1.4)
+    #expect(store.load().loadedText == nil)
+    clock.advance(to: 1.5)
+    #expect(store.load().loadedText == "note")
+    #expect(clock.liveCount == 0)
+
+    // An edit, then hide: written by the hide itself, nothing left scheduled.
+    textView.insertText("more ", replacementRange: NSRange(location: 0, length: 0))
+    #expect(clock.liveCount == 1)
+    controller.hide()
+    #expect(clock.liveCount == 0)
+    #expect(controller.diagnosticPanel == nil)
+    #expect(store.load().loadedText == "more note")
+}
+
