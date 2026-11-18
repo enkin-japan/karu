@@ -216,7 +216,7 @@ public enum LanguageSniffer {
     /// A truncated-and-therefore-unparseable sample falls through to scoring.
     private static func sniffJSON(lines: [String]) -> String? {
         let jsonSample = lines.prefix(50).joined(separator: "\n")
-        if (try? JSONFormatter.prettyPrint(jsonSample)) != nil { return "json" }
+        if JSONFormatter.isValid(jsonSample) { return "json" }
 
         var total = 0
         var parsed = 0
@@ -224,7 +224,7 @@ public enum LanguageSniffer {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
             total += 1
-            if (try? JSONFormatter.prettyPrint(trimmed)) != nil { parsed += 1 }
+            if JSONFormatter.isValid(trimmed) { parsed += 1 }
         }
         if total >= 2 && parsed == total { return "jsonl" }
         return nil
