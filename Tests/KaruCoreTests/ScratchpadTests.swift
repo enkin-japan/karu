@@ -32,7 +32,7 @@ private func makeScratchpadStore() -> (ScratchpadStore, () -> Void) {
     defer { cleanup() }
 
     store.write("first note\nsecond line\n")
-    #expect(store.read() == "first note\nsecond line\n")
+    #expect(store.load().loadedText == "first note\nsecond line\n")
 }
 
 @Test func scratchpadWriteReplacesPreviousContent() {
@@ -41,14 +41,14 @@ private func makeScratchpadStore() -> (ScratchpadStore, () -> Void) {
 
     store.write("old and rather long")
     store.write("new")
-    #expect(store.read() == "new")
+    #expect(store.load().loadedText == "new")
 }
 
-@Test func scratchpadReadsEmptyWhenNothingWasEverWritten() {
+@Test func scratchpadLoadsMissingWhenNothingWasEverWritten() {
     let (store, cleanup) = makeScratchpadStore()
     defer { cleanup() }
 
-    #expect(store.read() == "")
+    #expect(store.load().isMissing)
 }
 
 @Test func scratchpadClearEmptiesThePad() {
@@ -57,10 +57,10 @@ private func makeScratchpadStore() -> (ScratchpadStore, () -> Void) {
 
     store.write("graduated into a file")
     store.clear()
-    #expect(store.read() == "")
+    #expect(store.load().isMissing)
     // Clearing twice is a no-op, not a failure.
     store.clear()
-    #expect(store.read() == "")
+    #expect(store.load().isMissing)
 }
 
 @Test func scratchpadIsPinnedByDefaultAndFollowsTheStoredFlag() {

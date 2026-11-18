@@ -243,7 +243,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.scratchpadController.hide()
                         let visible = NSApp.windows.filter { $0.isVisible }.count
                         var dump = "panelNil=\(self.scratchpadController.diagnosticPanel == nil)\n"
-                        dump += "storeContent=\(String(self.scratchpadController.store.read().prefix(80)))\n"
+                        var stored = ""
+                        if case .text(let text) = self.scratchpadController.store.load() { stored = text }
+                        dump += "storeContent=\(String(stored.prefix(80)))\n"
                         dump += "windowsVisible=\(visible)\n"
                         try? dump.write(toFile: outPath, atomically: true, encoding: .utf8)
                         NSApp.terminate(nil)

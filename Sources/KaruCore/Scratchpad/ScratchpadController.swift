@@ -121,7 +121,35 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
             presentPanel(panel)
             return
         }
-        let panel = makePanel()
+        // Load *before* anything is built (R02). A file that exists but cannot
+        // be read must never reach a text view: every hide/flush path writes the
+        // text view back, and an empty one would wipe the user's notes. Bailing
+        // out here leaves the controller exactly as if `show()` had not run, so
+        // nothing can write, and the next `show()` simply tries again.
+        let content: String
+        var preservedURL: URL?
+        switch store.load() {
+        case .missing:
+            content = ""
+        case .text(let text):
+            content = text
+        case .failure(.undecodable):
+            // Bytes are there but are not UTF-8: set them aside by renaming, so
+            // the pad can open empty without its first write destroying them.
+            // If even the rename fails, the file stays put and the pad stays shut.
+            switch store.preserveUndecodableContent() {
+            case .success(let url):
+                content = ""
+                preservedURL = url
+            case .failure(let error):
+                reportLoadFailure(.unreadable(error))
+                return
+            }
+        case .failure(let failure):
+            reportLoadFailure(failure)
+            return
+        }
+        let panel = makePanel(content: content)
         self.panel = panel
         NotificationCenter.default.addObserver(self, selector: #selector(updatePinButton), name: SettingsArchive.didImport, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(shortcutTooltipsChanged),
@@ -134,6 +162,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
             panel.center()
         }
         presentPanel(panel)
+        if let preservedURL { reportPreservedContent(at: preservedURL) }
     }
 
     /// Flushes, remembers the frame and then tears the panel down completely.
@@ -143,7 +172,7 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     /// its layout manager and text storage) resident for a panel nobody is
     /// looking at, which is exactly the cost this design refuses to pay.
     public func hide() {
-        guard !isGraduating, !presentingPersistenceError, let panel else { return }
+        guard !isGraduating, !presentingPersistenceError, !presentingLoadNotice, let panel else { return }
         cancelFlush()
         guard flushNow() else { return }
         panel.saveFrame(usingName: Self.frameAutosaveName)
@@ -191,7 +220,9 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
 
     // MARK: - Construction
 
-    private func makePanel() -> NSPanel {
+    /// Builds the panel around `content`, which `show()` has already loaded —
+    /// construction itself never touches the disk.
+    private func makePanel(content: String) -> NSPanel {
         // A *standard* titled panel, not `.utilityWindow` (T15.4, user verdict:
         // the self-drawn 20 pt header looked worse than the system title bar).
         // Dropping the utility style is what lets the pin live in the title bar:
@@ -245,7 +276,6 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
-        let content = store.read()
         textView.string = content
         scrollView.documentView = textView
         self.textView = textView
@@ -570,6 +600,61 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
         }
     }
 
+    // MARK: - Load failures (R02)
+
+    /// Injectable like `persistenceErrorHandler`, so tests need no real alert.
+    /// Called when `show()` refused to open because the file could not be read
+    /// (or was undecodable and could not be set aside).
+    var loadFailureHandler: ((ScratchpadLoadFailure) -> Void)?
+    /// Called with the preserved file's URL after an undecodable `content.txt`
+    /// was renamed aside and the pad opened empty.
+    var preservedContentHandler: ((URL) -> Void)?
+    /// True while the "old notes were set aside" sheet is up; like
+    /// `presentingPersistenceError` it keeps the panel from hiding under it.
+    private var presentingLoadNotice = false
+
+    /// There is no panel to hang a sheet on, so this is an application-modal
+    /// alert. The file has been left exactly as it was.
+    private func reportLoadFailure(_ failure: ScratchpadLoadFailure) {
+        if let loadFailureHandler {
+            loadFailureHandler(failure)
+            return
+        }
+        let detail: String
+        switch failure {
+        case .unreadable(let error): detail = error.localizedDescription
+        case .undecodable: detail = L10n.t(.scratchpadKeptAsideTitle)
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n.t(.scratchpadLoadFailedTitle)
+        alert.informativeText = L10n.t(.scratchpadLoadFailedMessage, store.contentURL.path, detail)
+        alert.addButton(withTitle: L10n.t(.scratchpadNoticeOK))
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// A sheet on the pad: same Space and always above it, like the save sheet.
+    private func reportPreservedContent(at url: URL) {
+        if let preservedContentHandler {
+            preservedContentHandler(url)
+            return
+        }
+        guard let panel else { return }
+        let alert = NSAlert()
+        alert.messageText = L10n.t(.scratchpadKeptAsideTitle)
+        alert.informativeText = L10n.t(.scratchpadKeptAsideMessage, url.path)
+        alert.addButton(withTitle: L10n.t(.scratchpadNoticeOK))
+        alert.addButton(withTitle: L10n.t(.scratchpadShowInFinder))
+        presentingLoadNotice = true
+        alert.beginSheetModal(for: panel) { [weak self] response in
+            self?.presentingLoadNotice = false
+            if response == .alertSecondButtonReturn {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        }
+    }
+
     // MARK: - Graduation (⌘S)
 
     /// Moves the pad's contents into a real file and opens it in the editor.
@@ -660,7 +745,8 @@ public final class ScratchpadController: NSObject, NSWindowDelegate {
     }
 
     @objc private func panelDidResignKey(_ notification: Notification) {
-        guard !isGraduating, !presentingPersistenceError, !ScratchpadStore.isPinned() else { return }
+        guard !isGraduating, !presentingPersistenceError, !presentingLoadNotice,
+              !ScratchpadStore.isPinned() else { return }
         hide()
     }
 }

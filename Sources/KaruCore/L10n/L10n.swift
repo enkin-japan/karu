@@ -111,6 +111,10 @@ public enum L10nKey: String, CaseIterable, Sendable {
     // Scratchpad title-bar buttons (T15.6): to-do cycle + pin, both carrying
     // their key equivalent in the tooltip (the pad has no menu to show it in).
     case scratchpadTodoTooltip, scratchpadPinTooltip
+    // Scratchpad load failures (R02): an undecodable file set aside, or a file
+    // that could not be read at all (the pad then refuses to open).
+    case scratchpadKeptAsideTitle, scratchpadKeptAsideMessage, scratchpadShowInFinder, scratchpadNoticeOK
+    case scratchpadLoadFailedTitle, scratchpadLoadFailedMessage
     // Hovering a detected URL (T15.8): the ⌘ modifier is undiscoverable without it.
     case linkOpenTooltip
     // Language menu.

@@ -187,7 +187,7 @@ struct MaintenanceRegressionTests {
         try FileManager.default.removeItem(at: blocked)
         controller.hide()
         #expect(controller.diagnosticPanel == nil)
-        #expect(controller.store.read() == "unsaved scratch text")
+        #expect(controller.store.load().loadedText == "unsaved scratch text")
     }
 
     @Test(arguments: [true, false]) func explicitOpenStillRecoversCrashDrafts(finder: Bool) throws {

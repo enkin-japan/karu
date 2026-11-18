@@ -1,11 +1,31 @@
 import Foundation
 
+/// What ``ScratchpadStore/load()`` found on disk.
+public enum ScratchpadLoadResult {
+    /// Nothing has been written yet — an empty pad is the right answer.
+    case missing
+    /// The stored text (possibly empty: a 0-byte file is valid UTF-8).
+    case text(String)
+    /// Something is there but could not be turned into text. Never treat this
+    /// as empty: a later write would replace the user's notes with nothing.
+    case failure(ScratchpadLoadFailure)
+}
+
+/// Why a scratchpad file that exists could not be loaded.
+public enum ScratchpadLoadFailure: Error {
+    /// The file could not be read (permissions, I/O, a directory in its place…).
+    case unreadable(Error)
+    /// The bytes were read but are not valid UTF-8.
+    case undecodable
+}
+
 /// On-disk home of the always-available scratchpad (T15.1).
 ///
 /// Deliberately *not* a crash draft: `DraftStore` exists only while a window's
 /// buffer differs from disk and is wiped on a deliberate quit, whereas this file
 /// is a notebook the user expects to find untouched next launch — nothing but an
-/// explicit `clear()` (graduating the text into a real file) ever removes it.
+/// explicit `clear()` (graduating the text into a real file) ever removes it, and
+/// a file that cannot be decoded is only ever renamed aside, never emptied (R02).
 /// The two are fully independent: separate directory, separate lifecycle, and
 /// neither one's cleanup can reach the other's data.
 ///
@@ -80,12 +100,66 @@ public struct ScratchpadStore: Sendable {
             .appendingPathComponent("Scratchpad")
     }
 
-    /// The stored text, or `""` when nothing has been written yet (or the file
-    /// is unreadable — a fresh empty pad beats refusing to open).
-    public func read() -> String {
-        guard let data = try? Data(contentsOf: contentURL),
-              let text = String(data: data, encoding: .utf8) else { return "" }
-        return text
+    /// Reads the pad, keeping "nothing written yet" apart from "could not read
+    /// it" (R02). The two used to collapse into `""`, and the next flush then
+    /// wrote that empty string over notes that were merely unreadable.
+    ///
+    /// `.missing` only for a genuine absence: no such file, or a path component
+    /// that is not a directory (so `content.txt` cannot exist either). Every
+    /// other read error is `.unreadable`. A 0-byte file is `.text("")`.
+    public func load() -> ScratchpadLoadResult {
+        let data: Data
+        do {
+            data = try Data(contentsOf: contentURL)
+        } catch {
+            return Self.isNoSuchFile(error) ? .missing : .failure(.unreadable(error))
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            return .failure(.undecodable)
+        }
+        return .text(text)
+    }
+
+    /// Sets an undecodable `content.txt` aside as
+    /// `content.unreadable-<yyyyMMdd-HHmmss>.txt` in the same directory, so the
+    /// pad can start empty without its next write destroying the old bytes.
+    ///
+    /// A plain `rename(2)` with `RENAME_EXCL` — never copy-and-delete, never
+    /// overwriting: when the name is taken (an earlier preservation in the same
+    /// second) a `-2`, `-3`, … suffix is tried instead. Returns the new URL.
+    public func preserveUndecodableContent(date: Date = Date()) -> Result<URL, Error> {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: date)
+        let source = contentURL
+        for attempt in 1...1000 {
+            let suffix = attempt == 1 ? "" : "-\(attempt)"
+            let target = directory.appendingPathComponent("content.unreadable-\(stamp)\(suffix).txt")
+            let status = source.withUnsafeFileSystemRepresentation { from in
+                target.withUnsafeFileSystemRepresentation { to -> Int32 in
+                    guard let from, let to else { return -1 }
+                    return renamex_np(from, to, UInt32(RENAME_EXCL))
+                }
+            }
+            if status == 0 { return .success(target) }
+            let code = errno
+            if code == EEXIST { continue }
+            return .failure(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO))
+        }
+        return .failure(POSIXError(.EEXIST))
+    }
+
+    private static func isNoSuchFile(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+           underlying.domain == NSPOSIXErrorDomain {
+            return underlying.code == Int(ENOENT) || underlying.code == Int(ENOTDIR)
+        }
+        if nsError.domain == NSPOSIXErrorDomain {
+            return nsError.code == Int(ENOENT) || nsError.code == Int(ENOTDIR)
+        }
+        return nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError
     }
 
     /// Reports persistence failure so the owner can keep the only live copy.
@@ -107,7 +181,8 @@ public struct ScratchpadStore: Sendable {
         try? FileManager.default.removeItem(at: contentURL)
     }
 
-    private var contentURL: URL {
+    /// The pad's file, for error messages that need to name it.
+    public var contentURL: URL {
         directory.appendingPathComponent(Self.contentFileName)
     }
 }
