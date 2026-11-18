@@ -23,6 +23,16 @@ public final class DocumentController {
     /// document treats "" as its baseline.
     private var baselineDigest: SHA256.Digest = SHA256.hash(data: Data())
 
+    /// What the file looked like on disk at the last load / reload / save
+    /// (R01): `stat` stamp plus SHA-256 of the raw bytes. `nil` until the
+    /// document has been read from or written to disk. Used by the pre-save
+    /// conflict check and `externalChange()`.
+    public private(set) var diskState: DiskState?
+
+    /// Performs the identity-preserving write. Internal so tests can inject the
+    /// writer's `beforeReplace` seam.
+    var writer = SafeFileWriter()
+
     public init(fileURL: URL? = nil) {
         self.fileURL = fileURL
     }
@@ -45,12 +55,27 @@ public final class DocumentController {
         fileURL?.lastPathComponent ?? "Untitled"
     }
 
-    public enum DocumentError: Error {
+    public enum DocumentError: Error, Equatable {
         /// A plain `save` was requested but the document has no URL yet.
         case noFileURL
         /// A manual "Reopen with Encoding" failed: the chosen encoding could not
         /// decode the file's bytes.
         case decodingFailed
+        /// The file on disk changed (different bytes) since it was last loaded
+        /// or saved; nothing was written. Retry with
+        /// `save(text:overwritingExternalChanges: true)` to overwrite.
+        case changedOnDisk
+    }
+
+    /// Result of `externalChange()`.
+    public enum ExternalChange: Equatable, Sendable {
+        /// The file still holds the bytes last loaded/saved (or there is
+        /// nothing to compare against).
+        case none
+        /// The file's bytes differ from the last loaded/saved bytes.
+        case modified
+        /// Nothing exists at the file's path any more.
+        case removed
     }
 
     /// Failure modes of `rename(to:)`. Kept a distinct type so the UI layer can
@@ -88,10 +113,16 @@ public final class DocumentController {
     /// source encoding was, the document is saved back as UTF-8.
     @discardableResult
     public func load(from url: URL) throws -> String {
+        // Disk state first, decode second: if the file is replaced in between,
+        // the recorded state describes the *older* bytes, so the next save sees
+        // a conflict rather than silently overwriting text never shown.
+        // Non-throwing so `decodeText` keeps producing exactly today's errors.
+        let state = try? DiskState.read(url)
         let text = try Self.decodeText(from: url)
         fileURL = url
         isDirty = false
         setBaseline(text: text)
+        diskState = state
         return text
     }
 
@@ -145,6 +176,9 @@ public final class DocumentController {
     /// chosen encoding. Used by File ▸ Reopen with Encoding.
     @discardableResult
     public func reload(from url: URL, encoding: TextEncoding) throws -> String {
+        // Stamp before reading (same reasoning as `load`); the digest is of the
+        // very bytes decoded, so no second read is needed here.
+        let stamp = DiskState.Stamp.of(url)
         let data = try Data(contentsOf: url)
         guard let text = Self.decode(data, encoding: encoding.encoding) else {
             throw DocumentError.decodingFailed
@@ -152,28 +186,75 @@ public final class DocumentController {
         fileURL = url
         isDirty = false
         setBaseline(text: text)
+        diskState = stamp.map { DiskState(stamp: $0, digest: DiskState.digest(of: data)) }
         return text
     }
 
     /// Writes `text` to the current file. Fails if there is no file yet.
-    public func save(text: String) throws {
+    ///
+    /// Unless `overwritingExternalChanges` is set, first checks that the file
+    /// still holds the bytes last loaded/saved: an unchanged `stat` stamp, or a
+    /// changed stamp with an identical SHA-256 (touch / identical rewrite), lets
+    /// the write proceed; different bytes throw `DocumentError.changedOnDisk`
+    /// and write nothing (dirty flag, baseline and `diskState` untouched). A
+    /// missing file is re-created, not a conflict.
+    public func save(text: String, overwritingExternalChanges: Bool = false) throws {
         guard let url = fileURL else { throw DocumentError.noFileURL }
-        try write(text, to: url)
-        isDirty = false
-        setBaseline(text: text)
+        let expectation: SafeFileWriter.Expectation
+        if overwritingExternalChanges {
+            expectation = .unchecked
+        } else {
+            expectation = try preSaveCheck(url)
+        }
+        try write(text, to: url, expecting: expectation)
     }
 
     /// Writes `text` to `url`, adopts it as the current file, and clears the
-    /// dirty flag. Implements "Save As…".
+    /// dirty flag. Implements "Save As…". No conflict check (the save panel has
+    /// already confirmed replacing), but the same identity-preserving write.
     public func save(text: String, to url: URL) throws {
-        try write(text, to: url)
+        try write(text, to: url, expecting: .unchecked)
         fileURL = url
-        isDirty = false
-        setBaseline(text: text)
     }
 
-    private func write(_ text: String, to url: URL) throws {
-        try Data(text.utf8).write(to: url, options: .atomic)
+    /// Conflict check against `diskState`. Returns what the writer must still
+    /// find at replace time.
+    private func preSaveCheck(_ url: URL) throws -> SafeFileWriter.Expectation {
+        guard let recorded = diskState else { return .unchecked }
+        let target = SafeFileWriter.resolveSymlinks(url)
+        guard let stamp = DiskState.Stamp.of(target) else { return .missing }
+        if stamp == recorded.stamp { return .stamp(stamp) }
+        let current = try DiskState.read(target)
+        guard current.digest == recorded.digest else { throw DocumentError.changedOnDisk }
+        // Same bytes, only metadata moved; the writer must see *this* stamp.
+        return .stamp(current.stamp)
+    }
+
+    private func write(_ text: String, to url: URL,
+                       expecting expectation: SafeFileWriter.Expectation) throws {
+        let data = Data(text.utf8)
+        let stamp = try writer.write(data, to: url, expecting: expectation)
+        isDirty = false
+        setBaseline(text: text)
+        diskState = DiskState(stamp: stamp, digest: DiskState.digest(of: data))
+    }
+
+    // MARK: - External change query
+
+    /// Whether the file changed on disk since the last load / reload / save.
+    /// `stat` first; the bytes are read and hashed only when the stamp
+    /// differs. A metadata-only change (same bytes) returns `.none` and adopts
+    /// the new stamp so later checks are cheap again. One-shot: no watcher,
+    /// timer or observer.
+    public func externalChange() -> ExternalChange {
+        guard let url = fileURL, let recorded = diskState else { return .none }
+        let target = SafeFileWriter.resolveSymlinks(url)
+        guard let stamp = DiskState.Stamp.of(target) else { return .removed }
+        if stamp == recorded.stamp { return .none }
+        guard let current = try? DiskState.read(target) else { return .modified }
+        guard current.digest == recorded.digest else { return .modified }
+        diskState = DiskState(stamp: current.stamp, digest: recorded.digest)
+        return .none
     }
 
     // MARK: - Rename
