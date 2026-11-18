@@ -147,6 +147,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                              restoring: shouldRestoreSession)
         NSApp.activate(ignoringOtherApps: true)
 
+        // Benchmark evidence hook (R11, scripts/mem-benchmark.sh):
+        // KARU_BENCH_REPORT=<absolute path> writes which document the front
+        // window shows and whether it is on screen (DiagnosticHost). Zero
+        // cost when unset.
+        if let reportPath = environment["KARU_BENCH_REPORT"], reportPath.hasPrefix("/") {
+            MainActor.assumeIsolated {
+                DiagnosticHost.scheduleBenchReport(to: reportPath) { [weak self] in
+                    self?.windowControllers ?? []
+                }
+            }
+        }
+
         // Scratchpad (T15.1). Installed after the windows exist so the status
         // item's own window can never be mistaken for the editor by the snapshot
         // hook below (it walks `NSApp.windows` in creation order).
@@ -692,12 +704,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Render the theme frame (contentView's superview) when available
                 // so the capture includes the titlebar/toolbar — needed to catch
                 // titlebar-transparency / content-underlap bugs.
-                if let contentView = NSApp.windows.first(where: { $0.isVisible })?.contentView,
+                if let window = NSApp.windows.first(where: { $0.isVisible }),
+                   let contentView = window.contentView,
                    let view = contentView.superview ?? contentView as NSView?,
                    let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                     view.cacheDisplay(in: view.bounds, to: rep)
                     try? rep.representation(using: .png, properties: [:])?
                         .write(to: URL(fileURLWithPath: snapshotPath))
+                    // Geometry sidecar (R12): shown document and the text-area /
+                    // gutter / first-line rects in snapshot pixels.
+                    MainActor.assumeIsolated {
+                        DiagnosticHost.writeSnapshotGeometry(window: window, view: view, rep: rep,
+                                                             to: snapshotPath + ".json")
+                    }
                     // Companion hierarchy dump for frame-level diagnostics.
                     var dump = "windows=\(NSApp.windows.filter { $0.isVisible && $0.contentView != nil }.count)\n"
                     func walk(_ v: NSView, _ depth: Int) {

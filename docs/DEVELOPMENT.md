@@ -70,8 +70,12 @@
   和草稿本，并在每次启动时重置诊断会话。诊断 defaults 域为
   `dev.enkin.Karu.Diagnostics.<临时目录末段>`，结束后可清理该域；它不隔离全局字体/语言偏好，
   因此探针不要改用户偏好。测试跨启动恢复应使用可注入 stores，不依赖这个清空会话的入口。
-- 可用 `KARU_SNAPSHOT=<临时 PNG 路径> .build/release/KaruApp <夹具文件>` 自渲染快照。
-  visual-smoke 包含空白窗口与真实 App 折叠几何检查；通过不代表滚动合成和全屏交互已通过。
+- 可用 `KARU_SNAPSHOT=<临时 PNG 路径> .build/release/KaruApp <夹具文件>` 自渲染快照，旁边另写 `<PNG>.json`
+  几何旁注（显示的文档、文本区 / 行号栏 / 第一行在快照像素中的矩形、行数、backing scale；`App/DiagnosticHost.swift`）。
+  visual-smoke 自建临时诊断目录运行，通过意味着：窗口显示的正是脚本创建的样例文件，第一行矩形内画出了文字，
+  行号栏里每行都有行号，整图亮暗比例正常，且真实 App 的一键折叠几何正确。它**不**覆盖滚动合成、输入法、全屏、
+  VoiceOver，也不覆盖任何提示框、表单或横幅。`bash scripts/tests/visual-smoke-selftest.sh` 不启动 App，
+  用合成图证明空白文本区、空白行号栏和错误文档各自会失败。
 - 更多探针入口位于 `AppDelegate.swift`：`KARU_FOLDTEST`、`KARU_SCRATCHTEST`、
   `KARU_LINKTEST`、`KARU_SESSIONTEST`、`KARU_SCROLLTEST`、`KARU_INDENTTEST`、
   `KARU_DOTTEST`、`KARU_GHOSTTEST`。参数不统一，运行前读当前实现，不猜测调用方式。
@@ -116,7 +120,11 @@
   测试一律用注入的项目根与解释器（`ImportHarness`），`RecordingFileSystem.touchedOnMainThread` 断言主线程不读盘。
 - `mem-benchmark.sh` 可用 `KARU_BENCH_APP_BIN=<二进制>` 指定被测构建（同机 A/B，跳过构建）；正式三轮之后
   另有两轮「推断样本（参考）」（`Tests/Fixtures/M17/inference/sample_1000.py` / `.ts`，只查 99 MB 上限）。
-  各轮以 kill 结束，整体运行时应设置 `KARU_DIAGNOSTIC_DIRECTORY`，否则下一轮会恢复上一轮打开的文件。
+  R11 起每轮自带临时 `KARU_DIAGNOSTIC_DIRECTORY`（调用方的值被覆盖），并以 `KARU_BENCH_REPORT` 让 App 写出实际打开的文档、
+  长度、窗口尺寸与可见性；每个读数标注口径（phys_footprint / rss），报告头记录二进制 SHA-256、HEAD 与是否 dirty、分配器、
+  系统版本，每轮另记 footprint 的 IOSurface / CoreAnimation 分类。退出码：0 = 每轮有证据且未超上限；1 = 有效证据超上限（优先）；
+  2 = 无证据可判通过（RSS 或混合口径、跳过、未稳定、没打开预期文件）。判定逻辑由
+  `bash scripts/tests/mem-benchmark-selftest.sh` 用假采样器自检，不启动 App。
 - 采样为稳定采样：每轮持续轮询 phys_footprint，最近 2 s 波动不超过 0.5 MB 才取值，最长等 20 s
   （超时取最后读数并标“未稳定”）；表格末列「稳定于」为读数稳定的时刻（距启动秒数）。旧版固定 3 s
   采样会随时序落在启动期一次约 +20 MB 阶跃的前或后，产生假回归；与旧记录对比时注意口径不同。
