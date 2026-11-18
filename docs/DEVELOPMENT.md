@@ -3,6 +3,8 @@
 本文件描述当前工作方式；入口和任务路由见 [AGENTS.md](../AGENTS.md)，
 资源预算与产品边界见 [ARCHITECTURE.md](ARCHITECTURE.md)，历史证据见
 [LEDGER.md](LEDGER.md)，安装与发布见 [RELEASE.md](RELEASE.md)。
+2026-11-18 工程审查的核实结论与修复任务（F1–F15）见 [可靠性修复方案](RELIABILITY-PLAN.md)；
+做保存、草稿、搜索、格式化、导入上限或验收脚本相关的工作前先读它。
 
 ## 开始任务
 
