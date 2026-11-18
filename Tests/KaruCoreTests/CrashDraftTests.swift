@@ -8,8 +8,9 @@ import Testing
 //   1. `DraftStore` as pure filesystem logic (round-trip, overwrite, corruption),
 //   2. the window controller's arbitration rule — a draft exists exactly while
 //      the buffer differs from the saved baseline — and its close/save hooks,
-//   3. `AppDelegate.restoreDrafts()` (untitled / file / disk-newer / orphan) plus
-//      the wipe on a deliberate quit.
+//   3. `AppDelegate.restoreDrafts()` (untitled / file / orphan, and the R07 / D4
+//      conflict cases where the draft is kept as an untitled copy) plus the
+//      wipe on a deliberate quit.
 //
 // Every case runs against its own temporary drafts directory (and, where a
 // document is loaded, its own UserDefaults suite), so neither the developer's
@@ -368,7 +369,9 @@ private static func untitledWindow(holding content: String) -> EditorWindowContr
     controller.window?.close()
 }
 
-@Test func aFileTouchedAfterTheDraftWinsAndTheDraftIsDropped() throws {
+// Formerly `aFileTouchedAfterTheDraftWinsAndTheDraftIsDropped`: under R07 / D4
+// a base-less draft whose file is newer is kept as an untitled copy instead.
+@Test func aFileTouchedAfterABaselessDraftKeepsTheDraftAsACopy() throws {
     let (drafts, _, dropDrafts) = Self.makeDraftStore()
     let (session, dropSession) = Self.makeSessionStore()
     let dir = try Self.makeTempDir()
@@ -376,19 +379,293 @@ private static func untitledWindow(holding content: String) -> EditorWindowContr
 
     let url = try Self.writeFile(dir, "raced.txt", "newer on disk\n")
     session.record(path: url.path, caret: 0, scrollY: 0)
-    drafts.write(id: UUID(), content: "stale draft\n", originalPath: url.path)
+    let id = UUID()
+    drafts.write(id: id, content: "stale draft\n", originalPath: url.path)
     try Self.setModificationDate(url, offset: 600)     // edited after the draft
 
     let delegate = AppDelegate()
     delegate.draftStore = drafts
     delegate.sessionStore = session
     #expect(delegate.restoreSession() == 1)
-    #expect(delegate.restoreDrafts() == 0)
+    #expect(delegate.restoreDrafts() == 1)
 
     let controller = try #require(Self.window(for: url))
     #expect(Self.editor(of: controller)?.string == "newer on disk\n")
     #expect(controller.documentController.isDirty == false)
+    let copy = try #require(Self.untitledWindow(holding: "stale draft\n"))
+    #expect(copy.documentController.isDirty)
+    #expect(copy.draftID == id)
+    #expect(drafts.drafts().map(\.id) == [id])
+
+    copy.window?.close()
+    controller.window?.close()
+}
+
+// MARK: - 4b. Restore conflicts (R07 / D4): never delete the only copy
+
+/// The disk state a window would record right after loading `url`.
+private static func base(of url: URL) throws -> DiskState {
+    try DiskState.read(url)
+}
+
+/// Rewrites `url` in place (same inode), as an editor saving without rename.
+private static func overwriteInPlace(_ url: URL, _ text: String) throws {
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.truncate(atOffset: 0)
+    try handle.write(contentsOf: Data(text.utf8))
+}
+
+/// Replaces `url` with a new file holding `text` via rename(2) (new inode),
+/// as an atomic-save editor or a sync client does.
+private static func replaceByRename(_ url: URL, _ text: String) throws {
+    let temp = url.deletingLastPathComponent()
+        .appendingPathComponent(".replace-\(UUID().uuidString)")
+    try Data(text.utf8).write(to: temp)
+    let failed = temp.withUnsafeFileSystemRepresentation { src in
+        url.withUnsafeFileSystemRepresentation { dst in
+            Foundation.rename(src!, dst!) != 0
+        }
+    }
+    if failed { throw POSIXError(.EIO) }
+}
+
+/// Every open editor window showing `url` (to catch duplicates).
+private static func windows(for url: URL) -> [EditorWindowController] {
+    NSApplication.shared.windows
+        .compactMap { $0.windowController as? EditorWindowController }
+        .filter { $0.currentFileURL.map { UbiquitousFile.sameFile($0, url) } ?? false }
+}
+
+/// Writes a pre-R06 draft pair (`<uuid>` content + `<uuid>.json` sidecar).
+private static func writeLegacyDraft(_ dir: URL, id: UUID, content: String,
+                                     path: String, savedAt: Date) throws {
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Data(content.utf8).write(to: dir.appendingPathComponent(id.uuidString))
+    let json = #"{"originalPath":"\#(path)","savedAt":\#(savedAt.timeIntervalSinceReferenceDate)}"#
+    try Data(json.utf8).write(to: dir.appendingPathComponent("\(id.uuidString).json"))
+}
+
+/// Runs a conflict scenario where the file changed after the draft (by
+/// `change`) and checks that both sides survive in their own windows.
+private func expectBothSidesKept(change: (URL) throws -> Void) throws {
+    let (drafts, _, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+
+    let url = try Self.writeFile(dir, "both.txt", "A\n")
+    let id = UUID()
+    drafts.write(id: id, content: "A\nmine\n", originalPath: url.path, base: try Self.base(of: url))
+    try change(url)
+    session.record(path: url.path, caret: 0, scrollY: 0)
+
+    let delegate = AppDelegate()
+    delegate.draftStore = drafts
+    delegate.sessionStore = session
+    #expect(delegate.restoreSession() == 1)
+    #expect(delegate.restoreDrafts() == 1)
+
+    // The file window shows the disk version, untouched, and is not duplicated.
+    #expect(Self.windows(for: url).count == 1)
+    let fileWindow = try #require(Self.window(for: url))
+    #expect(Self.editor(of: fileWindow)?.string == "A\ntheirs\n")
+    #expect(fileWindow.documentController.isDirty == false)
+    #expect(fileWindow.draftID != id)
+
+    // The draft comes back beside it as an untitled, edited copy that keeps
+    // the draft's identity — so its file still protects the text.
+    let copy = try #require(Self.untitledWindow(holding: "A\nmine\n"))
+    #expect(copy.currentFileURL == nil)
+    #expect(copy.documentController.isDirty)
+    #expect(copy.draftID == id)
+    #expect(drafts.drafts().map(\.id) == [id])
+    #expect(drafts.drafts().first?.content == "A\nmine\n")
+    // The copy is untitled from here on: its draft no longer names the file,
+    // so a second crash brings it back as untitled, not as another conflict.
+    #expect(drafts.drafts().first?.originalPath == nil)
+    // And nothing touched the file itself.
+    #expect(try String(contentsOf: url, encoding: .utf8) == "A\ntheirs\n")
+
+    copy.window?.close()
+    fileWindow.window?.close()
+}
+
+@Test func bothSidesChangedKeepsTheDiskWindowAndAnUntitledCopy() throws {
+    try expectBothSidesKept { try Self.overwriteInPlace($0, "A\ntheirs\n") }
+}
+
+@Test func aFileReplacedByRenameKeepsTheDiskWindowAndAnUntitledCopy() throws {
+    try expectBothSidesKept { try Self.replaceByRename($0, "A\ntheirs\n") }
+}
+
+@Test func onlyTheModificationTimeChangingStillAppliesTheDraft() throws {
+    let (drafts, _, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+
+    let url = try Self.writeFile(dir, "touched.txt", "A\n")
+    let id = UUID()
+    drafts.write(id: id, content: "A\nmine\n", originalPath: url.path, base: try Self.base(of: url))
+    // Identical bytes re-saved through a rename (new inode), then the mtime
+    // pushed well past the draft: a stamp change, not a content change.
+    try Self.replaceByRename(url, "A\n")
+    try Self.setModificationDate(url, offset: 600)
+    session.record(path: url.path, caret: 0, scrollY: 0)
+
+    let delegate = AppDelegate()
+    delegate.draftStore = drafts
+    delegate.sessionStore = session
+    #expect(delegate.restoreSession() == 1)
+    #expect(delegate.restoreDrafts() == 1)
+
+    #expect(Self.windows(for: url).count == 1)      // session window reused
+    let controller = try #require(Self.window(for: url))
+    #expect(Self.editor(of: controller)?.string == "A\nmine\n")
+    #expect(controller.documentController.isDirty)
+    #expect(controller.draftID == id)
+    #expect(Self.untitledWindow(holding: "A\nmine\n") == nil)
+    #expect(drafts.drafts().map(\.id) == [id])
+
+    controller.window?.close()
+}
+
+@Test func aDraftWithABaseWhoseFileVanishedComesBackAsUntitled() throws {
+    let (drafts, _, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+
+    let url = try Self.writeFile(dir, "gone.txt", "A\n")
+    let id = UUID()
+    drafts.write(id: id, content: "A\nonly copy\n", originalPath: url.path,
+                 base: try Self.base(of: url))
+    try FileManager.default.removeItem(at: url)
+
+    let delegate = AppDelegate()
+    delegate.draftStore = drafts
+    delegate.sessionStore = session
+    #expect(delegate.restoreDrafts() == 1)
+
+    let restored = try #require(Self.untitledWindow(holding: "A\nonly copy\n"))
+    #expect(restored.documentController.isDirty)
+    #expect(restored.draftID == id)
+    #expect(Self.windows(for: url).isEmpty)
+
+    restored.window?.close()
+}
+
+@Test func aDraftTheDiskAlreadyHoldsIsRemovedAndNotCounted() throws {
+    let (drafts, _, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+
+    let url = try Self.writeFile(dir, "same.txt", "A\n")
+    drafts.write(id: UUID(), content: "A\nmine\n", originalPath: url.path,
+                 base: try Self.base(of: url))
+    // The text did reach the disk (saved just before the crash, or by hand).
+    try Self.overwriteInPlace(url, "A\nmine\n")
+
+    let delegate = AppDelegate()
+    delegate.draftStore = drafts
+    delegate.sessionStore = session
+    #expect(delegate.restoreDrafts() == 0)
+
     #expect(drafts.drafts().isEmpty)
+    let controller = try #require(Self.window(for: url))
+    #expect(Self.editor(of: controller)?.string == "A\nmine\n")
+    #expect(controller.documentController.isDirty == false)
+    #expect(Self.untitledWindow(holding: "A\nmine\n") == nil)
+
+    controller.window?.close()
+}
+
+@Test func aLegacyDraftWhoseFileChangedLaterIsKeptAsACopy() throws {
+    let (drafts, draftsDir, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+
+    let url = try Self.writeFile(dir, "legacy.txt", "A\ntheirs\n")
+    let id = UUID()
+    try Self.writeLegacyDraft(draftsDir, id: id, content: "A\nmine\n", path: url.path,
+                              savedAt: Date().addingTimeInterval(-600))
+    #expect(drafts.drafts().first?.isLegacy == true)
+
+    let delegate = AppDelegate()
+    delegate.draftStore = drafts
+    delegate.sessionStore = session
+    #expect(delegate.restoreDrafts() == 1)
+
+    let fileWindow = try #require(Self.window(for: url))
+    #expect(Self.editor(of: fileWindow)?.string == "A\ntheirs\n")
+    #expect(fileWindow.documentController.isDirty == false)
+    let copy = try #require(Self.untitledWindow(holding: "A\nmine\n"))
+    #expect(copy.documentController.isDirty)
+    #expect(copy.draftID == id)
+    #expect(drafts.drafts().map(\.id) == [id])     // previously deleted
+
+    copy.window?.close()
+    fileWindow.window?.close()
+}
+
+@Test func aSecondDraftForTheSameFileIsNotPouredOverTheFirst() throws {
+    let (drafts, _, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+
+    let url = try Self.writeFile(dir, "twice.txt", "A\n")
+    let base = try Self.base(of: url)
+    let first = UUID()
+    let second = UUID()
+    drafts.write(id: first, content: "A\nfirst\n", originalPath: url.path, base: base)
+    Thread.sleep(forTimeInterval: 0.02)
+    drafts.write(id: second, content: "A\nsecond\n", originalPath: url.path, base: base)
+
+    let delegate = AppDelegate()
+    delegate.draftStore = drafts
+    delegate.sessionStore = session
+    #expect(delegate.restoreDrafts() == 2)
+
+    #expect(Self.windows(for: url).count == 1)
+    let controller = try #require(Self.window(for: url))
+    #expect(Self.editor(of: controller)?.string == "A\nfirst\n")
+    #expect(controller.draftID == first)
+    let other = try #require(Self.untitledWindow(holding: "A\nsecond\n"))
+    #expect(other.draftID == second)
+    #expect(Set(drafts.drafts().map(\.id)) == [first, second])
+
+    other.window?.close()
+    controller.window?.close()
+}
+
+@Test func aLegacyDraftWhoseFileIsUnchangedSinceIsApplied() throws {
+    let (drafts, draftsDir, dropDrafts) = Self.makeDraftStore()
+    let (session, dropSession) = Self.makeSessionStore()
+    let dir = try Self.makeTempDir()
+    defer { dropDrafts(); dropSession(); try? FileManager.default.removeItem(at: dir) }
+
+    let url = try Self.writeFile(dir, "legacy-ok.txt", "A\n")
+    try Self.setModificationDate(url, offset: -600)
+    session.record(path: url.path, caret: 0, scrollY: 0)
+    let id = UUID()
+    try Self.writeLegacyDraft(draftsDir, id: id, content: "A\nmine\n", path: url.path,
+                              savedAt: Date())
+
+    let delegate = AppDelegate()
+    delegate.draftStore = drafts
+    delegate.sessionStore = session
+    #expect(delegate.restoreSession() == 1)
+    #expect(delegate.restoreDrafts() == 1)
+
+    #expect(Self.windows(for: url).count == 1)
+    let controller = try #require(Self.window(for: url))
+    #expect(Self.editor(of: controller)?.string == "A\nmine\n")
+    #expect(controller.documentController.isDirty)
+    #expect(Self.untitledWindow(holding: "A\nmine\n") == nil)
 
     controller.window?.close()
 }

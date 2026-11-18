@@ -889,45 +889,81 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// Runs right after `restoreSession()` on a restoring launch, so the windows
     /// for saved files already exist and most drafts only have to be poured into
-    /// one. Three shapes are handled:
-    ///   * untitled draft → a new window carrying the content;
-    ///   * draft for a file that is open (or can be opened) → the buffer is
-    ///     replaced with the draft, unless the file itself changed on disk after
-    ///     the draft was taken, in which case disk wins and the draft is dropped;
-    ///   * draft for a file that no longer exists → recovered as untitled, since
-    ///     the draft is then the only copy of that text left.
+    /// one. What happens to each draft is decided by `DraftRecovery.decide`
+    /// (R07, user decision D4); this method only gathers the facts about the
+    /// draft's file and carries the decision out:
+    ///   * untitled draft, or its file is gone → a new untitled window carrying
+    ///     the content (the draft is the only copy left);
+    ///   * the file still holds what the draft was taken against → the file's
+    ///     window (already open, or opened now) gets the draft poured in;
+    ///   * the file already holds exactly the draft's bytes → nothing to
+    ///     recover; the draft is removed and the file opens clean;
+    ///   * conflict (the file changed since the draft, or that cannot be ruled
+    ///     out) → keep both: the file's window shows the disk version untouched
+    ///     and the draft opens beside it as an untitled recovered copy, which
+    ///     adopts the draft's id so the draft file keeps protecting that text.
+    /// A draft is never deleted unless the disk provably holds the same bytes.
+    /// Everything is reported in the status bar: a launch never opens a modal.
+    /// The file is read once per draft for its digest; nothing stays resident.
     @discardableResult
     func restoreDrafts() -> Int {
         var restored = 0
         for draft in draftStore.drafts() {
-            guard let path = draft.originalPath else {
-                openRecoveredUntitled(draft, message: L10n.t(.draftRestored))
-                restored += 1
-                continue
+            let url = draft.originalPath.map {
+                UbiquitousFile.resolvedURL(for: URL(fileURLWithPath: $0))
             }
-            let url = UbiquitousFile.resolvedURL(for: URL(fileURLWithPath: path))
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                openRecoveredUntitled(draft, message: L10n.t(.draftRestoredAsUntitled))
-                restored += 1
-                continue
-            }
-            let controller = windowController(for: url) ?? openRestoredFile(url)
+            let disk = url.map(Self.diskFacts(at:)) ?? .missing
 
-            // Conflict rule (user decision): a file that changed on disk *after*
-            // the draft was written wins — another app or a sync edited it in
-            // the meantime, and silently pasting stale text over that would be
-            // the worse loss. Reported in the status bar rather than a modal:
-            // a launch must never open with an alert.
-            if let modified = Self.modificationDate(of: url), modified > draft.savedAt {
+            switch DraftRecovery.decide(draft: draft, disk: disk) {
+            case .recoverAsUntitled:
+                let message = draft.originalPath == nil
+                    ? L10n.t(.draftRestored) : L10n.t(.draftRestoredAsUntitled)
+                openRecoveredUntitled(draft, message: message)
+                restored += 1
+
+            case .applyToFile:
+                guard let url else { continue }
+                let controller = windowController(for: url) ?? openRestoredFile(url)
+                // Two drafts for one file: never pour the second over the
+                // first's unsaved text — the later one comes back on its own.
+                if controller.documentController.isDirty {
+                    openRecoveredUntitled(draft, message: L10n.t(.draftRestored))
+                } else {
+                    controller.applyRecoveredDraft(id: draft.id, content: draft.content)
+                    controller.flashStatus(L10n.t(.draftRestored))
+                }
+                restored += 1
+
+            case .discard:
+                guard let url else { continue }
                 draftStore.remove(id: draft.id)
-                controller.flashStatus(L10n.t(.draftDiscardedDiskNewer))
-                continue
+                if windowController(for: url) == nil { _ = openRestoredFile(url) }
+
+            case .keepBothAsCopy:
+                guard let url else { continue }
+                let controller = windowController(for: url) ?? openRestoredFile(url)
+                controller.flashStatus(L10n.t(.draftCopyOpenedSeparately))
+                // The copy is an untitled document from here on. Re-commit the
+                // draft without its file path, so a second crash before the
+                // copy's next checkpoint brings it back as untitled instead of
+                // judging the same conflict again and opening another copy.
+                // Best-effort: on failure the old draft file simply stays.
+                draftStore.write(id: draft.id, content: draft.content, originalPath: nil)
+                openRecoveredUntitled(
+                    draft, message: L10n.t(.draftRestoredAsCopy, url.lastPathComponent))
+                restored += 1
             }
-            controller.applyRecoveredDraft(id: draft.id, content: draft.content)
-            controller.flashStatus(L10n.t(.draftRestored))
-            restored += 1
         }
         return restored
+    }
+
+    /// What `DraftRecovery` needs to know about a draft's file: whether it
+    /// exists, the SHA-256 of its bytes (`nil` if it cannot be read) and its
+    /// modification date. Streams the file once; keeps nothing.
+    private static func diskFacts(at url: URL) -> DraftRecovery.Disk {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        return .present(digest: try? DiskState.read(url).digest,
+                        modified: modificationDate(of: url))
     }
 
     /// Opens a fresh untitled window holding a recovered draft.

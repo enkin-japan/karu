@@ -164,8 +164,9 @@ public enum L10nKey: String, CaseIterable, Sendable {
     // confident answer).
     case languageSuggestionLabel, languageSuggestionOther, languageSuggestionDismiss
     case languageSuggestionAccessibility
-    // Transient status-bar notes for crash-draft recovery (T14.11).
-    case draftRestored, draftDiscardedDiskNewer, draftRestoredAsUntitled
+    // Transient status-bar notes for crash-draft recovery (T14.11; R07 / D4:
+    // a conflicting draft comes back as an untitled copy beside the file).
+    case draftRestored, draftRestoredAsUntitled, draftRestoredAsCopy, draftCopyOpenedSeparately
     // Feature-module display names.
     case moduleHighlight, moduleCompletion, moduleFormat, moduleRun
     case moduleTypeInference, moduleCrossFileIndex

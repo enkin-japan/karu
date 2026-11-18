@@ -350,8 +350,9 @@ extension L10n {
         .languageSuggestionAccessibility: "Language suggestions",
 
         .draftRestored: "Unsaved changes recovered",
-        .draftDiscardedDiskNewer: "File on disk is newer — draft discarded",
         .draftRestoredAsUntitled: "Original file is gone — recovered as untitled",
+        .draftRestoredAsCopy: "Recovered unsaved version of “%@” — the file on disk was changed in the meantime",
+        .draftCopyOpenedSeparately: "Showing the file on disk — your unsaved version opened in a separate window",
 
         .moduleHighlight: "Syntax Highlighting",
         .moduleCompletion: "Completion",
@@ -707,8 +708,9 @@ extension L10n {
         .languageSuggestionAccessibility: "语言建议",
 
         .draftRestored: "已恢复未保存的更改",
-        .draftDiscardedDiskNewer: "磁盘版本较新，已放弃未保存草稿",
         .draftRestoredAsUntitled: "原文件已不存在，内容已恢复为未命名文档",
+        .draftRestoredAsCopy: "已恢复“%@”的未存储版本，磁盘上的文件在此期间已被修改",
+        .draftCopyOpenedSeparately: "当前显示磁盘上的文件，未存储的版本已在另一个窗口中打开",
 
         .moduleHighlight: "语法高亮",
         .moduleCompletion: "代码补全",
@@ -1064,8 +1066,9 @@ extension L10n {
         .languageSuggestionAccessibility: "言語の候補",
 
         .draftRestored: "未保存の変更を復元しました",
-        .draftDiscardedDiskNewer: "ディスク上のファイルが新しいため下書きを破棄しました",
         .draftRestoredAsUntitled: "元のファイルがないため未題ドキュメントとして復元しました",
+        .draftRestoredAsCopy: "「%@」の未保存の版を復元しました。ディスク上のファイルはその間に変更されています",
+        .draftCopyOpenedSeparately: "ディスク上のファイルを表示しています。未保存の版は別のウインドウで開きました",
 
         .moduleHighlight: "シンタックスハイライト",
         .moduleCompletion: "コード補完",
