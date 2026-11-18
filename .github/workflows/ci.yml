@@ -1,0 +1,40 @@
+# Build and test on every push to main and on pull requests.
+# No signing, notarization or release step runs here and no secret is used:
+# packaging and publishing stay on the maintainer's machine (docs/RELEASE.md).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          swift --version
+          sysctl -n hw.ncpu
+
+      - name: Build
+        run: swift build
+
+      # scripts/test.sh bounds the Swift Testing parallel width; hosted runners
+      # have few cores, so use a narrower width than the local default of 8.
+      - name: Test
+        env:
+          KARU_TEST_WIDTH: "4"
+        run: scripts/test.sh

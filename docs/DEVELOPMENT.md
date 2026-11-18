@@ -27,6 +27,9 @@
 - 根目录的 `.o`、`.d`、`.swiftdeps` 等及 `.build/`、`build/` 是忽略的生成物，
   不把它们当源码提交。`CotEditor/`、`monaco-editor/` 是参考项目，不是构建依赖。
 - 不修改 `.claude/` 以完成 Codex 任务，也不把个人绝对路径或凭据写入共享配置。
+- `.github/workflows/ci.yml` 在推送到 `main` 和拉取请求时运行 `swift build` 与 `scripts/test.sh`
+  （并行宽度 4），不含签名、公证或任何密钥。截至 2026-11-18 该工作流只在本地提交、尚未推送，
+  还没有在托管 runner 上实际跑过；首次运行的结果以台账记录为准。
 
 ## 修改时必须保留的行为
 
