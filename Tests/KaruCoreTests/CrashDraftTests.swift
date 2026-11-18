@@ -157,15 +157,15 @@ private static func untitledWindow(holding content: String) -> EditorWindowContr
     store.write(id: good, content: "intact", originalPath: nil)
     store.write(id: corrupt, content: "content is fine", originalPath: nil)
 
-    // Truncated / garbage metadata.
-    try Data("{not json".utf8)
-        .write(to: dir.appendingPathComponent("\(corrupt.uuidString).json"))
-    // A metadata file whose name is not a UUID at all.
-    try Data("{}".utf8).write(to: dir.appendingPathComponent("stray.json"))
-    // Metadata with no content file next to it.
+    // Truncated / garbage header line.
+    try Data("{not json\ncontent is fine".utf8)
+        .write(to: dir.appendingPathComponent("\(corrupt.uuidString).draft"))
+    // A draft file whose name is not a UUID at all.
+    try Data("{}\n".utf8).write(to: dir.appendingPathComponent("stray.draft"))
+    // A legacy sidecar with no content file next to it.
     let orphan = UUID()
-    store.write(id: orphan, content: "gone", originalPath: nil)
-    try FileManager.default.removeItem(at: dir.appendingPathComponent(orphan.uuidString))
+    try Data(#"{"savedAt":0}"#.utf8)
+        .write(to: dir.appendingPathComponent("\(orphan.uuidString).json"))
 
     #expect(store.drafts().map(\.id) == [good])
 }
