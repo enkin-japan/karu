@@ -188,6 +188,28 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// hand-closed windows returned after a crash restore).
     private var isClosing = false
 
+    /// What a manual save does when the file changed on disk (R01 / F1b).
+    enum SaveConflictChoice: Equatable {
+        case saveAs, overwrite, cancel
+    }
+    /// Test seam: answers the save-conflict question instead of the modal
+    /// alert. `nil` (production) runs the alert.
+    var saveConflictChoiceOverride: (() -> SaveConflictChoice)?
+    /// Test seam: picks the Save As destination (given the suggested name)
+    /// instead of running `NSSavePanel`; returning `nil` means Cancel. `nil`
+    /// (production) runs the panel.
+    var saveAsURLOverride: ((String) -> URL?)?
+    /// Test seam: sees every status-bar flash this window shows.
+    var statusFlashObserver: ((String) -> Void)?
+    /// Above zero while one of this window's own modal alerts or panels is up,
+    /// so the become-key check does not run underneath it.
+    private var modalDepth = 0
+    /// The file's `stat` stamp when an external change was last reported to
+    /// the user (status note, conflict question or conflict band) while the
+    /// buffer had unsaved changes. The become-key check stays quiet while the
+    /// file still carries this stamp; any further change reports again.
+    private var announcedExternalStamp: DiskState.Stamp?
+
     /// Crash-draft backup for this window's unsaved content (T14.11). Injected
     /// by `AppDelegate` so every window shares one store (and tests can point it
     /// at a temporary directory); a standalone window falls back to the real
@@ -468,6 +490,13 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             self,
             selector: #selector(handleResignKey(_:)),
             name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+        // External-change check (F1b): once per activation of *this* window.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
             object: window
         )
         // `run` module off: stop and release this window's run session (T16.3b).
@@ -811,6 +840,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     /// decided by `AppDelegate` (T14.11).
     func flashStatus(_ message: String) {
         statusBar.flashMessage(message)
+        statusFlashObserver?(message)
     }
 
     // MARK: - Text change tracking
@@ -1663,6 +1693,83 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         autoSaveOnFocusLoss()
     }
 
+    /// This window became key. Deliberately *not* named `windowDidBecomeKey`
+    /// (an `NSWindowDelegate` requirement AppKit would call a second time).
+    @objc private func handleBecomeKey(_ note: Notification) {
+        checkForExternalChange()
+    }
+
+    /// Looks once at whether the file changed on disk (D2). A clean buffer
+    /// takes the new contents; a buffer with unsaved changes is left alone and
+    /// the change is reported once per external state. The common case costs
+    /// a single `stat` (`DocumentController.externalChange`); no watcher, no
+    /// timer. Internal so tests can drive it without real focus changes.
+    func checkForExternalChange() {
+        guard !isClosing, modalDepth == 0,
+              let url = documentController.fileURL else { return }
+        let isClean = !documentController.isDirty
+            || documentController.matchesBaseline(textView.string)
+        // Already reported and the file has not moved since: stay quiet.
+        if !isClean, let announced = announcedExternalStamp,
+           DiskState.Stamp.of(url) == announced { return }
+        switch documentController.externalChange() {
+        case .none, .removed:
+            announcedExternalStamp = nil
+        case .modified:
+            if isClean {
+                reloadFromDisk(url)
+            } else {
+                noteExternalChangeAnnounced()
+                flashStatus(L10n.t(.externalChangeKeptEdits))
+            }
+        }
+    }
+
+    /// Records the file's current stamp as already reported to the user.
+    private func noteExternalChangeAnnounced() {
+        announcedExternalStamp = documentController.fileURL.flatMap { DiskState.Stamp.of($0) }
+    }
+
+    /// Replaces a clean buffer with the file's new contents, as `load(url:)` /
+    /// `reopenWithEncoding` do, but keeping the language (a manual choice
+    /// included), the caret and the scroll position (clamped). The undo stack
+    /// is cleared: its steps describe the old text.
+    private func reloadFromDisk(_ url: URL) {
+        let caret = textView.selectedRange().location
+        let scrollOrigin = textView.enclosingScrollView?.contentView.bounds.origin
+        let text: String
+        do {
+            text = try documentController.load(from: url)
+        } catch {
+            flashStatus(L10n.t(.externalChangeReloadFailed))
+            return
+        }
+        announcedExternalStamp = nil
+        let length = (text as NSString).length
+        layoutModeController?.setLength(length)
+        textView.string = text
+        currentLineEnding = LineEnding.detect(in: text)
+        textView.undoManager?.removeAllActions()
+
+        completionController.indexDocument()
+        redetectIndentUnit()
+        updateWindowState()
+        toolbarController?.refreshAll()
+        refreshStatusBar()
+
+        let selection = NSRange(location: min(max(0, caret), length), length: 0)
+        textView.setSelectedRange(selection)
+        if let scrollOrigin, let scrollView = textView.enclosingScrollView {
+            let clipView = scrollView.contentView
+            clipView.scroll(to: clipView.constrainBoundsRect(
+                NSRect(origin: scrollOrigin, size: clipView.bounds.size)).origin)
+            scrollView.reflectScrolledClipView(clipView)
+        }
+        // The on-disk bytes are authoritative again — no draft to keep.
+        removeDraft()
+        flashStatus(L10n.t(.externalChangeReloaded))
+    }
+
     /// Silently writes the document to its existing file when the window loses
     /// key focus, if the feature is enabled. Deliberately non-modal:
     ///
@@ -1673,6 +1780,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     ///   stays dirty and a banner above the editor says so until the document
     ///   is saved; it replaces a three-second status-bar note the user, already
     ///   in another app, rarely saw.
+    /// - If another program changed the file, nothing is written (D1): the
+    ///   band switches to its conflict mode and the next manual save asks.
     func autoSaveOnFocusLoss(enabled: Bool = AutoSavePolicy.defaultEnabled) {
         guard AutoSavePolicy.shouldSave(enabled: enabled,
                                         isDirty: documentController.isDirty,
@@ -1684,6 +1793,11 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             // Buffer and disk agree again, so the crash draft has nothing left
             // to protect (T14.11).
             removeDraft()
+        } catch DocumentController.DocumentError.changedOnDisk {
+            // Never overwrite on focus loss. The band reports the change, so
+            // the become-key check need not report it again.
+            noteExternalChangeAnnounced()
+            saveFailureBanner.show(reason: nil, mode: .conflict)
         } catch {
             // Keep the dirty state; no modal. Failing again while the banner
             // is up changes nothing visible.
@@ -1702,7 +1816,8 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
     }
 
     /// Saves to the existing URL, or prompts for one if untitled.
-    /// Returns `true` on success, `false` if cancelled or failed.
+    /// Returns `true` on success, `false` if cancelled or failed. If another
+    /// program changed the file, asks first (Save As… / Overwrite / Cancel).
     @discardableResult
     private func performSave() -> Bool {
         guard documentController.fileURL != nil else { return runSaveAsPanel() }
@@ -1711,18 +1826,77 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
             updateWindowState()
             removeDraft()
             return true
+        } catch DocumentController.DocumentError.changedOnDisk {
+            return resolveSaveConflict()
         } catch {
             showSaveError(error)
             return false
         }
     }
 
+    /// The manual-save branch for a file changed on disk (D1). Cancel leaves
+    /// buffer, dirty flag, draft and disk exactly as they were.
+    private func resolveSaveConflict() -> Bool {
+        // The question itself tells the user; no status note for this state.
+        noteExternalChangeAnnounced()
+        switch saveConflictChoice() {
+        case .overwrite:
+            do {
+                try documentController.save(text: textView.string, overwritingExternalChanges: true)
+            } catch {
+                showSaveError(error)
+                return false
+            }
+            updateWindowState()
+            removeDraft()
+            return true
+        case .saveAs:
+            return runSaveAsPanel()
+        case .cancel:
+            return false
+        }
+    }
+
+    /// Asks how to save over an external change, in the close-confirmation
+    /// alert's style: Save As… (default), Overwrite (destructive), Cancel (Esc).
+    private func saveConflictChoice() -> SaveConflictChoice {
+        if let saveConflictChoiceOverride { return saveConflictChoiceOverride() }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n.t(.saveConflictMessage, displayName)
+        alert.informativeText = L10n.t(.saveConflictInfo)
+        alert.addButton(withTitle: L10n.t(.menuSaveAs))
+        let overwrite = alert.addButton(withTitle: L10n.t(.saveConflictOverwrite))
+        overwrite.hasDestructiveAction = true
+        // Esc cancels whatever the localized title is.
+        alert.addButton(withTitle: L10n.t(.cancel)).keyEquivalent = "\u{1b}"
+        switch runModalGuarded({ alert.runModal() }) {
+        case .alertFirstButtonReturn: return .saveAs
+        case .alertSecondButtonReturn: return .overwrite
+        default: return .cancel
+        }
+    }
+
+    /// Runs one of this window's modal sessions with the become-key check
+    /// suspended.
+    private func runModalGuarded<T>(_ body: () -> T) -> T {
+        modalDepth += 1
+        defer { modalDepth -= 1 }
+        return body()
+    }
+
     @discardableResult
     private func runSaveAsPanel() -> Bool {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = displayName
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        let chosen: URL?
+        if let saveAsURLOverride {
+            chosen = saveAsURLOverride(displayName)
+        } else {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = displayName
+            panel.canCreateDirectories = true
+            chosen = runModalGuarded { panel.runModal() == .OK ? panel.url : nil }
+        }
+        guard let url = chosen else { return false }
         do {
             let previousURL = documentController.fileURL
             let previousExtension = previousURL?.pathExtension.lowercased()
@@ -1774,7 +1948,7 @@ public final class EditorWindowController: NSWindowController, NSWindowDelegate,
         alert.addButton(withTitle: L10n.t(.dontSave))
         alert.addButton(withTitle: L10n.t(.cancel))
 
-        switch alert.runModal() {
+        switch runModalGuarded({ alert.runModal() }) {
         case .alertFirstButtonReturn:   // Save
             return performSave()
         case .alertSecondButtonReturn:  // Don't Save

@@ -153,6 +153,12 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case prefScratchpadFontSizeLabel
     // Banner above the editor after a focus-loss auto-save failed (T12.14; a status-bar note before).
     case saveFailedBanner, saveFailedRetry
+    // The file changed on disk since it was opened or saved (R01 / F1b): the
+    // manual-save question, the auto-save band's conflict mode, and the status
+    // notes from the check made when the window becomes key.
+    case saveConflictMessage, saveConflictInfo, saveConflictOverwrite
+    case saveConflictBanner, saveConflictBannerSave
+    case externalChangeReloaded, externalChangeKeptEdits, externalChangeReloadFailed
     // Language suggestions: the band above the editor and the header of the
     // language menus' suggestion section (detection has candidates but no
     // confident answer).

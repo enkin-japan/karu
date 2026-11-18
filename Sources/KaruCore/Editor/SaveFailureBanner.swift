@@ -1,9 +1,13 @@
 import AppKit
 
-/// A narrow band above the editor shown after auto-save on focus loss failed.
-/// It says so in words (plus a warning symbol), stays until the document is
-/// saved by any route or the window closes, and offers Retry and Save As. It
-/// is not modal and never takes keyboard focus.
+/// A narrow band above the editor shown after auto-save on focus loss did not
+/// write the document. It says why in words (plus a warning symbol), stays
+/// until the document is saved by any route or the window closes, and offers
+/// a manual save and Save As. It is not modal and never takes keyboard focus.
+///
+/// Two modes: `.failure` (the write failed; the first button retries) and
+/// `.conflict` (another program changed the file, so auto-save left it alone;
+/// the first button runs the manual save, which asks what to do).
 ///
 /// The band sits in the editor's content stack, next to the scroll view, so it
 /// follows the same rule as the find bar and the status bar: no `draw(_:)`
@@ -11,7 +15,15 @@ import AppKit
 /// see StatusBarView.swift). Its background is the system header material.
 @MainActor
 final class SaveFailureBanner: NSView {
-    /// Retry through the manual save path.
+    enum Mode: Equatable {
+        /// The auto-save write failed.
+        case failure
+        /// The file changed on disk, so auto-save did not overwrite it.
+        case conflict
+    }
+
+    /// Retry through the manual save path (in `.conflict` mode the same path,
+    /// which then asks whether to overwrite).
     var onRetry: (() -> Void)?
     /// Save under a new name / location.
     var onSaveAs: (() -> Void)?
@@ -22,6 +34,8 @@ final class SaveFailureBanner: NSView {
     let saveAsButton = NSButton(title: "", target: nil, action: nil)
     /// The failure's own description, shown as the tooltip.
     private var reason: String?
+    /// What the band is currently reporting.
+    private(set) var mode: Mode = .failure
 
     static let height: CGFloat = 30
 
@@ -113,12 +127,21 @@ final class SaveFailureBanner: NSView {
     /// Whether the band is showing.
     var isShowing: Bool { !isHidden }
 
-    /// Shows the band. Showing it again while it is up only refreshes the
-    /// reason: nothing is re-added, moved or flashed.
-    func show(reason: String?) {
+    /// The message currently shown (tests).
+    var message: String { label.stringValue }
+
+    /// Shows the band. Showing it again in the same mode while it is up only
+    /// refreshes the reason: nothing is re-added, moved or flashed. A change of
+    /// mode re-pulls the text and announces it again.
+    func show(reason: String?, mode: Mode = .failure) {
         self.reason = reason
+        let modeChanged = mode != self.mode
+        if modeChanged {
+            self.mode = mode
+            reloadStrings()
+        }
         updateToolTip()
-        guard isHidden else { return }
+        guard isHidden || modeChanged else { return }
         isHidden = false
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: label.stringValue,
@@ -134,8 +157,14 @@ final class SaveFailureBanner: NSView {
 
     /// Re-pulls the localized message and button titles.
     func reloadStrings() {
-        label.stringValue = L10n.t(.saveFailedBanner)
-        retryButton.title = L10n.t(.saveFailedRetry)
+        switch mode {
+        case .failure:
+            label.stringValue = L10n.t(.saveFailedBanner)
+            retryButton.title = L10n.t(.saveFailedRetry)
+        case .conflict:
+            label.stringValue = L10n.t(.saveConflictBanner)
+            retryButton.title = L10n.t(.saveConflictBannerSave)
+        }
         saveAsButton.title = L10n.t(.menuSaveAs)
         setAccessibilityLabel(label.stringValue)
         updateToolTip()

@@ -127,4 +127,36 @@ struct SaveFailureBannerTests {
         banner.hide()
         #expect(!banner.isShowing)
     }
+
+    @Test func conflictModeHasItsOwnTextAndTheFailureModeStillWorks() {
+        let banner = SaveFailureBanner()
+        banner.show(reason: nil, mode: .conflict)
+        #expect(banner.isShowing)
+        #expect(banner.mode == .conflict)
+        #expect(banner.message == L10n.t(.saveConflictBanner))
+        #expect(banner.accessibilityLabel() == L10n.t(.saveConflictBanner))
+        #expect(banner.retryButton.title == L10n.t(.saveConflictBannerSave))
+        #expect(banner.saveAsButton.title == L10n.t(.menuSaveAs))
+
+        // A later write failure switches the band back to the generic text.
+        banner.show(reason: "Permission denied")
+        #expect(banner.isShowing)
+        #expect(banner.mode == .failure)
+        #expect(banner.message == L10n.t(.saveFailedBanner))
+        #expect(banner.retryButton.title == L10n.t(.saveFailedRetry))
+        banner.hide()
+        #expect(!banner.isShowing)
+    }
+
+    @Test func genericFailureStillShowsTheGenericText() throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let banner = f.controller.saveFailureBanner
+        f.edit("x")
+        try f.setWritable(false)
+        f.controller.autoSaveOnFocusLoss(enabled: true)
+        #expect(banner.isShowing)
+        #expect(banner.mode == .failure)
+        #expect(banner.message == L10n.t(.saveFailedBanner))
+    }
 }

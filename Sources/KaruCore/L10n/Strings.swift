@@ -335,6 +335,15 @@ extension L10n {
         .saveFailedBanner: "Auto-save failed. Your changes are still in this window.",
         .saveFailedRetry: "Retry",
 
+        .saveConflictMessage: "“%@” was changed by another program.",
+        .saveConflictInfo: "Overwrite replaces that version with the text in this window. Save As… keeps it and saves your text to a new file.",
+        .saveConflictOverwrite: "Overwrite",
+        .saveConflictBanner: "Not saved automatically: another program changed this file. Your changes are still in this window.",
+        .saveConflictBannerSave: "Save…",
+        .externalChangeReloaded: "Reloaded: the file was changed by another program.",
+        .externalChangeKeptEdits: "The file was changed by another program. Your unsaved changes were kept.",
+        .externalChangeReloadFailed: "The file was changed by another program and could not be reloaded.",
+
         .languageSuggestionLabel: "Might be",
         .languageSuggestionOther: "Other…",
         .languageSuggestionDismiss: "Dismiss",
@@ -683,6 +692,15 @@ extension L10n {
         .saveFailedBanner: "自动保存失败，修改仍保留在此窗口中。",
         .saveFailedRetry: "重试",
 
+        .saveConflictMessage: "“%@”已被其他程序修改。",
+        .saveConflictInfo: "“覆盖”会用此窗口中的文本替换那个版本；“存储为…”会保留它，并把你的文本存到新文件。",
+        .saveConflictOverwrite: "覆盖",
+        .saveConflictBanner: "未自动保存：此文件已被其他程序修改。修改仍保留在此窗口中。",
+        .saveConflictBannerSave: "存储…",
+        .externalChangeReloaded: "文件已被其他程序修改，已重新载入。",
+        .externalChangeKeptEdits: "文件已被其他程序修改，未存储的修改已保留。",
+        .externalChangeReloadFailed: "文件已被其他程序修改，但无法重新载入。",
+
         .languageSuggestionLabel: "可能是",
         .languageSuggestionOther: "其他…",
         .languageSuggestionDismiss: "关闭",
@@ -1030,6 +1048,15 @@ extension L10n {
 
         .saveFailedBanner: "自動保存に失敗しました。変更内容はこのウインドウに残っています。",
         .saveFailedRetry: "再試行",
+
+        .saveConflictMessage: "“%@” は別のアプリケーションで変更されました。",
+        .saveConflictInfo: "「上書き」はその内容をこのウインドウのテキストで置き換えます。「別名で保存…」はその内容を残し、テキストを新しいファイルに保存します。",
+        .saveConflictOverwrite: "上書き",
+        .saveConflictBanner: "自動保存しませんでした：このファイルは別のアプリケーションで変更されています。変更内容はこのウインドウに残っています。",
+        .saveConflictBannerSave: "保存…",
+        .externalChangeReloaded: "ファイルが別のアプリケーションで変更されたため、再読み込みしました。",
+        .externalChangeKeptEdits: "ファイルが別のアプリケーションで変更されました。保存していない変更内容はそのままです。",
+        .externalChangeReloadFailed: "ファイルが別のアプリケーションで変更されましたが、再読み込みできませんでした。",
 
         .languageSuggestionLabel: "もしかして",
         .languageSuggestionOther: "その他…",
