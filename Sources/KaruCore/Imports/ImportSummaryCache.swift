@@ -62,6 +62,10 @@ struct ImportListing: Sendable, Equatable {
     }
 
     var entries: [Entry]
+    /// A listed directory held more than `ImportWorker.directoryEntryLimit`
+    /// entries, or more than `directoryScanLimit` (the rest was never
+    /// enumerated): `entries` is incomplete (R09).
+    var truncated = false
 
     var approximateBytes: Int { 64 + entries.reduce(0) { $0 + 8 + ImportCost.string($1.name) } }
 }
@@ -72,6 +76,9 @@ struct ImportListing: Sendable, Equatable {
 /// names (they stay listable, their types become unknown); only when every
 /// entry is names-only are the oldest evicted (and re-read on demand). A
 /// module whose own summary exceeds `moduleByteLimit` is stored names-only.
+/// The newest entry is degraded and evicted last; when it alone still
+/// does not fit (even names-only) it is not kept (`rejections`, R08): after
+/// every `insert`, `bytes <= byteLimit && count <= countLimit`.
 /// Main-actor only.
 @MainActor
 final class ImportSummaryCache {
@@ -92,6 +99,8 @@ final class ImportSummaryCache {
     private(set) var bytes = 0
     private(set) var degradations = 0
     private(set) var evictions = 0
+    /// Modules not stored: over the budget on their own, even names-only.
+    private(set) var rejections = 0
 
     init(byteLimit: Int, moduleByteLimit: Int, countLimit: Int = 4_096) {
         self.byteLimit = byteLimit
@@ -122,7 +131,10 @@ final class ImportSummaryCache {
     func contains(_ key: String) -> Bool { slots[key] != nil }
 
     /// Stores `module`; one over `moduleByteLimit` is stored names-only.
-    func insert(_ module: ImportedModule, for key: String) {
+    /// False when it was not stored (too large for the budget on its own;
+    /// any older entry under `key` is gone either way).
+    @discardableResult
+    func insert(_ module: ImportedModule, for key: String) -> Bool {
         remove(key)
         var stored = module
         var cost = stored.approximateBytes
@@ -135,6 +147,7 @@ final class ImportSummaryCache {
         slots[key] = Slot(module: stored, cost: cost, tick: tick)
         bytes += cost
         enforceLimits(keeping: key)
+        return slots[key] != nil
     }
 
     @discardableResult
@@ -181,6 +194,19 @@ final class ImportSummaryCache {
                 remove(key)
                 evictions += 1
             }
+        }
+        // 3. Only the newest is left over the limits: its names, else nothing.
+        guard bytes > byteLimit || slots.count > countLimit, let slot = slots[newest] else { return }
+        if bytes > byteLimit, !slot.module.isNamesOnly {
+            let reduced = slot.module.reducedToNames()
+            let cost = reduced.approximateBytes
+            bytes += cost - slot.cost
+            slots[newest] = Slot(module: reduced, cost: cost, tick: slot.tick)
+            degradations += 1
+        }
+        if bytes > byteLimit || slots.count > countLimit {
+            remove(newest)
+            rejections += 1
         }
     }
 }

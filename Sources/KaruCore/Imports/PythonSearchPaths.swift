@@ -156,9 +156,12 @@ struct PythonSearchPaths: Sendable, Equatable {
               !roots.contains(where: { $0.path == site }) else { return }
         roots.append(PythonSearchRoot(path: site, kind: kind, isSitePackages: true))
         validators[site] = info.modificationTime
-        let pthFiles = (fs.list(site) ?? []).filter { $0.hasSuffix(".pth") }.sorted()
+        // Bounded (R09): a site-packages holding more entries than any real
+        // one contributes the `.pth` files among the first enumerated.
+        let listed = fs.list(site, limit: ImportWorker.directoryScanLimit)?.names ?? []
+        let pthFiles = listed.filter { $0.hasSuffix(".pth") }.sorted()
         for name in pthFiles {
-            for line in Self.pthPathLines(fs.contents(ImportPath.join(site, name))) {
+            for line in Self.pthPathLines(fs.contents(ImportPath.join(site, name), maxBytes: Self.configByteLimit)) {
                 let path = ImportPath.normalized(line.hasPrefix("/") ? line : ImportPath.join(site, line))
                 let allowed = allowedRoots.contains { ImportPath.isInside(path, $0) } || !ImportPath.isPrivacyProtected(path)
                 guard allowed, fs.isDirectory(path), !roots.contains(where: { $0.path == path }) else { continue }
@@ -183,9 +186,12 @@ struct PythonSearchPaths: Sendable, Equatable {
         return out
     }
 
+    /// `.pth` and `pyvenv.cfg` files over this are ignored, and never read (R09).
+    static let configByteLimit = 1 << 20
+
     /// `key = value` lines of a `pyvenv.cfg`.
     static func readConfig(_ path: String, _ fs: ImportFileSystem) -> [String: String]? {
-        guard let data = fs.contents(path), let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let data = fs.contents(path, maxBytes: configByteLimit), let text = String(data: data, encoding: .utf8) else { return nil }
         var out: [String: String] = [:]
         for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
             guard let eq = line.firstIndex(of: "=") else { continue }
@@ -281,7 +287,7 @@ struct PythonInterpreterLayout: Sendable, Equatable {
 
     /// `python3.N` directories of `lib`, ascending by minor version.
     static func pythonDirectories(in lib: String, fs: ImportFileSystem) -> [String] {
-        (fs.list(lib) ?? []).compactMap { entry -> (Int, String)? in
+        (fs.list(lib, limit: ImportWorker.directoryScanLimit)?.names ?? []).compactMap { entry -> (Int, String)? in
             guard entry.hasPrefix("python3."), let minor = Int(entry.dropFirst("python3.".count)) else { return nil }
             return (minor, entry)
         }.sorted { $0.0 < $1.0 }.map(\.1)

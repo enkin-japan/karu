@@ -116,8 +116,13 @@ enum ScriptModuleLocator {
         return directory(target, fs: fs, typeScriptOnly: typeScriptOnly)
     }
 
+    /// A `package.json` of this size or more is ignored, and never read (R09).
+    static let manifestByteLimit = 1 << 20
+
     private static func packageJSON(_ dir: String, fs: ImportFileSystem) -> [String: Any]? {
-        guard let data = fs.contents(ImportPath.join(dir, "package.json")), data.count < 1 << 20 else { return nil }
+        guard let data = fs.contents(ImportPath.join(dir, "package.json"), maxBytes: manifestByteLimit - 1) else {
+            return nil
+        }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 

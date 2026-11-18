@@ -65,6 +65,10 @@ public final class ImportService {
     public nonisolated static let moduleByteLimit = 2 * 1024 * 1024
     /// Source files over this are summarised as names only (plan §9).
     public nonisolated static let namesOnlySourceBytes = 2 * 1024 * 1024
+    /// Source files over this are not read at all (R09: checked with `stat`
+    /// before reading; four times `moduleByteLimit`): such a module is
+    /// unavailable, like an unreadable one.
+    public nonisolated static let readByteLimit = 4 * moduleByteLimit
     /// Re-export / dependency chains loaded with a module, and followed by
     /// lookups through imported modules (plan §9: `__init__` re-exports ≤ 3).
     nonisolated static let reexportDepth = 3
@@ -88,6 +92,8 @@ public final class ImportService {
         public var workspace: WorkspaceIndex?
         public var byteLimit: Int
         public var moduleByteLimit: Int
+        /// Source files over this many bytes are never read (R09).
+        public var readByteLimit: Int
 
         public init(fileSystem: ImportFileSystem = SystemImportFileSystem(),
                     projectFolder: @escaping @MainActor (String) -> String?,
@@ -97,7 +103,8 @@ public final class ImportService {
                     revalidationInterval: TimeInterval = 2, moduleSettings: ModuleSettings? = nil,
                     center: NotificationCenter = .default, workspace: WorkspaceIndex? = nil,
                     byteLimit: Int = ImportService.summaryByteLimit,
-                    moduleByteLimit: Int = ImportService.moduleByteLimit) {
+                    moduleByteLimit: Int = ImportService.moduleByteLimit,
+                    readByteLimit: Int = ImportService.readByteLimit) {
             self.fileSystem = fileSystem
             self.projectFolder = projectFolder
             self.interpreter = interpreter
@@ -109,6 +116,7 @@ public final class ImportService {
             self.workspace = workspace
             self.byteLimit = byteLimit
             self.moduleByteLimit = moduleByteLimit
+            self.readByteLimit = readByteLimit
         }
 
         /// The app's: `WorkspaceIndex.shared`, Run settings, the real disk.
@@ -125,6 +133,11 @@ public final class ImportService {
         public var missingModules = 0
         public var invalidations = 0
         public var revalidations = 0
+        /// Loaded modules the summary cache could not keep even names-only
+        /// (R08); answered as missing until their files change.
+        public var rejectedModules = 0
+        /// Source files over `readByteLimit`, skipped without reading (R09).
+        public var oversizedFiles = 0
         public var generation: UInt64 = 0
     }
 
@@ -208,7 +221,7 @@ public final class ImportService {
         let config = configuration ?? .app
         self.configuration = config
         cache = ImportSummaryCache(byteLimit: config.byteLimit, moduleByteLimit: config.moduleByteLimit)
-        worker = ImportWorker(fs: config.fileSystem, isStdlib: config.isStdlib)
+        worker = ImportWorker(fs: config.fileSystem, isStdlib: config.isStdlib, readByteLimit: config.readByteLimit)
         observers.append(config.center.addObserver(forName: ModuleSettings.didChangeNotification, object: nil,
                                                     queue: nil) { [weak self] note in
             guard let raw = note.object as? String,
@@ -562,7 +575,21 @@ public final class ImportService {
                     guard awaitingRefresh.remove(record.key) != nil || cache.contains(record.key) else { continue }
                 }
                 states[record.key] = nil
-                cache.insert(record.module, for: record.key)
+                guard cache.insert(record.module, for: record.key) else {
+                    // Too large for the budget even names-only (R08): answered
+                    // like a module not found — nothing re-requests it — and
+                    // revalidated by its own files' mtimes (or dropped by a
+                    // project file event), so an edited, smaller one is read again.
+                    states[record.key] = .missing
+                    missingValidators[record.key] = record.module.validators
+                    lastValidated[record.key] = ProcessInfo.processInfo.systemUptime
+                    loadedAt[record.key] = nil
+                    statistics.rejectedModules += 1
+                    changed = true
+                    if !Self.isListingKey(record.key) { summaries = true }
+                    continue
+                }
+                missingValidators[record.key] = nil
                 watch(record.key, record.module, context)
                 loadedAt[record.key] = result.finishedAt
                 lastValidated[record.key] = ProcessInfo.processInfo.systemUptime
@@ -579,6 +606,7 @@ public final class ImportService {
                 changed = true
             }
             statistics.revalidations += result.revalidated
+            statistics.oversizedFiles += result.oversized
             for key in result.invalidated {
                 cache.remove(key)
                 states[key] = nil
@@ -660,6 +688,8 @@ public final class ImportService {
             states[key] = .loading
             requestCount += 1
             pending.append(.listing(key: key, context: context.snapshot, request: request))
+        } else if states[key] == .missing {
+            noteMissing(key)        // a listing the cache could not keep (R08)
         }
         if states[key] == .loading { scope.notePending() }
         return nil
@@ -870,6 +900,8 @@ struct ImportJobResult: Sendable {
     var venvs: [(directory: String, probe: PythonVenvProbe)] = []
     var invalidated: [String] = []
     var revalidated = 0
+    /// Source files skipped for their size (over `readByteLimit`, R09).
+    var oversized = 0
     /// A refresh after a project file changed (FSEvents), started on the
     /// event queue without waiting for the main thread.
     var refresh = false
@@ -924,11 +956,17 @@ final class ImportInbox: @unchecked Sendable {
 final class ImportWorker: @unchecked Sendable {
     let fs: ImportFileSystem
     let isStdlib: @Sendable (String) -> Bool
+    /// Source files over this are never read (R09).
+    let readByteLimit: Int
     private var pythonPaths: [Int: PythonSearchPaths] = [:]
+    /// Source files skipped for their size so far (reported per job).
+    private var oversizedReads = 0
 
-    init(fs: ImportFileSystem, isStdlib: @escaping @Sendable (String) -> Bool) {
+    init(fs: ImportFileSystem, isStdlib: @escaping @Sendable (String) -> Bool,
+         readByteLimit: Int = ImportService.readByteLimit) {
         self.fs = fs
         self.isStdlib = isStdlib
+        self.readByteLimit = readByteLimit
     }
 
     func reset() { pythonPaths.removeAll() }
@@ -949,6 +987,7 @@ final class ImportWorker: @unchecked Sendable {
         var queue = job.items
         var done = Set<String>()
         var reads = 0
+        let oversizedBefore = oversizedReads
         while !queue.isEmpty {
             let item = queue.removeFirst()
             switch item {
@@ -974,8 +1013,11 @@ final class ImportWorker: @unchecked Sendable {
                 guard done.insert(key).inserted else { continue }
                 guard reads < ImportService.modulesPerJob || depth == 0 else { continue }
                 reads += 1
-                guard let (module, summary) = loadPython(dotted, context: context) else {
-                    result.missing.append((key, paths(context).validators))
+                var skipped: [String: Double] = [:]
+                guard let (module, summary) = loadPython(dotted, context: context, skipped: &skipped) else {
+                    // A file too large to read: also its own mtime (an edit
+                    // that shrinks it gives it another chance).
+                    result.missing.append((key, paths(context).validators.merging(skipped) { a, _ in a }))
                     continue
                 }
                 result.loaded.append((key, module))
@@ -997,8 +1039,9 @@ final class ImportWorker: @unchecked Sendable {
                 guard done.insert(key).inserted else { continue }
                 guard reads < ImportService.modulesPerJob || depth == 0 else { continue }
                 reads += 1
-                guard let module = loadScript(path, key: key, context: context) else {
-                    result.missing.append((key, [:]))
+                var skipped: [String: Double] = [:]
+                guard let module = loadScript(path, key: key, context: context, skipped: &skipped) else {
+                    result.missing.append((key, skipped))
                     continue
                 }
                 result.loaded.append((key, module))
@@ -1013,6 +1056,7 @@ final class ImportWorker: @unchecked Sendable {
             result.revalidated += 1
             if validators.contains(where: { fs.info($0.key)?.modificationTime != $0.value }) { result.invalidated.append(key) }
         }
+        result.oversized = oversizedReads - oversizedBefore
         result.finishedAt = ProcessInfo.processInfo.systemUptime
         return result
     }
@@ -1022,14 +1066,28 @@ final class ImportWorker: @unchecked Sendable {
             || stub.alias(named: name) != nil || stub.import(named: name) != nil
     }
 
-    /// Text of a source file (UTF-8, Latin-1 fallback), and its size.
-    private func read(_ path: String) -> (NSString, Int, Double)? {
-        guard let info = fs.info(path), !info.isDirectory, let data = fs.contents(path) else { return nil }
+    /// Text of a source file (UTF-8, Latin-1 fallback), its size and mtime;
+    /// nil when it cannot be read. A file over `readByteLimit` is not read
+    /// at all (its size comes from `stat`, R09): nil, its mtime in `skipped`.
+    private func read(_ path: String, skipped: inout [String: Double]) -> (NSString, Int, Double)? {
+        guard let info = fs.info(path), !info.isDirectory else { return nil }
+        guard info.size <= readByteLimit else {
+            oversizedReads += 1
+            skipped[path] = info.modificationTime
+            return nil
+        }
+        guard let data = fs.contents(path) else { return nil }
+        guard data.count <= readByteLimit else {          // grew since `stat`
+            oversizedReads += 1
+            skipped[path] = info.modificationTime
+            return nil
+        }
         let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
         return (text as NSString, info.size, info.modificationTime)
     }
 
-    private func loadPython(_ dotted: String, context: ImportContextSnapshot) -> (ImportedModule, PythonModuleSummary)? {
+    private func loadPython(_ dotted: String, context: ImportContextSnapshot,
+                            skipped: inout [String: Double]) -> (ImportedModule, PythonModuleSummary)? {
         let paths = self.paths(context)
         guard let location = PythonModuleLocator.locate(dotted, in: paths, fs: fs) else { return nil }
         let summaryContext = PythonSummaryContext(dotted: dotted, isPackage: location.isPackage, isStub: location.isStub,
@@ -1039,7 +1097,7 @@ final class ImportWorker: @unchecked Sendable {
         let summary: PythonModuleSummary
         var source: String?
         if let file = location.file {
-            guard let (text, size, mtime) = read(file) else { return nil }
+            guard let (text, size, mtime) = read(file, skipped: &skipped) else { return nil }
             validators[file] = mtime
             source = fs.realPath(file)
             summary = PythonModuleSummarizer.summarize(text, context: summaryContext,
@@ -1058,8 +1116,9 @@ final class ImportWorker: @unchecked Sendable {
         return (module, summary)
     }
 
-    private func loadScript(_ path: String, key: String, context: ImportContextSnapshot) -> ImportedModule? {
-        guard let root = context.projectRoot, let (text, size, mtime) = read(path) else { return nil }
+    private func loadScript(_ path: String, key: String, context: ImportContextSnapshot,
+                            skipped: inout [String: Double]) -> ImportedModule? {
+        guard let root = context.projectRoot, let (text, size, mtime) = read(path, skipped: &skipped) else { return nil }
         let fs = self.fs
         let summaryContext = ScriptSummaryContext(key: key, path: path, dialect: ScriptModuleLocator.dialect(of: path)) { spec in
             ScriptModuleLocator.resolve(spec, from: path, projectRoot: root, fs: fs).map { context.prefix + $0 }

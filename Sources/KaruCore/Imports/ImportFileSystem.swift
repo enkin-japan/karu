@@ -30,6 +30,11 @@ public protocol ImportFileSystem: Sendable {
     func contents(_ path: String) -> Data?
     /// Entry names of a directory, nil when it cannot be listed.
     func list(_ path: String) -> [String]?
+    /// At most `limit` entry names of a directory (in enumeration order, `.`
+    /// and `..` excluded); `truncated` when it holds more. Nil when it cannot
+    /// be listed. The default builds on `list(_:)` (the whole directory);
+    /// `SystemImportFileSystem` stops enumerating at the limit (R09).
+    func list(_ path: String, limit: Int) -> (names: [String], truncated: Bool)?
     /// `realpath(3)`, or `path` itself when it cannot be resolved.
     func realPath(_ path: String) -> String
 }
@@ -37,9 +42,25 @@ public protocol ImportFileSystem: Sendable {
 extension ImportFileSystem {
     func isFile(_ path: String) -> Bool { info(path).map { !$0.isDirectory } ?? false }
     func isDirectory(_ path: String) -> Bool { info(path)?.isDirectory ?? false }
+
+    public func list(_ path: String, limit: Int) -> (names: [String], truncated: Bool)? {
+        guard let names = list(path) else { return nil }
+        let bound = max(0, limit)
+        return names.count > bound ? (Array(names.prefix(bound)), true) : (names, false)
+    }
+
+    /// The bytes of a regular file of at most `maxBytes` (its size checked
+    /// with `info` before anything is read, R09); nil when it is missing, a
+    /// directory, larger, or unreadable.
+    func contents(_ path: String, maxBytes: Int) -> Data? {
+        guard let info = info(path), !info.isDirectory, info.size <= maxBytes,
+              let data = contents(path), data.count <= maxBytes else { return nil }
+        return data
+    }
 }
 
-/// The production reader: `stat`, `Data(contentsOf:)`, `FileManager` listings.
+/// The production reader: `stat`, `Data(contentsOf:)`, `FileManager` listings
+/// (bounded ones with `readdir`).
 public struct SystemImportFileSystem: ImportFileSystem {
     public init() {}
 
@@ -57,6 +78,27 @@ public struct SystemImportFileSystem: ImportFileSystem {
 
     public func list(_ path: String) -> [String]? {
         try? FileManager.default.contentsOfDirectory(atPath: path)
+    }
+
+    /// `readdir` until `limit` names (one more is looked at to know whether
+    /// the directory holds more); the full listing is never built.
+    public func list(_ path: String, limit: Int) -> (names: [String], truncated: Bool)? {
+        guard let dir = opendir(path) else { return nil }
+        defer { closedir(dir) }
+        let bound = max(0, limit)
+        var names: [String] = []
+        while let entry = readdir(dir) {
+            let length = Int(entry.pointee.d_namlen)
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { tuple in
+                tuple.withMemoryRebound(to: CChar.self, capacity: length + 1) {
+                    FileManager.default.string(withFileSystemRepresentation: $0, length: length)
+                }
+            }
+            if name == "." || name == ".." { continue }
+            if names.count >= bound { return (names, true) }
+            names.append(name)
+        }
+        return (names, false)
     }
 
     public func realPath(_ path: String) -> String {

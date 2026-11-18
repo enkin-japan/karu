@@ -22,8 +22,9 @@ import Foundation
 //   Node's built-in module names (a static table). A listing or summary
 //   still loading marks the answer pending: the controller refreshes the
 //   popup when it arrives (the §9 refresh rule).
-// - **Bounds**: a listed directory contributes at most
-//   `directoryEntryLimit` entries; no process is started; privacy-protected
+// - **Bounds**: a listed directory is enumerated up to `directoryScanLimit`
+//   entries and contributes at most `directoryEntryLimit` of them (the
+//   listing is then marked `truncated`); no process is started; privacy-protected
 //   folders are only read inside the project folder (the existing rules of
 //   `PythonSearchPaths` / `ScriptModuleLocator`).
 
@@ -546,7 +547,9 @@ extension ImportService {
             let listed = listing(.scriptDirectory(target), context: context, scope: scope)
             // The document itself is not offered next to its siblings.
             let own = target == directory ? Self.scriptStem(ImportPath.lastComponent(importer)) : nil
-            addListing(listed.map { ImportListing(entries: $0.entries.filter { $0.isPackage || $0.name != own }) }, true)
+            addListing(listed.map {
+                ImportListing(entries: $0.entries.filter { $0.isPackage || $0.name != own }, truncated: $0.truncated)
+            }, true)
             return
         }
         guard !head.hasPrefix("/"), !head.hasPrefix("node:") else { return }
@@ -578,6 +581,10 @@ extension ImportService {
 extension ImportWorker {
     /// Entries one directory contributes at most (plan §9 T17.16).
     static let directoryEntryLimit = 2_000
+    /// Entries read from one directory at most (R09): the first ones
+    /// enumerated are sorted and capped at `directoryEntryLimit`; the rest of
+    /// a larger directory is never enumerated.
+    static let directoryScanLimit = 20_000
 
     /// Builds the listing `request` of `context` (an empty listing when the
     /// directories do not exist; their parents' mtimes validate it).
@@ -585,6 +592,7 @@ extension ImportWorker {
         var entries: [ImportListing.Entry] = []
         var seen = Set<String>()
         var validators: [String: Double] = [:]
+        var truncated = false
         func add(_ name: String, package: Bool) {
             if seen.insert(name).inserted { entries.append(.init(name: name, isPackage: package)) }
         }
@@ -592,7 +600,10 @@ extension ImportWorker {
         func names(_ dir: String) -> [String] {
             guard let info = fs.info(dir), info.isDirectory else { return [] }
             validators[dir] = info.modificationTime
-            return Array((fs.list(dir) ?? []).sorted().prefix(Self.directoryEntryLimit))
+            guard let listed = fs.list(dir, limit: Self.directoryScanLimit) else { return [] }
+            let sorted = listed.names.sorted()
+            if listed.truncated || sorted.count > Self.directoryEntryLimit { truncated = true }
+            return Array(sorted.prefix(Self.directoryEntryLimit))
         }
         func pythonDirectory(_ dir: String, stubPackages: Bool) {
             for name in names(dir) {
@@ -694,7 +705,7 @@ extension ImportWorker {
                 dir = ImportPath.parent(dir)
             }
         }
-        return ImportedModule(content: .listing(ImportListing(entries: entries)), sourcePath: nil,
+        return ImportedModule(content: .listing(ImportListing(entries: entries, truncated: truncated)), sourcePath: nil,
                               validators: validators, isProjectFile: false)
     }
 

@@ -39,6 +39,8 @@ final class RecordingFileSystem: ImportFileSystem, @unchecked Sendable {
     private let lock = NSLock()
     private var paths: [String] = []
     private var mainPaths: [String] = []
+    private var infoPaths: [String] = []
+    private var readPaths: [String] = []
 
     var touched: [String] {
         lock.lock(); defer { lock.unlock() }
@@ -50,14 +52,37 @@ final class RecordingFileSystem: ImportFileSystem, @unchecked Sendable {
         return mainPaths
     }
 
+    /// Paths `contents` was called for (R09: a file over its limit never is).
+    var read: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return readPaths
+    }
+
+    /// Paths `info` was called for.
+    var statted: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return infoPaths
+    }
+
     private func note(_ path: String) {
         let main = Thread.isMainThread
         lock.lock(); paths.append(path); if main { mainPaths.append(path) }; lock.unlock()
     }
 
-    func info(_ path: String) -> ImportFileInfo? { note(path); return base.info(path) }
-    func contents(_ path: String) -> Data? { note(path); return base.contents(path) }
+    func info(_ path: String) -> ImportFileInfo? {
+        note(path)
+        lock.lock(); infoPaths.append(path); lock.unlock()
+        return base.info(path)
+    }
+    func contents(_ path: String) -> Data? {
+        note(path)
+        lock.lock(); readPaths.append(path); lock.unlock()
+        return base.contents(path)
+    }
     func list(_ path: String) -> [String]? { note(path); return base.list(path) }
+    func list(_ path: String, limit: Int) -> (names: [String], truncated: Bool)? {
+        note(path); return base.list(path, limit: limit)
+    }
     func realPath(_ path: String) -> String { note(path); return base.realPath(path) }
 }
 
@@ -82,14 +107,15 @@ final class ImportHarness {
 
     init(projectRoot: String?, interpreter: String? = ImportFixtures.interpreter, workspace: WorkspaceIndex? = nil,
          byteLimit: Int = ImportService.summaryByteLimit, moduleByteLimit: Int = ImportService.moduleByteLimit,
-         revalidation: TimeInterval = 2) {
+         revalidation: TimeInterval = 2, readByteLimit: Int = ImportService.readByteLimit) {
         defaults = UserDefaults(suiteName: suite)!
         modules = ModuleSettings(defaults: defaults, center: center)
         rootBox = RootBox(projectRoot)
         let discovery = interpreter.map { PythonInterpreterDiscovery.fixed($0) } ?? .none
         var config = ImportService.Configuration(fileSystem: fs, projectFolder: { _ in nil }, interpreter: { discovery },
                                                  revalidationInterval: revalidation, moduleSettings: modules, center: center,
-                                                 workspace: workspace, byteLimit: byteLimit, moduleByteLimit: moduleByteLimit)
+                                                 workspace: workspace, byteLimit: byteLimit, moduleByteLimit: moduleByteLimit,
+                                                 readByteLimit: readByteLimit)
         let modules = self.modules
         let box = rootBox
         config.projectFolder = { path in
