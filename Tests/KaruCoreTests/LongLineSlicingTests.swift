@@ -503,7 +503,7 @@ private final class SlicePainter {
         window.contentView = scrollView
         textView.string = text
         let name = "LongLineSlicingTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = TestDefaults.make(name)
         defaults.removePersistentDomain(forName: name)
         let settings = ModuleSettings(defaults: defaults, center: center)
         analysis = DocumentAnalysis(textView: textView, moduleSettings: settings, moduleCenter: center,

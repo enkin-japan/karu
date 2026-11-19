@@ -37,7 +37,7 @@ private static func makeDraftStore() -> (DraftStore, URL, () -> Void) {
 /// developer's real restore list.
 private static func makeSessionStore() -> (SessionStore, () -> Void) {
     let name = "KaruDraftTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     return (SessionStore(defaults: defaults), {
         UserDefaults().removePersistentDomain(forName: name)
     })

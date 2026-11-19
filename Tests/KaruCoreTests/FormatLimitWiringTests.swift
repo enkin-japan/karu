@@ -96,7 +96,7 @@ struct FormatLimitWindowTests {
             file = directory.appendingPathComponent(name)
             try contents.write(to: file, atomically: true, encoding: .utf8)
             controller = EditorWindowController()
-            controller.sessionStore = SessionStore(defaults: UserDefaults(suiteName: suite)!)
+            controller.sessionStore = SessionStore(defaults: TestDefaults.make(suite))
             controller.draftStore = DraftStore(directory: directory.appendingPathComponent("drafts", isDirectory: true))
             controller.load(url: file)
             controller.formatErrorObserver = { [unowned self] in self.errors.append($0) }

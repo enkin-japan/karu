@@ -57,7 +57,7 @@ private let baselineLight = ProcessInfo.processInfo.environment["KARU_M17_LIGHT"
 
 private func m17Defaults() -> UserDefaults {
     let name = "M17BaselineTests-\(UUID().uuidString)"
-    let d = UserDefaults(suiteName: name)!
+    let d = TestDefaults.make(name)
     d.removePersistentDomain(forName: name)
     return d
 }

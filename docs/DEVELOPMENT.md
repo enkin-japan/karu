@@ -22,6 +22,10 @@
   CPU 密集测试占满线程池，GCD 全局队列与 `Task.sleep` 唤醒会停滞数秒而使限时等待超时；`swift test --no-parallel` 是较慢的退路），
   过滤运行仍用 `swift test --filter`；测试框架为 Swift Testing，涉及 AppKit 使用 `@MainActor`。
   历史环境只有 Command Line Tools，维护时核对当前工具链，不假定完整 Xcode 可用。
+- 测试里需要临时偏好域时用 `TestDefaults.make(名字)`，不要直接写 `UserDefaults(suiteName:)`（有测试检查）。
+  `removePersistentDomain` 只清空内容，plist 文件会留在 `~/Library/Preferences`；同一进程里删文件也不可靠，cfprefsd 几秒后会把它重新写出来。
+  `TestDefaults` 把建过的域名记入 `~/Library/Caches/KaruCoreTests/test-defaults/` 下的清单，下一次测试进程启动时删掉静默超过 60 秒的清单所列文件，
+  所以磁盘上最多留着最近一次运行的那一批（全量约 180 个）。
 - `Sources/KaruCore/App/` 管应用/文档/恢复，`Editor/` 管编辑交互与窗口，
   `TextModel/` 管共享索引，`Highlight/` 管着色，`Scratchpad/` 管独立草稿本。
 - 根目录的 `.o`、`.d`、`.swiftdeps` 等及 `.build/`、`build/` 是忽略的生成物，

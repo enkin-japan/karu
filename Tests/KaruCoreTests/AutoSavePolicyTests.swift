@@ -29,7 +29,7 @@ import Testing
 
 @Test func autoSaveDefaultsToDisabledWhenUnset() {
     let name = "AutoSaveTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     defaults.removePersistentDomain(forName: name)
     // The production accessor reads `.standard`; assert the documented default
     // contract (unset ⇒ false) directly against an isolated store.
@@ -39,7 +39,7 @@ import Testing
 
 @Test func autoSaveFlagPersists() {
     let name = "AutoSaveTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     defaults.removePersistentDomain(forName: name)
     defaults.set(true, forKey: AutoSavePolicy.enabledKey)
     #expect(defaults.object(forKey: AutoSavePolicy.enabledKey) != nil)

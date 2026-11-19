@@ -129,7 +129,7 @@ import Testing
 
 @Test func autoCloseDefaultsToEnabledWhenUnset() {
     let name = "AutoCloseTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     defaults.removePersistentDomain(forName: name)
     // The production accessor reads `.standard`; assert the documented default
     // contract directly against an isolated store.

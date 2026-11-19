@@ -86,7 +86,7 @@ struct PopupMemoryBenchmarkTests {
         let detail = mode == "detail"
         let rounds = Int(ProcessInfo.processInfo.environment["KARU_T1715_POPUP_ROUNDS"] ?? "") ?? 48
         let name = "PopupMemoryBenchmark-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = TestDefaults.make(name)
         defer { UserDefaults().removePersistentDomain(forName: name) }
         let center = NotificationCenter()
         let settings = ModuleSettings(defaults: defaults, center: center)

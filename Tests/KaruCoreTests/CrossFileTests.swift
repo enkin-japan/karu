@@ -572,7 +572,7 @@ struct CrossFileStringsAndShortcutTests {
 
     @Test func menuItemHasCommandTAndIsRebindable() throws {
         let suite = "CrossFileShortcut-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = TestDefaults.make(suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let menu = MainMenu.build(applyShortcuts: false)
         let edit = try #require(menu.items.compactMap(\.submenu).first { $0.title == L10n.t(.menuEdit) })

@@ -153,7 +153,7 @@ private final class Run {
 
     func open(_ path: String?) -> EditorWindowController {
         let controller = EditorWindowController()
-        controller.sessionStore = SessionStore(defaults: UserDefaults(suiteName: suite)!)
+        controller.sessionStore = SessionStore(defaults: TestDefaults.make(suite))
         controller.draftStore = DraftStore(directory: tmp.appendingPathComponent("Drafts"))
         controller.showWindow(nil)
         if let path {

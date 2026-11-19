@@ -72,7 +72,7 @@ private final class IsolatedRunPage {
     let page: RunPreferencesController
 
     init() {
-        defaults = UserDefaults(suiteName: suite)!
+        defaults = TestDefaults.make(suite)
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("SettingsWindowTests-\(UUID().uuidString)", isDirectory: true)
         let center = NotificationCenter()
@@ -260,7 +260,7 @@ struct SettingsWindowTests {
 
     @Test func sheetDoneClosesTheWindowWhenNotAttached() {
         let suite = "SettingsWindowSheets-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = TestDefaults.make(suite)
         defer { defaults.removePersistentDomain(forName: suite) }
 
         var closed = 0

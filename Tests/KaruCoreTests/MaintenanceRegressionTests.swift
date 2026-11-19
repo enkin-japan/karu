@@ -195,7 +195,7 @@ struct MaintenanceRegressionTests {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("KaruLaunch-\(UUID())")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let suite = "KaruLaunch-\(UUID())"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = TestDefaults.make(suite)
         defer { try? FileManager.default.removeItem(at: dir); defaults.removePersistentDomain(forName: suite) }
         let delegate = AppDelegate()
         delegate.sessionStore = SessionStore(defaults: defaults)

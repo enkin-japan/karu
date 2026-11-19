@@ -188,7 +188,7 @@ struct SyntaxParserBenchmarkTests {
                                                 ("10 MB Python", "Tests/Fixtures/M17/inference/sample_1000.py", "python", 0)] {
             let block = try Self.load(path)
             let text = repeats == 1 ? block : Self.tenMegabytes(block)
-            let settings = ModuleSettings(defaults: UserDefaults(suiteName: "SyntaxBench-\(UUID())")!, center: NotificationCenter())
+            let settings = ModuleSettings(defaults: TestDefaults.make("SyntaxBench-\(UUID())"), center: NotificationCenter())
             let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
             let hub = TextStorageObserverHub()
             textView.textStorage?.delegate = hub

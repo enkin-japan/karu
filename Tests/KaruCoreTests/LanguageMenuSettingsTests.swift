@@ -11,7 +11,7 @@ struct LanguageMenuSettingsTests {
 
     private func isolated() -> (UserDefaults, () -> Void) {
         let name = "KaruLanguageMenuTests-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = TestDefaults.make(name)
         return (defaults, { defaults.removePersistentDomain(forName: name) })
     }
 

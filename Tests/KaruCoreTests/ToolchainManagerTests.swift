@@ -222,7 +222,7 @@ struct ToolchainManagerTests {
 struct RunPreferencesToolchainTests {
     private func isolatedSettings() -> (RunSettings, NotificationCenter) {
         let name = "ToolchainSettingsTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = TestDefaults.make(name)
         defaults.removePersistentDomain(forName: name)
         let center = NotificationCenter()
         return (RunSettings(defaults: defaults, center: center), center)

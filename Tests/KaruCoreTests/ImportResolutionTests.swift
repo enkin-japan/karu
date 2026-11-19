@@ -108,7 +108,7 @@ final class ImportHarness {
     init(projectRoot: String?, interpreter: String? = ImportFixtures.interpreter, workspace: WorkspaceIndex? = nil,
          byteLimit: Int = ImportService.summaryByteLimit, moduleByteLimit: Int = ImportService.moduleByteLimit,
          revalidation: TimeInterval = 2, readByteLimit: Int = ImportService.readByteLimit) {
-        defaults = UserDefaults(suiteName: suite)!
+        defaults = TestDefaults.make(suite)
         modules = ModuleSettings(defaults: defaults, center: center)
         rootBox = RootBox(projectRoot)
         let discovery = interpreter.map { PythonInterpreterDiscovery.fixed($0) } ?? .none

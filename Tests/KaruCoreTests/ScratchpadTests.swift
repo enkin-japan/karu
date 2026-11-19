@@ -65,7 +65,7 @@ private func makeScratchpadStore() -> (ScratchpadStore, () -> Void) {
 
 @Test func scratchpadIsPinnedByDefaultAndFollowsTheStoredFlag() {
     let name = "ScratchpadPinTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     defer { UserDefaults().removePersistentDomain(forName: name) }
 
     // Unset = pinned: the panel must never vanish under a user who never asked.
@@ -80,7 +80,7 @@ private func makeScratchpadStore() -> (ScratchpadStore, () -> Void) {
 
 private func makeFontDefaults() -> (UserDefaults, () -> Void) {
     let name = "ScratchpadFontTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     return (defaults, { UserDefaults().removePersistentDomain(forName: name) })
 }
 
@@ -225,7 +225,7 @@ private func makeFontDefaults() -> (UserDefaults, () -> Void) {
 
 @Test func hotKeyStoreRoundTripsThroughDefaults() {
     let name = "HotKeyTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     defer { UserDefaults().removePersistentDomain(forName: name) }
 
     // Nothing stored → the ⌥D default.
@@ -247,7 +247,7 @@ private func makeFontDefaults() -> (UserDefaults, () -> Void) {
 
 @Test func hotKeyCenterReadsItsInjectedDefaults() {
     let name = "HotKeyTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     defer { UserDefaults().removePersistentDomain(forName: name) }
 
     HotKeyCenter.store(keyCode: UInt32(kVK_ANSI_9),

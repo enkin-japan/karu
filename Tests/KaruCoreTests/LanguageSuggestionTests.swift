@@ -42,7 +42,7 @@ struct LanguageSuggestionTests {
                 .appendingPathComponent("KaruSuggest-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             controller = EditorWindowController()
-            controller.sessionStore = SessionStore(defaults: UserDefaults(suiteName: suite)!)
+            controller.sessionStore = SessionStore(defaults: TestDefaults.make(suite))
             controller.draftStore = DraftStore(directory: directory.appendingPathComponent("drafts", isDirectory: true))
             let stub = StubRanker(ranking)
             self.stub = stub
@@ -170,7 +170,7 @@ struct LanguageSuggestionTests {
         defer { f.cleanup() }
         f.fillAndRank()
         let menu = f.banner.makeOtherMenu(settings: LanguageMenuSettings(
-            defaults: UserDefaults(suiteName: "LanguageSuggestionTests-other-\(UUID().uuidString)")!,
+            defaults: TestDefaults.make("LanguageSuggestionTests-other-\(UUID().uuidString)"),
             center: NotificationCenter()))
         #expect(menu.items.compactMap { $0.representedObject as? String } == SupportedLanguage.all.map(\.identifier))
         let rust = try #require(menu.items.first { ($0.representedObject as? String) == "rust" })

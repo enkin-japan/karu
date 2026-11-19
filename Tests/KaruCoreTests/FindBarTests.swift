@@ -290,7 +290,7 @@ struct FindAndReplaceCommandTests {
         #expect(clashes.count == 1)
 
         let suite = "FindAndReplaceShortcut-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = TestDefaults.make(suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = ShortcutSettings(defaults: defaults)
         let command = try #require(settings.commands.first { $0.action == "showFindAndReplace:" })
@@ -300,7 +300,7 @@ struct FindAndReplaceCommandTests {
     }
 
     @Test func editorCommandShowsTheExpandedBar() throws {
-        let defaults = try #require(UserDefaults(suiteName: "FindAndReplaceCommand-\(UUID().uuidString)"))
+        let defaults = TestDefaults.make("FindAndReplaceCommand-\(UUID().uuidString)")
         let controller = EditorWindowController()
         controller.sessionStore = SessionStore(defaults: defaults)
         controller.draftStore = DraftStore(directory: FileManager.default.temporaryDirectory

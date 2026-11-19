@@ -27,7 +27,7 @@ final class IndexFixture {
         root = base.appendingPathComponent("support", isDirectory: true)
         try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         suite = "KaruIndexTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suite)!
+        defaults = TestDefaults.make(suite)
         modules = ModuleSettings(defaults: defaults, center: center)
         store = ProjectFolderStore(defaults: defaults)
     }

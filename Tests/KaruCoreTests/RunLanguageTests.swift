@@ -90,7 +90,7 @@ struct RunLanguageResolverTests {
 struct RunSettingsTests {
     private func isolatedDefaults() -> UserDefaults {
         let name = "RunSettingsTests-\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: name)!
+        let d = TestDefaults.make(name)
         d.removePersistentDomain(forName: name)
         return d
     }

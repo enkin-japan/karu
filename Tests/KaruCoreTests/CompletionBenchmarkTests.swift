@@ -216,7 +216,7 @@ struct CompletionBenchmarkTests {
         textView.string = text
         let center = NotificationCenter()
         let suite = "CompletionBenchmark-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = TestDefaults.make(suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = ModuleSettings(defaults: defaults, center: center)
         let hub = TextStorageObserverHub()

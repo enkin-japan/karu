@@ -10,7 +10,7 @@ struct SettingsManagementTests {
     init() { _ = NSApplication.shared }
     private func isolated() -> (UserDefaults, () -> Void) {
         let name = "KaruSettingsTests-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = TestDefaults.make(name)
         return (defaults, { defaults.removePersistentDomain(forName: name) })
     }
     @Test func exportRoundTripExcludesPrivateAndSystemState() throws {

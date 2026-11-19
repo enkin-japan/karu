@@ -119,7 +119,7 @@ struct OptimizationTests {
 
     private func settings() -> (ShortcutSettings, () -> Void) {
         let suite = "KaruShortcutTests-\(UUID())"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = TestDefaults.make(suite)
         return (ShortcutSettings(defaults: defaults), { defaults.removePersistentDomain(forName: suite) })
     }
     @Test func shortcutCaptureIgnoresCapsLockAndDisplaysFunctionKeys() {

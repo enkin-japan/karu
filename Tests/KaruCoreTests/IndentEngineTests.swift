@@ -173,7 +173,7 @@ import Testing
 // MARK: - IndentSettings
 
 private func makeIsolatedDefaults() -> UserDefaults {
-    UserDefaults(suiteName: "IndentSettingsTests-\(UUID().uuidString)")!
+    TestDefaults.make("IndentSettingsTests-\(UUID().uuidString)")
 }
 
 @Test func indentSettingsDefaults() {

@@ -24,7 +24,7 @@ struct SaveConflictTests {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             file = directory.appendingPathComponent("notes.txt")
             try contents.write(to: file, atomically: true, encoding: .utf8)
-            let defaults = UserDefaults(suiteName: suite)!
+            let defaults = TestDefaults.make(suite)
             drafts = DraftStore(directory: directory.appendingPathComponent("drafts", isDirectory: true))
             controller = EditorWindowController()
             controller.sessionStore = SessionStore(defaults: defaults)

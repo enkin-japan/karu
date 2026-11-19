@@ -17,7 +17,7 @@ import Testing
 
 private func isolatedDefaults() -> UserDefaults {
     let name = "RunSessionTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     defaults.removePersistentDomain(forName: name)
     return defaults
 }
@@ -346,7 +346,7 @@ struct RunPreferencesTests {
     /// User request (2026-11-12): the language list follows Settings › Language List.
     @Test func rowsFollowLanguageList() {
         let suite = "RunPreferencesLanguageList-\(UUID().uuidString)"
-        let listDefaults = UserDefaults(suiteName: suite)!
+        let listDefaults = TestDefaults.make(suite)
         defer { listDefaults.removePersistentDomain(forName: suite) }
         let languageMenu = LanguageMenuSettings(defaults: listDefaults, center: NotificationCenter())
         languageMenu.setVisible(false, for: "typescript")

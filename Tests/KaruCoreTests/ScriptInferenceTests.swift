@@ -11,7 +11,7 @@ import Testing
 
 private func isolatedDefaults() -> (UserDefaults, () -> Void) {
     let name = "ScriptInferenceTests-\(UUID().uuidString)"
-    let d = UserDefaults(suiteName: name)!
+    let d = TestDefaults.make(name)
     d.removePersistentDomain(forName: name)
     return (d, { d.removePersistentDomain(forName: name) })
 }

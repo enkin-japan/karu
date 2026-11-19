@@ -132,7 +132,7 @@ private final class Editor {
 
     init(text: String, language: String, typeInference: Bool) {
         self.language = language
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = TestDefaults.make(suite)
         settings = ModuleSettings(defaults: defaults, center: center)
         settings.setEnabled(typeInference, for: .typeInference)
         let frame = NSRect(x: 0, y: 0, width: 800, height: 600)

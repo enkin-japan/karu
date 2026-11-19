@@ -19,7 +19,7 @@ struct SaveFailureBannerTests {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             file = directory.appendingPathComponent("notes.txt")
             try "hello\n".write(to: file, atomically: true, encoding: .utf8)
-            let defaults = UserDefaults(suiteName: suite)!
+            let defaults = TestDefaults.make(suite)
             controller = EditorWindowController()
             controller.sessionStore = SessionStore(defaults: defaults)
             controller.draftStore = DraftStore(directory: directory.appendingPathComponent("drafts", isDirectory: true))

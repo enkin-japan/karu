@@ -57,7 +57,7 @@ struct EmbeddedBenchmarkTests {
 
     private static func defaults() -> UserDefaults {
         let name = "EmbeddedBenchmark-\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: name)!
+        let d = TestDefaults.make(name)
         d.removePersistentDomain(forName: name)
         return d
     }

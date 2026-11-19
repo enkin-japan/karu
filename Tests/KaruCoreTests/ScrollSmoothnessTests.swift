@@ -7,7 +7,7 @@ import Testing
 
 private func isolatedDefaults() -> UserDefaults {
     let name = "ScrollSmoothnessTests-\(UUID().uuidString)"
-    let d = UserDefaults(suiteName: name)!
+    let d = TestDefaults.make(name)
     d.removePersistentDomain(forName: name)
     return d
 }

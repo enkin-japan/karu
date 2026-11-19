@@ -31,7 +31,7 @@ private final class RunPageFixture {
 
     init(manager: ToolchainManager? = nil, developerTools: Bool = true,
          isExecutable: @escaping @Sendable (String) -> Bool = { _ in false }) {
-        defaults = UserDefaults(suiteName: suite)!
+        defaults = TestDefaults.make(suite)
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RunPreferencesLayoutTests-\(UUID().uuidString)", isDirectory: true)
         let center = NotificationCenter()

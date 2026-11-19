@@ -23,7 +23,7 @@ struct SessionRestoreTests {
 /// The returned closure tears the suite down.
 private static func makeStore() -> (SessionStore, UserDefaults, () -> Void) {
     let name = "KaruSessionTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     return (SessionStore(defaults: defaults), defaults, {
         UserDefaults().removePersistentDomain(forName: name)
     })
@@ -307,7 +307,7 @@ private extension NSView {
 
 private func makePolicyStore() -> (SessionStore, () -> Void) {
     let name = "KaruSessionPolicyTests-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
+    let defaults = TestDefaults.make(name)
     return (SessionStore(defaults: defaults), {
         UserDefaults().removePersistentDomain(forName: name)
     })

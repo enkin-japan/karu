@@ -20,7 +20,7 @@ struct HighlightMaintenanceTests {
             let url = directory.appendingPathComponent(fileName)
             try text.write(to: url, atomically: true, encoding: .utf8)
             controller.sessionStore = SessionStore(
-                defaults: UserDefaults(suiteName: "KaruHighlightMaintenance-\(UUID().uuidString)")!)
+                defaults: TestDefaults.make("KaruHighlightMaintenance-\(UUID().uuidString)"))
             controller.draftStore = DraftStore(directory: directory.appendingPathComponent("drafts", isDirectory: true))
             controller.load(url: url)
             textView.layoutManager!.ensureLayout(for: textView.textContainer!)

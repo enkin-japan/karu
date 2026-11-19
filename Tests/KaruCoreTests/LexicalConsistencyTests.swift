@@ -515,7 +515,7 @@ private final class Painter {
         window.contentView = scrollView
         textView.string = text
         let name = "LexicalConsistencyTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = TestDefaults.make(name)
         defaults.removePersistentDomain(forName: name)
         engine = HighlightEngine(textView: textView, scrollView: scrollView,
                                  moduleSettings: ModuleSettings(defaults: defaults, center: center),

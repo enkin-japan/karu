@@ -267,7 +267,7 @@ private func kind(of text: String, in pairs: [(text: String, kind: TokenKind)]) 
     // Identifiers are lowercase and (for the markup / data languages) line up
     // with `IndentSettings.languageDefaults` keys, so indent width can be
     // looked up straight from the resolved identifier.
-    let settings = IndentSettings(defaults: UserDefaults(suiteName: "Batch1-\(UUID().uuidString)")!)
+    let settings = IndentSettings(defaults: TestDefaults.make("Batch1-\(UUID().uuidString)"))
 
     for (ext, expectedWidth) in [("markdown", 2), ("html", 2), ("css", 2),
                                  ("json", 2), ("jsonl", 2)] {

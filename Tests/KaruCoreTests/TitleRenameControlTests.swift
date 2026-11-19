@@ -50,7 +50,7 @@ struct TitleRenameControlTests {
     /// The first edit must refresh the toolbar title, not only the close
     /// button's dot: the title is where the unsaved marker lives.
     @Test func firstEditShowsTheUnsavedMarkerInTheToolbarTitle() throws {
-        let defaults = UserDefaults(suiteName: "TitleRenameControlTests-\(UUID().uuidString)")!
+        let defaults = TestDefaults.make("TitleRenameControlTests-\(UUID().uuidString)")
         let controller = EditorWindowController()
         controller.sessionStore = SessionStore(defaults: defaults)
         controller.draftStore = DraftStore(directory: FileManager.default.temporaryDirectory
@@ -73,7 +73,7 @@ struct TitleRenameControlTests {
     /// Indent width is set per language in Settings only: the editor toolbar
     /// carries no indent control, just the language and module popups.
     @Test func editorToolbarHasNoIndentControl() throws {
-        let defaults = UserDefaults(suiteName: "TitleRenameControlTests-\(UUID().uuidString)")!
+        let defaults = TestDefaults.make("TitleRenameControlTests-\(UUID().uuidString)")
         let controller = EditorWindowController()
         controller.sessionStore = SessionStore(defaults: defaults)
         controller.draftStore = DraftStore(directory: FileManager.default.temporaryDirectory
@@ -91,7 +91,7 @@ struct TitleRenameControlTests {
     /// Language, Format and Run are drawn at 90% of the toolbar size and each
     /// is followed by a gap; the right-hand items are not.
     @Test func leftToolbarControlsAreCompactAndSpaced() throws {
-        let defaults = UserDefaults(suiteName: "TitleRenameControlTests-\(UUID().uuidString)")!
+        let defaults = TestDefaults.make("TitleRenameControlTests-\(UUID().uuidString)")
         let controller = EditorWindowController()
         controller.sessionStore = SessionStore(defaults: defaults)
         controller.draftStore = DraftStore(directory: FileManager.default.temporaryDirectory

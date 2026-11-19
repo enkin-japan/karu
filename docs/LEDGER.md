@@ -32,7 +32,7 @@
   - **装机后请用户看的内容：**另一个程序改了文件后手动保存的弹窗（存储为…、覆盖、取消，Esc）；失焦自动保存遇冲突时的横条；缓冲区干净时切回窗口自动载入、有未保存修改时只提示一次；
     经符号链接打开的文件保存后链接仍在；查找栏在大量匹配时的 `50000+` 与滚动时高亮补画；灾难性正则（如 `^(a+)+$`）不再卡死；草稿本文件损坏时的提示框；
     对嵌套极深的 JSON / XML 执行“格式化文档”应提示拒绝而不是崩溃；普通的大 JSON / XML 格式化结果与以前一致且明显更快。
-  - **等用户发话：**实机实测的结果；是否清理并根治测试遗留的约 2.6 万个偏好文件（见实施记录“清理”一条）；发版要等用户说“发布”。
+  - **等用户发话：**实机实测的结果；发版要等用户说“发布”。
   - **委派注意：**工作树由工具从 `origin/main` 创建，说明里第一步必须写明 `git merge --ff-only main` 并核对提交号；代理只跑过滤测试，主会话合入后跑 `scripts/test.sh`；合入后用 `git worktree remove --force` 清掉工作树（每个约 1.1 GB）。
 - **实施记录**（2026-11-18 起，按完成顺序追加）：
   - **委派方式。**implementer 各自在独立工作树里实现，只跑过滤测试；主会话审 diff、合入主工作区、跑 `scripts/test.sh` 后提交。
@@ -168,6 +168,18 @@
     **清理时发现、没有处理的：**同一目录下还有 26299 个测试遗留的偏好文件，文件名是 `Karu<套件名>-<UUID>.plist`（KaruIndexTests 7006、KaruSessionTests 5010、KaruLanguageMenuTests 3442、KaruSettingsTests 2703、KaruDraftTests 2683、
     KaruHighlightMaintenance 1750、KaruSessionPolicyTests 1743、KaruShortcutTests 1164、KaruLaunch 798），其中 24460 个只有 42 字节（空的属性列表），仅 2026-11-19 当天就新增 1267 个。
     推测原因是测试用 `UserDefaults(suiteName:)` 建临时域、结束时 `removePersistentDomain` 只清空内容而留下文件；没有逐个套件核实。不在用户这次点名的范围内，没有动。
+  - **测试遗留偏好文件的清理与根治（2026-11-19，用户发话“清理并根治”）。**
+    - **实际规模。**上一条记的 26299 个只数了 `Karu` 开头的前缀；按“前缀 + UUID”统计并逐个对照仓库后，属于本仓库测试的共 43673 个（45 类前缀，含 `PreferencesTests`、`HighlightTests`、`ScratchpadFontTests` 等不带 `Karu` 的），
+      全部移到废纸篓的 `Karu-test-prefs-2026-11-19/`（磁盘占用 171 MB），没有永久删除。同目录下约 3.6 万个其他带随机后缀的文件前缀是 `l1-*`、`phone-link-test`、`dev.enkin.macagent.*` 等，
+      来自用户别的项目，没有动；`LedgerVerify`（95 个）、`zz`（1 个）在仓库现状和历史里都查不到出处，也没有动。
+    - **原因（实测）。**`removePersistentDomain(forName:)` 只清空域的内容，留下一个空的 plist 文件。
+    - **走不通的做法。**在测试进程退出时清空、同步再 `unlink`：40 个域的独立实验里，四种顺序有两种在 4 秒后 40 个文件全部重新出现，全量测试实测 125 个里剩 40 个。原因是 cfprefsd 在域最后一次变更之后延迟几秒落盘，会把刚删掉的文件重新写出来。
+    - **采用的做法。**新增 `Tests/KaruCoreTests/TestDefaults.swift`：`TestDefaults.make(名字)` 把域名追加到 `~/Library/Caches/KaruCoreTests/test-defaults/<pid>-<uuid>.txt`；每个测试进程第一次调用时先清扫，
+      把静默超过 60 秒的清单所列的 plist 删掉，再删清单。域名含 `/` 或为 `.`、`..` 的一律跳过。测试目录里 59 个文件共 71 处 `UserDefaults(suiteName:)` 用脚本统一改为 `TestDefaults.make`（另有 2 处 `try #require(...)` 写法一并替换）。
+      新增两条测试：清扫只动旧清单所列文件（新清单、清单外的文件、目录外的路径都不动）；测试目录里不得再出现直接调用。
+    - **验证。**间隔 70 秒连跑两次 `scripts/test.sh`（各 1956 条通过）：第一次留下 180 个文件，第二次启动后这 180 个全部消失，自己留下 180 个。也就是磁盘上的遗留不再累积，上限是最近一次运行的那一批。
+    - **局限。**不是“零遗留”：最后一次测试运行的文件会留到下一次测试启动。测试进程崩溃时清单仍在，下次照常清扫；清单目录若被系统清理缓存时删掉，对应那一批文件不会再被清扫。
+      `Sources` 里诊断运行用的 `UserDefaults(suiteName:)` 没有改，它们由脚本用 `defaults delete` 清理，今天几次冒烟后目录里没有新增诊断文件。
   - **F13 的 CI 部分 `39fa8b7`。**`.github/workflows/ci.yml`：推送到 `main`、拉取请求或手动触发时在 `macos-latest` 上跑 `swift build` 和 `scripts/test.sh`（并行宽度 4），只读权限，不含密钥。未推送，没有实际跑过。
   - **F13 重测：5 MB 单行 JSON 关窗后的内存（2026-11-19，主会话）。**
     - **方法。**`M17AcceptanceBenchmarkTests`（release，`MallocSpaceEfficient=1`，真实窗口）加了两个可选变量：`KARU_T1715B_FORMAT` 在打开后执行一次“格式化文档”，`KARU_T1715B_HOLD=<秒>` 在收尾后保持进程存活并打印 pid，供 `heap` / `leaks` 查看。夹具是脚本生成的 5.24 MB 单行 JSON 和它的多行版本（8.39 MB）。

@@ -465,7 +465,7 @@ struct EmbeddedRoleTests {
         scrollView.documentView = textView
         textView.string = text
         let name = "EmbeddedRoleTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = TestDefaults.make(name)
         defaults.removePersistentDomain(forName: name)
         let engine = HighlightEngine(textView: textView, scrollView: scrollView,
                                      moduleSettings: ModuleSettings(defaults: defaults, center: center),
@@ -514,7 +514,7 @@ struct EmbeddedRoleTests {
 
 private func isolatedDefaults() -> (UserDefaults, () -> Void) {
     let name = "EmbeddedCompletionUITests-\(UUID().uuidString)"
-    let d = UserDefaults(suiteName: name)!
+    let d = TestDefaults.make(name)
     d.removePersistentDomain(forName: name)
     return (d, { d.removePersistentDomain(forName: name) })
 }

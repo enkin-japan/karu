@@ -51,7 +51,7 @@ struct HighlightPassBenchmarkTests {
 
     private static func defaults() -> UserDefaults {
         let name = "HighlightPassBenchmark-\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: name)!
+        let d = TestDefaults.make(name)
         d.removePersistentDomain(forName: name)
         return d
     }
