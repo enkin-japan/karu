@@ -24,7 +24,7 @@
   7. ✅ F8、F9 导入上限（自动化通过）
   8. ✅ F10 + F11 验收脚本（自测与一次端到端实跑通过）
   9. ✅ F12 发布前检查（主会话亲自做；门禁自测通过，`preflight.sh` 已在 `9b3bd05` 上实跑通过；签名与公证没有实际走过）
-  10. ✅ F13 CI 与 5 MB 单行 JSON 重测（工作流文件已本地提交 `39fa8b7`，未推送、未在托管 runner 上跑过；重测 2026-11-19 完成，结论见实施记录）
+  10. 🔄 F13 CI 与 5 MB 单行 JSON 重测（重测 2026-11-19 完成；CI 同日随推送第一次运行，构建通过、测试 3 条失败，现象已报用户，待议，见实施记录）
   11. ✅ F15 三语 README（2026-11-19 用户发话“提交 README 并推送更新”后提交）
   阶段一（1–4）、阶段二（5–7）各自完成后跑全量测试与视觉冒烟并装本机；每个任务单独提交，提交后查上下文占比。
 - **当前停点（2026-11-19，清单 11 项全部提交并已推送）：**F1–F13、F15 全部提交；用户 2026-11-19 发话推送，本地 `main` 已推到 `origin/main`（此前领先 46 个提交）。没有进行中的代理或未合入的工作树。
@@ -148,6 +148,13 @@
     格式化的拒绝条件、保存冲突、符号链接、草稿与磁盘都变化时两者都保留；预算表的测量口径（`phys_footprint`、800×600、`mem-benchmark.sh` 由 `preflight.sh` 在发布前运行、无证据不算通过、压力输入可能超上限）；
     测试入口改为 `scripts/test.sh`；部署目标 macOS 13，近期只在 Apple 芯片的 macOS 27 上构建和测试。开头“约 30 MB 常驻内存”没有改（现测空文档 19.4 MB、1 MB 文件 22.8 MB、10 MB 文件 43.8 MB）。
     保存冲突等几句描述的是尚未发版的行为，随下一次发版成立。
+  - **CI 第一次运行（2026-11-19，推送 `c3c201b` 触发，run 44440042227）。**托管 runner 是 macOS 26.7.2、Swift 6.3.3（本机是 macOS 27.2.1、Swift 6.4.2）。
+    `swift build` 通过；`scripts/test.sh`（并行宽度 4）跑了 1954 条、226.7 秒（本机约 53 秒），3 条失败共 4 处：
+    1. `SettingsWindowTests.nothingTruncatesInAnyLanguage`：日文界面“代码”页的按钮「プロジェクトフォルダ…」实际宽 156、内容需要 158，差 1.5 pt。可能是 macOS 26 上字体度量不同造成的真实截断，没有在 macOS 26 实机上确认。
+    2. `DocumentAnalysisTests.checkpointResumedPythonHighlightMatchesFreshEngine`：等声明重扫完成的 20 秒上限内没有等到。
+    3. `SyntaxCategoryTests.bandPaintedBeforeTheRescanIsRepaintedByIt`：同类，10 秒上限内没有等到（随后的颜色断言是连带失败）。
+    后两条是限时等待，在慢 runner 上（许多用例耗时 30 秒上下，主线程轮转被挤占）超时；是否只是并行宽度对 3 核 runner 太高，没有验证。
+    按方案“跑不起来或结果不稳定时把现象报给用户再议”，没有改代码，也没有重跑。完整日志在会话临时目录，未入库。
   - **F13 的 CI 部分 `39fa8b7`。**`.github/workflows/ci.yml`：推送到 `main`、拉取请求或手动触发时在 `macos-latest` 上跑 `swift build` 和 `scripts/test.sh`（并行宽度 4），只读权限，不含密钥。未推送，没有实际跑过。
   - **F13 重测：5 MB 单行 JSON 关窗后的内存（2026-11-19，主会话）。**
     - **方法。**`M17AcceptanceBenchmarkTests`（release，`MallocSpaceEfficient=1`，真实窗口）加了两个可选变量：`KARU_T1715B_FORMAT` 在打开后执行一次“格式化文档”，`KARU_T1715B_HOLD=<秒>` 在收尾后保持进程存活并打印 pid，供 `heap` / `leaks` 查看。夹具是脚本生成的 5.24 MB 单行 JSON 和它的多行版本（8.39 MB）。
