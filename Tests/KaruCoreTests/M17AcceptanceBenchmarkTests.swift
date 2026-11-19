@@ -27,6 +27,10 @@ import Testing
 //   (a closed window must not react). Settled malloc in use is printed too. `KARU_T1715B_PAIR=<a>:<b>` instead opens an empty window, then a,
 //   then b side by side (state that multiplies with windows). Phase start /
 //   end uptimes are printed so a `KARU_PERFLOG` log can be sliced per phase.
+// `KARU_T1715B_FORMAT=1` adds a "format" phase (Format Document) right after
+// "open"; `KARU_T1715B_HOLD=<seconds>` keeps the process alive after the last
+// phase and prints its pid, for `heap` / `leaks` (find the pid with
+// `pgrep -x swiftpm-testing-helper`: test output is buffered until exit).
 // Module switches go to the test runner's own defaults domain and are removed
 // afterwards. Never asserts on timings.
 
@@ -37,6 +41,11 @@ private let outEnv = env["KARU_T1715B_OUT"]
 /// T17.15d-A: also list every main-thread gap over 20 ms with its end uptime
 /// (to match it against `KARU_PERFLOG` events).
 private let gapLogEnv = env["KARU_T1715B_GAPLOG"] != nil
+/// F13: run Format Document right after the open phase.
+private let formatEnv = env["KARU_T1715B_FORMAT"] != nil
+/// F13: seconds to keep the process alive after the last phase, so `heap` /
+/// `leaks` can look at it (the pid is printed).
+private let holdEnv = env["KARU_T1715B_HOLD"].flatMap(Double.init)
 
 private func footprint() -> Int {
     var info = task_vm_info_data_t()
@@ -253,6 +262,15 @@ struct M17AcceptanceBenchmarkTests {
                 controller = run.open(path)
                 return "sync_ms \(ms(now() - t))"
             }
+            if formatEnv {
+                await run.phase("format", base: base) {
+                    let before = controller.textViewForTesting.string.utf8.count
+                    let t = now()
+                    controller.formatDocument(nil)
+                    let sync = now() - t
+                    return "sync_ms \(ms(sync))\tbytes \(before)->\(controller.textViewForTesting.string.utf8.count)"
+                }
+            }
             // The phases up to the pressure relief hold the text view, window and
             // completion controller in locals; the scope ends before "closed" so
             // nothing here keeps the closed window alive.
@@ -370,5 +388,9 @@ struct M17AcceptanceBenchmarkTests {
         }
 
         if let outEnv { try run.report.write(toFile: outEnv, atomically: true, encoding: .utf8) }
+        if let holdEnv {
+            run.line("hold pid \(getpid()) for \(Int(holdEnv)) s")
+            await spin(holdEnv)
+        }
     }
 }

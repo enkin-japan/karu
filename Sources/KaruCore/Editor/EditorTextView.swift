@@ -684,7 +684,10 @@ public final class EditorTextView: NSTextView {
 
     /// Whether the ⌘K fold-chord prefix is currently armed. Transient (a single
     /// Bool), reset the moment the next key resolves the chord.
-    private let shortcutRouter = ShortcutRouter()
+    // `lazy`: NSTextView.init(frame:) chains to init(frame:textContainer:), and Swift
+    // runs inline property initialisers once per designated initialiser, so a
+    // plain `let` here was created twice and the first instance leaked (F13).
+    private lazy var shortcutRouter = ShortcutRouter()
 
     public override func resignFirstResponder() -> Bool {
         shortcutRouter.reset()

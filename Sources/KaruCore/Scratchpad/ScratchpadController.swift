@@ -827,7 +827,10 @@ private final class ScratchpadTextView: NSTextView {
     /// The pad's key equivalents. None of them arrive through the main menu —
     /// File ▸ Save and Edit ▸ Find target the editor window controller, and
     /// View ▸ Zoom writes the *shared* editor size — so they are claimed here.
-    private let shortcutRouter = ShortcutRouter()
+    // `lazy`: NSTextView.init(frame:) chains to init(frame:textContainer:), and Swift
+    // runs inline property initialisers once per designated initialiser, so a
+    // plain `let` here was created twice and the first instance leaked (F13).
+    private lazy var shortcutRouter = ShortcutRouter()
 
     override func resignFirstResponder() -> Bool {
         shortcutRouter.reset()
