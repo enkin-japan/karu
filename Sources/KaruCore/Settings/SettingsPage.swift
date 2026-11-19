@@ -44,7 +44,9 @@ final class SettingsRowStack: NSStackView {
 /// jump when switching pages.
 @MainActor
 final class SettingsForm {
-    static let controlColumnWidth: CGFloat = 320
+    /// 328: two equal-width buttons get (328 − 8) / 2 = 160 each. At 320 the
+    /// Japanese "プロジェクトフォルダ…" (158 wide on macOS 26) was squeezed to 156.
+    static let controlColumnWidth: CGFloat = 328
     static let insets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
     static let rowSpacing: CGFloat = 8
     static let columnSpacing: CGFloat = 8
