@@ -36,5 +36,5 @@ jobs:
       # have few cores, so use a narrower width than the local default of 8.
       - name: Test
         env:
-          KARU_TEST_WIDTH: "4"
+          KARU_TEST_WIDTH: "2"
         run: scripts/test.sh
