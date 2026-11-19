@@ -32,7 +32,7 @@
   - **装机后请用户看的内容：**另一个程序改了文件后手动保存的弹窗（存储为…、覆盖、取消，Esc）；失焦自动保存遇冲突时的横条；缓冲区干净时切回窗口自动载入、有未保存修改时只提示一次；
     经符号链接打开的文件保存后链接仍在；查找栏在大量匹配时的 `50000+` 与滚动时高亮补画；灾难性正则（如 `^(a+)+$`）不再卡死；草稿本文件损坏时的提示框；
     对嵌套极深的 JSON / XML 执行“格式化文档”应提示拒绝而不是崩溃；普通的大 JSON / XML 格式化结果与以前一致且明显更快。
-  - **等用户发话：**实机实测的结果；是否清理 `~/Library/Preferences` 下 456 个历史诊断偏好文件和 `build/sparkle-tools/` 旧缓存；发版要等用户说“发布”。
+  - **等用户发话：**实机实测的结果；是否清理并根治测试遗留的约 2.6 万个偏好文件（见实施记录“清理”一条）；发版要等用户说“发布”。
   - **委派注意：**工作树由工具从 `origin/main` 创建，说明里第一步必须写明 `git merge --ff-only main` 并核对提交号；代理只跑过滤测试，主会话合入后跑 `scripts/test.sh`；合入后用 `git worktree remove --force` 清掉工作树（每个约 1.1 GB）。
 - **实施记录**（2026-11-18 起，按完成顺序追加）：
   - **委派方式。**implementer 各自在独立工作树里实现，只跑过滤测试；主会话审 diff、合入主工作区、跑 `scripts/test.sh` 后提交。
@@ -163,6 +163,11 @@
   - **设置页列宽修复与 CI 第三次运行（2026-11-19，`6b74b24`，run 44443424252）。**用户同意后把 `SettingsForm.controlColumnWidth` 从 320 改为 328（两颗等宽按钮各得 160），所有表单页一起宽 8 pt。
     本机：设置相关 48 条、全量 1954 条通过，视觉冒烟通过（冒烟不覆盖设置窗口）。CI（macOS 26.7.2、Swift 6.3.3、并行宽度 2）：1954 条全部通过，259.7 秒。
     没验证的：macOS 26 实机上的观感；macOS 13–15 上同一行是否还有别的标题超宽（CI 只有 macOS 26 一种 runner）；三次 CI 运行不足以说明限时等待类用例在 runner 上稳定。
+  - **清理（2026-11-19，用户发话）。**`~/Library/Preferences` 下 456 个 `dev.enkin.Karu.Diagnostics.*.plist`（历次诊断运行留下，共 1.8 MB，最早 10-17）移到废纸篓的 `Karu-diagnostics-prefs-2026-11-19/`；
+    `build/sparkle-tools/`（7 月的 Sparkle 发行包缓存，107 MB，F12 之后发布脚本不再使用）移到废纸篓的 `karu-sparkle-tools-2026-11-19/`。都没有永久删除，用户自己的 `dev.enkin.TinyEditor.plist` 没有动。
+    **清理时发现、没有处理的：**同一目录下还有 26299 个测试遗留的偏好文件，文件名是 `Karu<套件名>-<UUID>.plist`（KaruIndexTests 7006、KaruSessionTests 5010、KaruLanguageMenuTests 3442、KaruSettingsTests 2703、KaruDraftTests 2683、
+    KaruHighlightMaintenance 1750、KaruSessionPolicyTests 1743、KaruShortcutTests 1164、KaruLaunch 798），其中 24460 个只有 42 字节（空的属性列表），仅 2026-11-19 当天就新增 1267 个。
+    推测原因是测试用 `UserDefaults(suiteName:)` 建临时域、结束时 `removePersistentDomain` 只清空内容而留下文件；没有逐个套件核实。不在用户这次点名的范围内，没有动。
   - **F13 的 CI 部分 `39fa8b7`。**`.github/workflows/ci.yml`：推送到 `main`、拉取请求或手动触发时在 `macos-latest` 上跑 `swift build` 和 `scripts/test.sh`（并行宽度 4），只读权限，不含密钥。未推送，没有实际跑过。
   - **F13 重测：5 MB 单行 JSON 关窗后的内存（2026-11-19，主会话）。**
     - **方法。**`M17AcceptanceBenchmarkTests`（release，`MallocSpaceEfficient=1`，真实窗口）加了两个可选变量：`KARU_T1715B_FORMAT` 在打开后执行一次“格式化文档”，`KARU_T1715B_HOLD=<秒>` 在收尾后保持进程存活并打印 pid，供 `heap` / `leaks` 查看。夹具是脚本生成的 5.24 MB 单行 JSON 和它的多行版本（8.39 MB）。
